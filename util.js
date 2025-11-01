@@ -4486,570 +4486,679 @@ const n = idx;
       return "";
     }
 
-    // 3) SCELTA DEL GIORNO
-    if (!col.when || state.step === "choose_day") {
-      // GUARD PRO: se il servizio ha professionisti e non sono ancora stati scelti,
-      // chiedi prima il professionista. Se nel messaggio c'è già una data, salvala
-      // per usarla subito dopo la scelta pro (niente riscritture da parte dell'utente).
-      if (
-        !col.professionalAny &&
-        !col.professionalName &&
-        !col.professionalEmail
-      ) {
-        const pros =
-          (typeof cfgServiceProfessionals === "function"
-            ? cfgServiceProfessionals(col.service)
-            : []) || [];
-        if (pros.length) {
-          try {
-            const cand =
-              (typeof parseRelativeDay === "function"
-                ? parseRelativeDay(text)
-                : null) ||
-              (typeof parseCtxDay === "function" ? parseCtxDay(text) : null) ||
-              null;
-            if (cand) {
-              ensureContext(state);
-              state.context.tmpDay =
-                typeof atNoon === "function" ? atNoon(cand) : cand;
-            }
-          } catch {}
-          state.step = "pick_professional";
-          await reply(client, chatId, askProfessional(col.service));
-          pending.set(chatId, state);
-          return "";
+    // ==========================
+// 3) SCELTA DEL GIORNO
+// ==========================
+if (!col.when || state.step === "choose_day") {
+  const t =
+    typeof norm === "function"
+      ? norm(msg || "")
+      : String(msg || "").toLowerCase();
+
+  // 3.0 — Se serve prima scegliere il professionista
+  // Se nel messaggio l'utente ha già dato una data ("domani", "23/10", ecc)
+  // la mettiamo in state.context.tmpDay così non deve riscriverla dopo.
+  if (
+    !col.professionalAny &&
+    !col.professionalName &&
+    !col.professionalEmail
+  ) {
+    const pros =
+      (typeof cfgServiceProfessionals === "function"
+        ? cfgServiceProfessionals(col.service)
+        : []) || [];
+
+    if (pros.length) {
+      try {
+        const cand =
+          (typeof parseRelativeDay === "function"
+            ? parseRelativeDay(msg)
+            : null) ||
+          (typeof parseCtxDay === "function" ? parseCtxDay(msg) : null) ||
+          null;
+        if (cand) {
+          ensureContext(state);
+          state.context.tmpDay =
+            typeof atNoon === "function" ? atNoon(cand) : cand;
         }
+      } catch {
+        /* ignora */
       }
 
-      // Compatibilità richieste disponibilità settimanale/mensile
-      const weekHintRe = /\b(questa\s+settimana|settimana\s+prossima)\b/i;
-      const monthHintRe = /\b(questo\s+mese|prossimo\s+mese)\b/i;
-      if (weekHintRe.test(t)) {
-        const days =
-          typeof listNextWeekDays === "function" ? listNextWeekDays() : [];
-        if (days.length) {
-          state.availFlow = { mode: "week", days, awaiting: "day" };
-          pending.set(chatId, state);
-          const lines = days
-            .map(
-              (d, i) =>
-                `${i + 1}) ${String(d.getDate()).padStart(2, "0")} ${
-                  typeof itaWeekdayName === "function"
-                    ? itaWeekdayName(d)
-                    : d.toLocaleDateString("it-IT", { weekday: "long" })
-                }`
-            )
-            .join("\n");
-          await reply(
-            client,
-            chatId,
-            `🔎 Modalità disponibilità (settimana prossima).\nScegli un giorno:\n${lines}\n(1-${days.length})`
-          );
-          return "";
-        }
-      }
-      if (monthHintRe.test(t)) {
-        const base = new Date();
-        if (/prossim/i.test(t)) base.setMonth(base.getMonth() + 1);
-        const year = base.getFullYear();
-        const monthIdx = base.getMonth();
-        state.availFlow = { mode: "month", year, monthIdx, awaiting: "day" };
-        pending.set(chatId, state);
-        const monthsIt = [
-          "gennaio",
-          "febbraio",
-          "marzo",
-          "aprile",
-          "maggio",
-          "giugno",
-          "luglio",
-          "agosto",
-          "settembre",
-          "ottobre",
-          "novembre",
-          "dicembre",
-        ];
-        const monthsEn = [
-          "January",
-          "February",
-          "March",
-          "April",
-          "May",
-          "June",
-          "July",
-          "August",
-          "September",
-          "October",
-          "November",
-          "December",
-        ];
-        const monthNameIt = monthsIt[monthIdx] || "";
-        const monthNameEn = monthsEn[monthIdx] || "";
-        const max = new Date(year, monthIdx + 1, 0).getDate();
-        await reply(
-          client,
-          chatId,
-          getLang(chatId) === "en"
-            ? `📅 Availability for ${
-                monthNameEn || "this month"
-              }:\nPlease choose a day (1-${max}).`
-            : `📅 Disponibilità per ${
-                monthNameIt || "questo mese"
-              }:\nScegli un giorno (1-${max}).`
+      state.step = "pick_professional";
+      await reply(client, chatId, askProfessional(col.service));
+      pending.set(chatId, state);
+      return "";
+    }
+  }
+
+  // 3.1 — “questa settimana” o “settimana prossima”
+  const weekHintRe = /\b(questa\s+settimana|settimana\s+prossima)\b/i;
+  const monthHintRe = /\b(questo\s+mese|prossimo\s+mese)\b/i;
+
+  if (weekHintRe.test(t)) {
+    const days =
+      typeof listNextWeekDays === "function" ? listNextWeekDays() : [];
+    if (days.length) {
+      state.availFlow = { mode: "week", days, awaiting: "day" };
+      pending.set(chatId, state);
+
+      const lines = days
+        .map((d, i) => {
+          const giornoNum = String(d.getDate()).padStart(2, "0");
+          const wdName =
+            typeof itaWeekdayName === "function"
+              ? itaWeekdayName(d)
+              : d.toLocaleDateString("it-IT", { weekday: "long" });
+          return `${i + 1}) ${giornoNum} ${wdName}`;
+        })
+        .join("\n");
+
+      await reply(
+        client,
+        chatId,
+        `🔎 Modalità disponibilità (settimana prossima).\nScegli un giorno:\n${lines}\n(1-${days.length})`
+      );
+      return "";
+    }
+  }
+
+  // 3.2 — “questo mese” o “prossimo mese”
+  if (monthHintRe.test(t)) {
+    const base = new Date();
+    if (/prossim/i.test(t)) base.setMonth(base.getMonth() + 1);
+
+    const year = base.getFullYear();
+    const monthIdx = base.getMonth();
+
+    state.availFlow = { mode: "month", year, monthIdx, awaiting: "day" };
+    pending.set(chatId, state);
+
+    const mesiIt = [
+      "gennaio",
+      "febbraio",
+      "marzo",
+      "aprile",
+      "maggio",
+      "giugno",
+      "luglio",
+      "agosto",
+      "settembre",
+      "ottobre",
+      "novembre",
+      "dicembre",
+    ];
+    const nomeMese = mesiIt[monthIdx] || "";
+    const max = new Date(year, monthIdx + 1, 0).getDate();
+
+    await reply(
+      client,
+      chatId,
+      `📅 Disponibilità per ${nomeMese}:\nScegli un giorno (1-${max}).`
+    );
+    return "";
+  }
+
+  // 3.3 — Parsing libero della data utente:
+  // "domani", "lunedì prossimo", "tra 2 giorni", "23/10", "28 ottobre", ecc.
+  const parsedDate =
+    (typeof parseRelativeDay === "function"
+      ? parseRelativeDay(msg)
+      : null) ||
+    (typeof parseCtxDay === "function" ? parseCtxDay(msg) : null) ||
+    null;
+
+  if (!parsedDate || isNaN(parsedDate)) {
+    await reply(
+      client,
+      chatId,
+      `Data non valida. Scrivi "domani" oppure "GG/MM".`
+    );
+    return "";
+  }
+
+  // 3.4 — Normalizza la data a mezzogiorno
+  const day =
+    typeof atNoon === "function"
+      ? atNoon(parsedDate)
+      : new Date(
+          parsedDate.getFullYear(),
+          parsedDate.getMonth(),
+          parsedDate.getDate(),
+          12,
+          0,
+          0,
+          0
         );
-        return "";
-      }
-      // Parsing data (oggi, domani, GG/MM)
-      const d =
-        typeof parseRelativeDay === "function" ? parseRelativeDay(text) : null;
-      const parsed =
-        d || (typeof parseCtxDay === "function" ? parseCtxDay(text) : null);
-      if (!parsed || isNaN(parsed)) {
-        if (getLang(chatId) === "en") {
-          await reply(
-            client,
-            chatId,
-            `Data non valida. Usa "domani" o "GG/MM".`
-          );
-        } else {
-          await reply(
-            client,
-            chatId,
-            `Data non valida. Usa "domani" o "GG/MM".`
-          );
-        }
-        return "";
-      }
-      const day =
-        typeof atNoon === "function"
-          ? atNoon(parsed)
-          : new Date(
-              parsed.getFullYear(),
-              parsed.getMonth(),
-              parsed.getDate(),
-              12,
-              0,
-              0,
-              0
-            );
-      if (typeof isPast === "function" && isPast(day)) {
-        if (getLang(chatId) === "en") {
-          await reply(
-            client,
-            chatId,
-            `La data è nel passato. Scegli un’altra data.`
-          );
-        } else {
-          await reply(
-            client,
-            chatId,
-            `La data è nel passato. Scegli un’altra data.`
-          );
-        }
-        return "";
-      }
-      col.when = day;
-      // Recupera gli slot disponibili per quel giorno
-      const duration =
-        typeof cfgServiceDuration === "function"
-          ? cfgServiceDuration(col.service) || 30
-          : 30;
-      const professional = col.professionalAny
-        ? null
-        : col.professionalEmail || col.professionalName || null;
-      const list = await fetchSlots({
-        service: col.service,
-        day: typeof atNoon === "function" ? atNoon(col.when) : col.when,
-        duration,
-        professional,
-        wantDetail: true,
-      });
-      const slots =
-        typeof normalizeSlotsDetail === "function"
-          ? normalizeSlotsDetail(list)
-          : list;
-      if (!slots || !slots.length) {
-        const dayStr =
-          typeof fmtDate === "function"
-            ? fmtDate(col.when)
-            : col.when.toLocaleDateString();
-        col.when = null;
-        state.step = "choose_day";
-        if (getLang(chatId) === "en") {
-          await reply(
-            client,
-            chatId,
-            `Nessuno slot disponibile per ${dayStr}. Prova un altro giorno.`
-          );
-        } else {
-          await reply(
-            client,
-            chatId,
-            `Nessuno slot disponibile per ${dayStr}. Prova un altro giorno.`
-          );
-        }
-        return "";
-      }
-      col.options = slots;
-      state.step = "pick_time";
-      // Elenco orari disponibili per il giorno scelto
-      const lines = slots
-        .map((s, i) => {
-          const prosNames =
-            s.pros && s.pros.length
-              ? ` (${s.pros.map((p) => p.name).join(", ")})`
-              : "";
-          return `${i + 1}) ${s.time}${prosNames}`;
-        })
-        .join("\n");
-      await reply(
-        client,
-        chatId,
-        tr(
-          chatId,
-          "CHOOSE_SLOT_FOR_DAY",
-          typeof fmtDate === "function"
-            ? fmtDate(col.when)
-            : col.when.toLocaleDateString(),
-          lines,
-          slots.length
-        )
-      );
-      pending.set(chatId, state);
-      return "";
-    }
 
-    // 4) SCELTA DELL'ORARIO
-if (!col.time || state.step === "pick_time") {
+  // 3.5 — Blocca date nel passato
+  if (typeof isPast === "function" && isPast(day)) {
+    await reply(
+      client,
+      chatId,
+      `La data è nel passato. Scegli un’altra data.`
+    );
+    return "";
+  }
 
-  // Se siamo in pick_time ma non abbiamo ancora gli slot, caricali adesso
-  if ((!col.options || !col.options.length) && col.when && col.service) {
-    const duration = typeof cfgServiceDuration === "function"
-      ? (cfgServiceDuration(col.service) || 30)
+  // 3.6 — Salva il giorno scelto
+  col.when = day;
+
+  // 3.7 — Recupera gli slot di quel giorno
+  const duration =
+    typeof cfgServiceDuration === "function"
+      ? cfgServiceDuration(col.service) || 30
       : 30;
-    const professional = col.professionalAny
-      ? null
-      : (col.professionalEmail || col.professionalName || null);
 
-    const list = await fetchSlots({
-      service: col.service,
-      day: (typeof atNoon === "function" ? atNoon(col.when) : col.when),
-      duration,
-      professional,
-      wantDetail: true,
-    });
+  const professional = col.professionalAny
+    ? null
+    : col.professionalEmail || col.professionalName || null;
 
-    const slots = (typeof normalizeSlotsDetail === "function"
-      ? normalizeSlotsDetail(list)
-      : list) || [];
+  const rawList = await fetchSlots({
+    service: col.service,
+    day: typeof atNoon === "function" ? atNoon(col.when) : col.when,
+    duration,
+    professional,
+    wantDetail: true, // [{time:"15:30", pros:[{name,email}...]}]
+  });
 
-    col.options = Array.isArray(slots) ? slots : [];
+  const slots =
+    (typeof normalizeSlotsDetail === "function"
+      ? normalizeSlotsDetail(rawList)
+      : rawList) || [];
 
-    if (!col.options.length) {
-      const dayStr = (typeof fmtDate === "function"
+  // 3.8 — Nessuno slot libero per quel giorno
+  if (!slots.length) {
+    const dayStr =
+      typeof fmtDate === "function"
         ? fmtDate(col.when)
-        : (col.when?.toLocaleDateString?.() || ""));
-      col.when = null;
-      state.step = "choose_day";
-      await reply(client, chatId, `Nessuno slot disponibile per ${dayStr}. Prova un altro giorno.`);
-      pending.set(chatId, state);
-      return "";
-    }
+        : col.when.toLocaleDateString();
 
-    // Se abbiamo appena caricato gli slot e l'utente NON ha scritto un numero,
-    // ristampiamo la lista e restiamo in pick_time.
-    if (!pureNumber.test(text)) {
-      const lines = col.options
-        .map((s, i) => {
-          const prosNames = s.pros && s.pros.length
-            ? ` (${s.pros.map((p) => p.name).join(", ")})`
-            : "";
-          return `${i + 1}) ${s.time}${prosNames}`;
-        })
-        .join("\n");
-      await reply(
-        client,
-        chatId,
-        tr(
-          chatId,
-          "CHOOSE_SLOT_FOR_DAY",
-          (typeof fmtDate === "function" ? fmtDate(col.when) : col.when.toLocaleDateString()),
-          lines,
-          col.options.length
-        )
-      );
-      pending.set(chatId, state);
-      return "";
-    }
+    col.when = null;
+    state.step = "choose_day";
+
+    await reply(
+      client,
+      chatId,
+      `Nessuno slot disponibile per ${dayStr}. Prova un altro giorno.`
+    );
+    return "";
   }
 
-  // ---- helpers locali (solo per questo ramo) ----
-  const resolveEmailByName = (nm) => {
-    const tryMap = (typeof proEmailByName === "function" ? proEmailByName(nm) : null);
-    if (tryMap) return tryMap;
-    const profEntry = Object.entries((config && config.professionals) || {})
-      .find(([email, p]) => (typeof simpleNorm === "function" ? simpleNorm(p?.name || "") : String(p?.name || "").toLowerCase())
-        === (typeof simpleNorm === "function" ? simpleNorm(nm) : String(nm || "").toLowerCase()));
-    return profEntry ? profEntry[0] : null;
-  };
+  // 3.9 — Ci sono slot → passiamo a scelta orario
+  col.options = slots;
+  state.step = "pick_time";
 
-  const anyRe = /\b(chiunque|qualsiasi|va\s*bene\s*chiunque|non\s*mi\s*interessa)\b/i;
+  const lineList = slots
+    .map((s, i) => {
+      const prosNames =
+        s.pros && s.pros.length
+          ? ` (${s.pros.map((p) => p.name).join(", ")})`
+          : "";
+      return `${i + 1}) ${s.time}${prosNames}`;
+    })
+    .join("\n");
 
-  const extractProFromText = (raw, preferredList) => {
-    try {
-      const txtN = (typeof simpleNorm === "function" ? simpleNorm(raw) : String(raw||"").toLowerCase());
-      const scan = (arr) => {
-        for (const p of arr) {
-          const nm = (typeof simpleNorm === "function" ? simpleNorm(p?.name || "") : String(p?.name||"").toLowerCase());
-          if (!nm) continue;
-          if ((" " + txtN + " ").includes(" " + nm + " ")) return p;
-        }
-        return null;
-      };
-      // 1) prova prima fra i pros dello slot target
-      if (preferredList && preferredList.length) {
-        const hit = scan(preferredList);
-        if (hit) return hit;
-      }
-      // 2) fallback: catalogo del servizio
-      const pros = (typeof cfgServiceProfessionals === "function" ? (cfgServiceProfessionals(col.service) || []) : [])
-        .map((p) => (typeof p === "string" ? { name: p, email: p } : p))
-        .filter((p) => p && p.name);
-      return scan(pros);
-    } catch { return null; }
-  };
-
-  const hhmmToMin = (s) => {
-    const m = String(s||"").match(/^(\d{1,2}):(\d{2})$/);
-    if (!m) return null;
-    return (+m[1]) * 60 + (+m[2]);
-  };
-
-  // tenta parsing tempo anche “ripulendo” filler (verso/intorno/alle/per le/circa)
-  const cleanedForTime = text.replace(/\b(verso|intorno|circa|per\s+le|alle)\b/gi, " ");
-  const tryParseTime = () =>
-    (typeof parseTimeSmart === "function" ? parseTimeSmart(cleanedForTime) : null) ||
-    (typeof parseHHMM === "function" ? parseHHMM(cleanedForTime) : null);
-
-  // ---- selezione slot ----
-  // ---- selezione slot ----
-let chosenSlot = null;
-
-const tParsed = tryParseTime();
-if (tParsed && col.options && col.options.some((s) => s.time === tParsed)) {
-  chosenSlot = col.options.find((s) => s.time === tParsed);
-} else if (tParsed && col.options && col.options.length) {
-  // tolleranza 30'
-  const target = hhmmToMin(tParsed);
-  if (target != null) {
-    let best = null, bestDiff = 1e9;
-    for (const s of col.options) {
-      const m = hhmmToMin(s.time);
-      if (m == null) continue;
-      const diff = Math.abs(m - target);
-      if (diff < bestDiff) { best = s; bestDiff = diff; }
-    }
-    if (best && bestDiff <= 30) chosenSlot = best;
-  }
-}
-
-if (!chosenSlot) {
-  // ristampa la lista
-  const lines = (col.options || []).map((s, i) => {
-    const prosNames = s.pros && s.pros.length
-      ? ` (${s.pros.map((p) => p.name).join(", ")})`
-      : "";
-    return `${i + 1}) ${s.time}${prosNames}`;
-  }).join("\n");
   await reply(
     client,
     chatId,
     tr(
       chatId,
-      "CHOOSE_SLOT_FOR_DAY",
-      (typeof fmtDate === "function" ? fmtDate(col.when) : col.when.toLocaleDateString()),
-      lines,
-      col.options ? col.options.length : 0
+      "CHOOSE_SLOT_FOR_DAY", // "Per {DATA} scegli un orario:\n{lista}\n(1-{N})"
+      typeof fmtDate === "function"
+        ? fmtDate(col.when)
+        : col.when.toLocaleDateString(),
+      lineList,
+      slots.length
     )
   );
+
+  pending.set(chatId, state);
   return "";
 }
 
-  // --- Fallback robusto: risolvi SEMPRE il professionista PRIMA di procedere ---
+
+// 4) SCELTA DELL'ORARIO
+if (!col.time || state.step === "pick_time") {
+  // Assicura che siamo nello step giusto
+  state.step = "pick_time";
+
+  // helper locali
+  const renderSlotsList = () => {
+    return (col.options || [])
+      .map((slot, i) => {
+        const prosNames =
+          slot.pros && slot.pros.length
+            ? ` (${slot.pros.map((p) => p.name).join(", ")})`
+            : "";
+        return `${i + 1}) ${slot.time}${prosNames}`;
+      })
+      .join("\n");
+  };
+
+  const hhmmToMin = (s) => {
+    const m = String(s || "").match(/^(\d{1,2}):(\d{2})$/);
+    if (!m) return null;
+    return (+m[1]) * 60 + (+m[2]);
+  };
+
+  // parsing dell'orario da testo naturale ("alle 3", "15:30", "3 e mezza" ecc)
+  // pulizia filler tipo "verso le", "intorno alle", ecc
+  const cleanedForTime = msg.replace(
+    /\b(verso|intorno|circa|per\s+le|alle)\b/gi,
+    " "
+  );
+  const tryParseTime = () =>
+    (typeof parseTimeSmart === "function"
+      ? parseTimeSmart(cleanedForTime)
+      : null) ||
+    (typeof parseHHMM === "function"
+      ? parseHHMM(cleanedForTime)
+      : null);
+
+  // resolveEmailByName: da nome umano -> email professionista
+  const resolveEmailByName = (nm) => {
+    const tryMap =
+      typeof proEmailByName === "function" ? proEmailByName(nm) : null;
+    if (tryMap) return tryMap;
+
+    const profEntry = Object.entries(
+      (config && config.professionals) || {}
+    ).find(([email, p]) => {
+      const a =
+        typeof simpleNorm === "function"
+          ? simpleNorm(p?.name || "")
+          : String(p?.name || "").toLowerCase();
+      const b =
+        typeof simpleNorm === "function"
+          ? simpleNorm(nm)
+          : String(nm || "").toLowerCase();
+      return a === b;
+    });
+    return profEntry ? profEntry[0] : null;
+  };
+
+  // true se l'utente ha detto "chiunque", "qualsiasi", ecc
+  const anyRe =
+    /\b(chiunque|qualsiasi|va\s*bene\s*chiunque|non\s*mi\s*interessa)\b/i;
+
+  // dato un testo utente e una lista di pro disponibili
+  // prova a capire se ha già nominato uno dei professionisti
+  const extractProFromText = (raw, preferredList) => {
+    try {
+      const txtN =
+        typeof simpleNorm === "function"
+          ? simpleNorm(raw)
+          : String(raw || "").toLowerCase();
+
+      const scan = (arr) => {
+        for (const p of arr) {
+          const nm =
+            typeof simpleNorm === "function"
+              ? simpleNorm(p?.name || "")
+              : String(p?.name || "").toLowerCase();
+          if (!nm) continue;
+          if ((" " + txtN + " ").includes(" " + nm + " ")) return p;
+        }
+        return null;
+      };
+
+      // prima controlla i pro dello slot scelto
+      if (preferredList && preferredList.length) {
+        const hit = scan(preferredList);
+        if (hit) return hit;
+      }
+
+      // fallback: tutti i pro per quel servizio
+      const pros = (
+        typeof cfgServiceProfessionals === "function"
+          ? cfgServiceProfessionals(col.service) || []
+          : []
+      )
+        .map((p) =>
+          typeof p === "string" ? { name: p, email: p } : p
+        )
+        .filter((p) => p && p.name);
+
+      return scan(pros);
+    } catch {
+      return null;
+    }
+  };
+
+  // carica gli slot se ancora non li abbiamo in memoria
+  if (
+    (!col.options || !col.options.length) &&
+    col.when &&
+    col.service
+  ) {
+    const duration =
+      typeof cfgServiceDuration === "function"
+        ? cfgServiceDuration(col.service) || 30
+        : 30;
+
+    const professional = col.professionalAny
+      ? null
+      : col.professionalEmail || col.professionalName || null;
+
+    const list = await fetchSlots({
+      service: col.service,
+      day:
+        typeof atNoon === "function" ? atNoon(col.when) : col.when,
+      duration,
+      professional,
+      wantDetail: true,
+    });
+
+    const slots =
+      (typeof normalizeSlotsDetail === "function"
+        ? normalizeSlotsDetail(list)
+        : list) || [];
+
+    col.options = Array.isArray(slots) ? slots : [];
+
+    // nessun orario libero
+    if (!col.options.length) {
+      const dayStr =
+        typeof fmtDate === "function"
+          ? fmtDate(col.when)
+          : col.when?.toLocaleDateString?.() || "";
+      col.when = null;
+      state.step = "choose_day";
+
+      await reply(
+        client,
+        chatId,
+        `Non ci sono orari liberi per ${dayStr}. Dimmi un altro giorno (tipo "domani", "sabato", "5 novembre").`
+      );
+
+      pending.set(chatId, state);
+      return "";
+    }
+  }
+
+  // a questo punto col.options esiste ed è una lista di slot disponibili
+
+  // prova prima scelta numerica pura tipo "2", "2)", "3."
+  let chosenSlot = null;
+  if (pureNumber.test(msg) && Array.isArray(col.options)) {
+    const n = parseInt(msg, 10);
+    if (n >= 1 && n <= col.options.length) {
+      chosenSlot = col.options[n - 1];
+    } else {
+      // numero fuori range
+      await reply(
+        client,
+        chatId,
+        `Numero non valido. Scegli tra 1 e ${col.options.length}.`
+      );
+      return "";
+    }
+  }
+
+  // se non è stato scelto via numero, prova con l'orario digitato
+  if (!chosenSlot && Array.isArray(col.options)) {
+    const tParsed = tryParseTime(); // es "15:30"
+    if (tParsed) {
+      // match secco
+      const exact = col.options.find((s) => s.time === tParsed);
+      if (exact) {
+        chosenSlot = exact;
+      } else {
+        // altrimenti prende quello più vicino entro 30 minuti
+        const target = hhmmToMin(tParsed);
+        if (target != null) {
+          let best = null;
+          let bestDiff = 1e9;
+          for (const s of col.options) {
+            const m = hhmmToMin(s.time);
+            if (m == null) continue;
+            const diff = Math.abs(m - target);
+            if (diff < bestDiff) {
+              best = s;
+              bestDiff = diff;
+            }
+          }
+          if (best && bestDiff <= 30) chosenSlot = best;
+        }
+      }
+    }
+  }
+
+  // se ancora nessuna scelta valida
+  if (!chosenSlot) {
+    const dayLabel =
+      typeof fmtDate === "function"
+        ? fmtDate(col.when)
+        : col.when.toLocaleDateString();
+    const lines = renderSlotsList();
+
+    await reply(
+      client,
+      chatId,
+      `📅 Disponibilità per ${dayLabel}:\n${lines}\nScrivi il numero (1-${col.options.length}) oppure un orario tipo "14:30".`
+    );
+
+    pending.set(chatId, state);
+    return "";
+  }
+
+  // abbiamo uno slot scelto
+  col.time = chosenSlot.time;
+
+  // --- risoluzione professionista prima di proseguire ---
   const ensureProFromSlot = async () => {
+    // se nello slot ci sono pro espliciti
     if (chosenSlot.pros && chosenSlot.pros.length) {
+      // 1 solo pro -> auto assegna
       if (chosenSlot.pros.length === 1) {
         const only = chosenSlot.pros[0];
         col.professionalName = only.name;
-        col.professionalEmail = only.email || resolveEmailByName(only.name) || null;
+        col.professionalEmail =
+          only.email || resolveEmailByName(only.name) || null;
         col.professionalAny = false;
         return "one";
-      } else {
-        // se nel messaggio c'è il nome, auto-seleziona
-        const pick = extractProFromText(msg, chosenSlot.pros);
-        if (pick) {
-          col.professionalName = pick.name;
-          col.professionalEmail = pick.email || resolveEmailByName(pick.name) || null;
-          col.professionalAny = false;
-          return "one";
-        }
-        // se l'utente ha scritto “chiunque”
-        if (anyRe.test(msg)) {
-          col.professionalAny = true;
-          return "any";
-        }
-        // altrimenti chiedi scelta numerica
-        col.time = chosenSlot.time;
-        col.proOptions = chosenSlot.pros.slice();
-        state.step = "pick_professional_for_time";
-        const list = chosenSlot.pros.map((p, i) => `${i + 1}) ${p.name}`).join("\n");
-        await reply(client, chatId, tr(chatId, "CHOOSE_PRO_FOR_TIME", chosenSlot.time, list, chosenSlot.pros.length));
-        pending.set(chatId, state);
-        return "ask";
       }
+
+      // più pro possibili
+      // prova a capire se l'utente ha già scritto un nome
+      const pick = extractProFromText(msg, chosenSlot.pros);
+      if (pick) {
+        col.professionalName = pick.name;
+        col.professionalEmail =
+          pick.email || resolveEmailByName(pick.name) || null;
+        col.professionalAny = false;
+        return "one";
+      }
+
+      // se l'utente ha detto "chiunque"
+      if (anyRe.test(msg)) {
+        col.professionalAny = true;
+        return "any";
+      }
+
+      // altrimenti chiedi la scelta del pro
+      col.proOptions = chosenSlot.pros.slice();
+      state.step = "pick_professional_for_time";
+
+      const prosList = chosenSlot.pros
+        .map((p, i) => `${i + 1}) ${p.name}`)
+        .join("\n");
+
+      await reply(
+        client,
+        chatId,
+        `Chi preferisci alle ${chosenSlot.time}?\n${prosList}\nRispondi con un numero (1-${chosenSlot.pros.length}).`
+      );
+
+      pending.set(chatId, state);
+      return "ask";
     }
-    // Nessuna info pro nello slot: prova catalogo del servizio
+
+    // slot senza lista pro
+    // prova a inferire dal testo
     const pick = extractProFromText(msg, []);
     if (pick) {
       col.professionalName = pick.name;
-      col.professionalEmail = pick.email || resolveEmailByName(pick.name) || null;
+      col.professionalEmail =
+        pick.email || resolveEmailByName(pick.name) || null;
       col.professionalAny = false;
       return "one";
     }
+
+    // "chiunque"
     if (anyRe.test(msg)) {
       col.professionalAny = true;
       return "any";
     }
+
+    // nessuna info pro ancora
     return "none";
   };
 
-  // Assegna l'orario
-  col.time = chosenSlot.time;
-
-  // Risolvi il professionista in base al messaggio/slot se non già presente
+  // se non abbiamo ancora un professionista fissato, prova a fissarlo
   if (!col.professionalEmail && !col.professionalName) {
     const mode = await ensureProFromSlot();
-    if (mode === "ask") return ""; // abbiamo chiesto la scelta e fermiamo qui
+    // se abbiamo chiesto il numero del professionista allo user usciamo qui
+    if (mode === "ask") return "";
   }
 
-  // Se c'è esattamente un pro nello slot e l'utente aveva detto "chiunque", assegna automaticamente
-  if (col.professionalAny && chosenSlot.pros && chosenSlot.pros.length === 1) {
+  // se l'utente aveva detto "chiunque" ma lo slot ha in realtà un solo pro, auto assegna
+  if (
+    col.professionalAny &&
+    chosenSlot.pros &&
+    chosenSlot.pros.length === 1
+  ) {
     const onlyPro = chosenSlot.pros[0];
     col.professionalName = onlyPro.name;
-    col.professionalEmail = onlyPro.email || resolveEmailByName(onlyPro.name) || null;
+    col.professionalEmail =
+      onlyPro.email || resolveEmailByName(onlyPro.name) || null;
     col.professionalAny = false;
   }
 
-  // Verifica allergie per il servizio scelto
-  const allergens = (typeof cfgAllergensForService === "function" ? cfgAllergensForService(col.service) : []) || [];
+  // ora siamo pronti per eventuale check allergie
+  const allergens =
+    (typeof cfgAllergensForService === "function"
+      ? cfgAllergensForService(col.service)
+      : []) || [];
+
   if (allergens.length) {
     state.step = "ask_allergies";
     pending.set(chatId, state);
+
+    const dayLabel =
+      typeof fmtDate === "function"
+        ? fmtDate(col.when)
+        : col.when.toLocaleDateString();
+    const proName = col.professionalName
+      ? ` con ${col.professionalName}`
+      : "";
+
     await reply(
       client,
       chatId,
-      `Allergie rilevanti per "${col.service}": ${allergens.join(", ")}. Sei allergico? (sì/no)`
+      `Perfetto. Ti tengo ${col.service} il ${dayLabel} alle ${col.time}${proName}.\nPrima di confermare devo chiederti una cosa veloce.\nAllergie rilevanti: ${allergens.join(
+        ", "
+      )}.\nSei allergico? (sì/no)`
+    );
+
+    return "";
+  }
+
+  // se non servono allergie andremo avanti con la finalizzazione più avanti
+}
+
+// 4b) SCELTA PROFESSIONISTA PER QUELL'ORARIO (se richiesta sopra)
+if (state.step === "pick_professional_for_time") {
+  const prosList = col.proOptions || [];
+  const count = prosList.length;
+
+  if (!pureNumber.test(msg)) {
+    await reply(
+      client,
+      chatId,
+      `Scegli il professionista con un numero (1-${count}).`
     );
     return "";
   }
-  // Nessuna domanda allergie: procede alla prenotazione
+
+  const n = parseInt(msg, 10);
+  if (!(n >= 1 && n <= count)) {
+    await reply(
+      client,
+      chatId,
+      `Numero non valido. Scegli tra 1 e ${count}.`
+    );
+    return "";
+  }
+
+  const chosenPro = prosList[n - 1];
+  if (!chosenPro) {
+    await reply(client, chatId, `Scelta non valida. Riprova.`);
+    return "";
+  }
+
+  col.professionalAny = false;
+  col.professionalName = chosenPro.name;
+  col.professionalEmail = chosenPro.email || null;
+
+  // dopo aver scelto il pro chiedi subito allergie (se ci sono)
+  const allergens =
+    (typeof cfgAllergensForService === "function"
+      ? cfgAllergensForService(col.service)
+      : []) || [];
+
+  if (allergens.length) {
+    state.step = "ask_allergies";
+    pending.set(chatId, state);
+
+    const dayLabel =
+      typeof fmtDate === "function"
+        ? fmtDate(col.when)
+        : col.when.toLocaleDateString();
+    const proName = col.professionalName
+      ? ` con ${col.professionalName}`
+      : "";
+
+    await reply(
+      client,
+      chatId,
+      `Perfetto. Ti tengo ${col.service} il ${dayLabel} alle ${col.time}${proName}.\nAllergie rilevanti: ${allergens.join(
+        ", "
+      )}.\nSei allergico? (sì/no)`
+    );
+    return "";
+  }
+
+  // se niente allergie continuiamo nel flow standard dopo
 }
 
-    // 4b) SCELTA PROFESSIONISTA PER ORARIO (se richiesta)
-    if (state.step === "pick_professional_for_time") {
-      if (!pureNumber.test(msg)) {
-        const count = (col.proOptions || []).length;
-        if (getLang(chatId) === "en") {
-          await reply(client, chatId, `Scegli con un numero (1-${count}).`);
-        } else {
-          await reply(client, chatId, `Scegli con un numero (1-${count}).`);
-        }
-        return "";
-      }
-      const n = parseInt(msg, 10);
-      const prosList = col.proOptions || [];
-      if (!(n >= 1 && n <= prosList.length)) {
-        if (getLang(chatId) === "en") {
-          await reply(
-            client,
-            chatId,
-            `Numero non valido (1-${prosList.length}).`
-          );
-        } else {
-          await reply(
-            client,
-            chatId,
-            `Numero non valido (1-${prosList.length}).`
-          );
-        }
-        return "";
-      }
-      const chosenPro = prosList[n - 1];
-      if (!chosenPro) {
-        if (getLang(chatId) === "en") {
-          await reply(client, chatId, `Scelta non valida, riprova.`);
-        } else {
-          await reply(client, chatId, `Scelta non valida, riprova.`);
-        }
-        return "";
-      }
-      col.professionalAny = false;
-      col.professionalName = chosenPro.name;
-      col.professionalEmail = chosenPro.email || null;
-      // Dopo scelta pro per orario, verifica allergie
-      const allergens =
-        (typeof cfgAllergensForService === "function"
-          ? cfgAllergensForService(col.service)
-          : []) || [];
-      if (allergens.length) {
-        state.step = "ask_allergies";
-        pending.set(chatId, state);
-        await reply(
-          client,
-          chatId,
-          getLang(chatId) === "en"
-            ? `Allergie rilevanti per "${col.service}": ${allergens.join(
-                ", "
-              )}. Sei allergico? (sì/no)`
-            : `Allergie rilevanti per "${col.service}": ${allergens.join(
-                ", "
-              )}. Sei allergico? (sì/no)`
-        );
-        return "";
-      }
-      // Nessuna allergia, si procede alla finalizzazione
-    }
+// 5) GESTIONE ALLERGIE
+if (state.step === "ask_allergies") {
+  const yes = /\b(si|sì|y|yes|vero|true)\b/i.test(msg);
+  const no = /\b(no|false|falso)\b/i.test(msg);
 
-    // 5) GESTIONE ALLERGIE (se previsto)
-    if (state.step === "ask_allergies") {
-      const yes = /\b(si|sì|y|yes|vero|true)\b/i.test(msg);
-      const no = /\b(no|false|falso)\b/i.test(msg);
-      if (!yes && !no) {
-        if (getLang(chatId) === "en") {
-          await reply(
-            client,
-            chatId,
-            `Rispondi "sì" o "no" sulle allergie, grazie.`
-          );
-        } else {
-          await reply(
-            client,
-            chatId,
-            `Rispondi "sì" o "no" sulle allergie, grazie.`
-          );
-        }
-        return "";
-      }
-      col.allergies = {
-        has: !!yes,
-        list: yes
-          ? (typeof cfgAllergensForService === "function"
-              ? cfgAllergensForService(col.service)
-              : []) || []
-          : [],
-      };
-      // Tutte le info raccolte, pronta la conferma finale
-    }
+  if (!yes && !no) {
+    await reply(
+      client,
+      chatId,
+      `Rispondi "sì" o "no" sulle allergie, grazie.`
+    );
+    return "";
+  }
+
+  col.allergies = {
+    has: !!yes,
+    list: yes
+      ? (typeof cfgAllergensForService === "function"
+          ? cfgAllergensForService(col.service)
+          : []) || []
+      : [],
+  };
+
+  // a questo punto abbiamo tutto per andare alla conferma finale nel passo successivo
+}
+
 
     // 6) CREAZIONE FINALE APPUNTAMENTO
     if (!col.service || !col.when || !col.time) {
