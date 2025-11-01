@@ -1,0 +1,3212 @@
+<!DOCTYPE html>
+<html lang="it" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>synkris - dashboard</title>
+<link rel="manifest" href="data:application/manifest+json;base64,eyJuYW1lIjoic3lua3JpcyBEYXNoYm9hcmQiLCJzaG9ydF9uYW1lIjoic3lua3JpcyIsInN0YXJ0X3VybCI6Ii4iLCJkaXNwbGF5Ijoic3RhbmRhbG9uZSIsInRoZW1lX2NvbG9yIjoiIzI1NjNlYiIsImJhY2tncm91bmRfY29sb3IiOiIjMGIxMDIwIiwiaWNvbnMiOltdfQ==">
+</head>
+<style>
+  /* ==== PATCH CLICK SIDEBAR ==== */
+aside, aside * {
+  pointer-events: auto !important;
+}
+aside {
+  position: sticky;
+  z-index: 9999 !important;       /* sopra tutto */
+}
+
+/* Lo scrim NON intercetta click se il menu non è aperto */
+.nav-scrim {
+  pointer-events: none !important;
+}
+body[data-nav="open"] .nav-scrim {
+  display: block !important;
+  pointer-events: auto !important; /* clic per chiudere */
+}
+
+/* Mostra l'hamburger sotto 900px (senza .menu-btn) */
+@media (max-width: 900px) {
+  #hamburger {
+    display: inline-flex !important;
+    align-items: center; justify-content: center;
+    min-height: 42px; padding: 10px 14px;
+    border-radius: 12px; border: 1px solid var(--line);
+    background: var(--panel-solid); font-weight: 700;
+    z-index: 10000; /* sopra topbar */
+  }
+  /* Off-canvas deciso: la sidebar scorre da sinistra */
+  aside {
+    position: fixed !important;
+    top: 0; left: 0; width: 280px; height: 100dvh;
+    transform: translateX(-110%);
+    transition: transform .25s ease;
+    border-right: 1px solid var(--line);
+  }
+  body[data-nav="open"] aside { transform: translateX(0); }
+}
+
+/* ===== Home KPI Card ===== */
+.home-kpi{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin:12px 0}
+.kpi{background:var(--panel,#131a2a);border:1px solid var(--line,#243047);border-radius:12px;padding:12px;box-shadow:var(--shadow,0 10px 25px rgba(0,0,0,.06))}
+.kpi h4{margin:0 0 6px 0;font-size:14px}
+.kpi .val{font-size:20px;font-weight:800}
+.kpi .sub{font-size:12px;color:var(--muted,#9aa4b2)}
+
+/* ===== Billing — Analytics Cards ===== */
+.billing-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin:12px 0}
+.bill-card{background:var(--panel,#131a2a);border:1px solid var(--line,#243047);border-radius:12px;padding:12px;box-shadow:var(--shadow,0 10px 25px rgba(0,0,0,.06))}
+.bill-card h4{margin:0 0 8px 0;font-size:14px}
+.bill-val{font-size:18px;font-weight:800}
+.bill-sub{font-size:12px;color:var(--muted,#9aa4b2)}
+.bill-table{width:100%;border-collapse:separate;border-spacing:0 8px}
+.bill-table td{padding:6px 8px;border-bottom:1px solid var(--line,#243047)}
+.bill-table tr:last-child td{border-bottom:none}
+.bill-right{text-align:right;font-variant-numeric:tabular-nums}
+.badge{display:inline-block;padding:2px 8px;border-radius:999px;border:1px solid var(--line,#243047);font-size:12px}
+
+  /* ============ Liquid Glass — Dark/Light + Full Responsive ============ */
+
+/* Tokens / base */
+:root {
+  --radius-sm: 10px;
+  --radius: 14px;
+  --radius-lg: 22px;
+
+  /* Dark default */
+  --bg: #0b1020;
+  --panel-solid: #121a2b;              /* fallback senza blur */
+  --text: #e6ebf5;
+  --muted: #a9b4c6;
+  --line: #1f2a44;
+  --brand: #60a5fa;
+
+  --glass: rgba(17, 25, 40, .55);      /* layer traslucido */
+  --glass-strong: rgba(17, 25, 40, .7);
+  --stroke: rgba(255, 255, 255, .08);  /* bordo “frosted” */
+  --shadow: 0 20px 45px rgba(0,0,0,.45), inset 0 0 0 1px rgba(255,255,255,.05);
+  --shadow-sm: 0 8px 24px rgba(0,0,0,.35), inset 0 0 0 1px rgba(255,255,255,.05);
+  --blur: 18px;
+
+  --space: 12px; /* grid spacing */
+
+  /* Safe-area iOS/Android */
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+/* Prefer dark by default */
+:root, [data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0b1020;
+  --panel-solid: #121a2b;
+  --text: #e6ebf5;
+  --muted: #a9b4c6;
+  --line: #1f2a44;
+  --brand: #60a5fa;
+
+  --glass: rgba(17, 25, 40, .55);
+  --glass-strong: rgba(17, 25, 40, .7);
+  --stroke: rgba(255, 255, 255, .08);
+  --shadow: 0 20px 45px rgba(0,0,0,.45), inset 0 0 0 1px rgba(255,255,255,.05);
+  --shadow-sm: 0 8px 24px rgba(0,0,0,.35), inset 0 0 0 1px rgba(255,255,255,.05);
+}
+
+/* Light theme override */
+[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f5f7fb;
+  --panel-solid: #ffffffee;
+  --text: #0f172a;
+  --muted: #6b7280;
+  --line: #e5e7eb;
+  --brand: #2563eb;
+
+  --glass: rgba(255, 255, 255, .65);
+  --glass-strong: rgba(255, 255, 255, .78);
+  --stroke: rgba(0, 0, 0, .08);
+  --shadow: 0 18px 40px rgba(15, 23, 42, .12), inset 0 0 0 1px rgba(255,255,255,.6);
+  --shadow-sm: 0 10px 26px rgba(15, 23, 42, .10), inset 0 0 0 1px rgba(255,255,255,.6);
+}
+
+/* Auto theme (opzionale): usare data-theme="auto" per seguire il sistema */
+[data-theme="auto"] { /* default = dark vars sopra */
+}
+@media (prefers-color-scheme: light) {
+  [data-theme="auto"] {
+    color-scheme: light;
+    --bg: #f5f7fb;
+    --panel-solid: #ffffffee;
+    --text: #0f172a;
+    --muted: #6b7280;
+    --line: #e5e7eb;
+    --brand: #2563eb;
+    --glass: rgba(255, 255, 255, .65);
+    --glass-strong: rgba(255, 255, 255, .78);
+    --stroke: rgba(0, 0, 0, .08);
+    --shadow: 0 18px 40px rgba(15, 23, 42, .12), inset 0 0 0 1px rgba(255,255,255,.6);
+    --shadow-sm: 0 10px 26px rgba(15, 23, 42, .10), inset 0 0 0 1px rgba(255,255,255,.6);
+  }
+}
+
+/* Reset leggero + motion */
+* { box-sizing: border-box }
+html, body { margin: 0; padding: 0 }
+*,
+*::before,
+*::after {
+  transition: background-color .2s ease, color .2s ease, border-color .2s ease, box-shadow .2s ease, transform .15s ease;
+}
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; }
+}
+
+/* Body / layout */
+body {
+  background:
+    radial-gradient(1200px 800px at 20% 0%, color-mix(in oklab, var(--brand) 12%, transparent) 0%, transparent 60%),
+    radial-gradient(1000px 600px at 100% 100%, color-mix(in oklab, var(--brand) 10%, transparent) 0%, transparent 55%),
+    var(--bg);
+  color: var(--text);
+  font: 14px/1.45 system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica, Arial;
+  padding-top: var(--safe-top);
+  padding-bottom: var(--safe-bottom);
+}
+
+/* Grid app */
+.app {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  min-height: 100vh;
+  gap: 0;
+}
+
+/* ===== Surfaces (glass fallback + blur quando supportato) ===== */
+.surface {
+  background: var(--panel-solid);
+  border: 1px solid var(--stroke);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+@supports (backdrop-filter: blur(10px)) {
+  .surface { background: var(--glass); backdrop-filter: saturate(140%) blur(var(--blur)); }
+}
+
+/* Aside (nav) */
+aside {
+  position: sticky;
+  top: 0;
+  height: calc(100vh - var(--safe-top));
+  padding: 20px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  border-right: 1px solid var(--line);
+  background: var(--panel-solid);
+  box-shadow: var(--shadow-sm);
+ z-index: 2000;}
+@supports (backdrop-filter: blur(10px)) {
+  aside { background: var(--glass-strong); backdrop-filter: saturate(140%) blur(var(--blur)); }
+}
+
+.brand {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  font-weight: 800;
+  font-size: 18px;
+  letter-spacing: .2px;
+}
+.dot {
+  width: 12px; height: 12px; border-radius: 999px;
+  background: radial-gradient(circle at 30% 30%, #fff 0 20%, transparent 21%), var(--brand);
+  box-shadow: 0 0 18px var(--brand);
+}
+
+.section-title {
+  margin: 10px 0 4px;
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: var(--muted);
+  opacity: .9;
+}
+
+nav .item {
+  padding: 12px 12px;
+  border-radius: 12px;
+  cursor: pointer;
+  color: var(--text);
+  display: flex; align-items: center; gap: 10px;
+  border: 1px solid transparent;
+  min-height: 42px;
+ pointer-events: auto;}
+nav .item:hover {
+  background: color-mix(in oklab, var(--brand) 16%, transparent);
+  border-color: color-mix(in oklab, var(--brand) 30%, transparent);
+}
+nav .item.active {
+  background: color-mix(in oklab, var(--brand) 22%, transparent);
+  border-color: color-mix(in oklab, var(--brand) 45%, transparent);
+  box-shadow: 0 8px 24px color-mix(in oklab, var(--brand) 25%, transparent);
+}
+
+/* Main */
+main { padding: 22px }
+
+/* Topbar / Filters */
+.topbar { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+.range {
+  display: flex; gap: 8px; align-items: center;
+  padding: 8px 10px;
+  border-radius: 12px;
+  border: 1px solid var(--stroke);
+  box-shadow: var(--shadow-sm);
+  background: var(--panel-solid);
+}
+@supports (backdrop-filter: blur(10px)) {
+  .range { background: var(--glass); backdrop-filter: saturate(140%) blur(calc(var(--blur) - 4px)); }
+}
+.range input,
+.range select {
+  border: 1px solid var(--line);
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(255,255,255,.03);
+  color: var(--text);
+  outline: none;
+  min-height: 40px;
+}
+.range input:focus,
+.range select:focus { border-color: var(--brand); box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 30%, transparent) }
+
+/* Buttons */
+.btn {
+  background: linear-gradient(180deg, color-mix(in oklab, var(--brand) 88%, #fff 0%) 0%, var(--brand) 100%);
+  color: #0b1020;
+  border: 1px solid color-mix(in oklab, var(--brand) 65%, #000 0%);
+  padding: 12px 16px;
+  border-radius: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 10px 24px color-mix(in oklab, var(--brand) 30%, transparent);
+  min-height: 44px; /* touch friendly */
+}
+[data-theme="light"] .btn,
+[data-theme="auto"] .btn { color: #ffffff } /* in light il blu è scuro: testo bianco */
+.btn:hover { transform: translateY(-1px) }
+.btn:active { transform: translateY(0); filter: saturate(110%) }
+.btn:focus-visible { outline: none; box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 40%, transparent) }
+
+.btn.ghost {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--line);
+}
+.btn.ghost:hover {
+  background: color-mix(in oklab, var(--brand) 14%, transparent);
+  border-color: color-mix(in oklab, var(--brand) 30%, transparent);
+}
+.btn.neutral {
+  background: linear-gradient(180deg, #2a3347 0%, #1c2436 100%);
+  color: #e6ebf5;
+  border: 1px solid var(--line);
+}
+[data-theme="light"] .btn.neutral { background: linear-gradient(180deg, #f3f4f6 0%, #e5e7eb 100%); color: #111827; border-color: #c5c9d3 }
+
+/* Cards / Surfaces */
+.cards {
+  margin-top: 16px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px;
+}
+.card,
+.chartbox,
+.tablebox,
+.mini-card {
+  background: var(--panel-solid);
+  border: 1px solid var(--stroke);
+  border-radius: var(--radius);
+  padding: 16px;
+  box-shadow: var(--shadow);
+}
+@supports (backdrop-filter: blur(10px)) {
+  .card, .chartbox, .tablebox, .mini-card { background: var(--glass); backdrop-filter: saturate(140%) blur(var(--blur)); }
+}
+.card h3 { margin: 0 0 12px; font-size: 14px; font-weight: 700; letter-spacing: .2px }
+.value { font-size: 38px; font-weight: 800; line-height: 1 }
+
+/* Grids / tables */
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+.tablebox { padding: 10px; overflow: auto }
+table { width: 100%; border-collapse: collapse }
+th, td {
+  text-align: left; padding: 10px 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 80%, transparent);
+  white-space: nowrap;
+}
+th { font-weight: 700; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em }
+th.sortable { cursor: pointer; position: relative }
+th.sortable:after { content: "⇅"; position: absolute; right: 8px; font-size: 11px; color: var(--muted) }
+
+.pill {
+  display: inline-block;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--brand) 18%, transparent);
+  color: #dfeaff;
+  font-weight: 700;
+  font-size: 12px;
+  border: 1px solid color-mix(in oklab, var(--brand) 38%, transparent);
+}
+[data-theme="light"] .pill { color: #0b1b3c }
+
+/* Misc */
+.muted { color: var(--muted) }
+.section-title { color: var(--muted) }
+.action {
+  padding: 10px 12px;
+  border: 1px dashed var(--line);
+  border-radius: 12px;
+  background: rgba(255,255,255,.02);
+  cursor: pointer;
+}
+.action:hover { background: rgba(255,255,255,.04) }
+.trial {
+  background: rgba(255, 200, 0, .08);
+  color: #ffd479;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 200, 0, .25);
+  border-radius: 12px;
+}
+.chartbox { margin-top: 18px }
+.view { display: none }
+.view.active { display: block }
+.toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0; }
+.input {
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255,255,255,.03);
+  color: var(--text);
+  min-height: 40px;
+}
+.input:focus { border-color: var(--brand); box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 30%, transparent) }
+.kbd { background: #1f2937; color:#fff; border-radius: 6px; padding: 2px 6px }
+.badge { border: 1px solid var(--line); padding: 2px 6px; border-radius: 8px; font-size: 12px }
+.warn { color: #fbbf24 } .danger { color:#ef4444 } .ok { color:#10b981 }
+.modal {
+  position: fixed; inset: 0; display: none;
+  align-items: center; justify-content: center; padding: 20px; z-index: 50;
+  background: rgba(0,0,0,.5);
+}
+.modal > div {
+  max-width: 1000px; width: 100%; max-height: 80vh; overflow: auto;
+  background: var(--panel-solid);
+  border: 1px solid var(--stroke);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+}
+@supports (backdrop-filter: blur(10px)) {
+  .modal > div { background: var(--glass); backdrop-filter: saturate(140%) blur(var(--blur)) }
+}
+.hidden { display: none }
+
+/* ========= RESPONSIVE: Desktop → Tablet → Phone ========= */
+
+/* ≤ 1280px: compattiamo leggermente */
+@media (max-width: 1280px) {
+  .app { grid-template-columns: 260px 1fr }
+  .cards { grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)) }
+  main { padding: 20px }
+}
+
+/* ≤ 1024px: layout tablet */
+@media (max-width: 1024px) {
+  .app { grid-template-columns: 240px 1fr }
+  .value { font-size: 34px }
+  .grid { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)) }
+  .range input, .range select, .input { min-height: 38px; padding: 8px 10px }
+  nav .item { min-height: 40px; padding: 10px 10px }
+}
+
+/* ≤ 900px: sidebar diventa “sticky top” e poi off-canvas su mobile */
+@media (max-width: 900px) {
+  .app { grid-template-columns: 1fr }
+  aside {
+    position: sticky; top: 0; height: auto; z-index: 6;
+    border-right: 0; border-bottom: 1px solid var(--line);
+    padding-top: calc(10px + var(--safe-top));
+  }
+  main { padding: 16px }
+  .cards { grid-template-columns: repeat(2, minmax(0,1fr)) }
+  .grid { grid-template-columns: repeat(2, minmax(0,1fr)) }
+}
+
+/* ≤ 768px: phone grande / tablet verticale */
+@media (max-width: 768px) {
+  .cards { grid-template-columns: 1fr 1fr; gap: 12px }
+  .grid { grid-template-columns: 1fr 1fr; gap: 10px }
+  .value { font-size: 30px }
+  .topbar { gap: 8px }
+  .range { width: 100%; flex-wrap: wrap }
+  .range > * { flex: 1 1 160px; min-width: 140px }
+  table { font-size: 13px }
+  th, td { white-space: normal } /* evita overflow orizzontale */
+}
+
+/* ≤ 600px: telefono */
+@media (max-width: 600px) {
+  html { font-size: 15px } /* leggibilità */
+  .cards, .grid { grid-template-columns: 1fr }
+  .brand { font-size: 16px }
+  .btn { width: 100% } /* pulsanti a tutta larghezza dove ha senso */
+  .range > * { flex: 1 1 100% } /* filtri su righe */
+  .tablebox { padding: 6px }
+  th, td { padding: 8px 10px }
+  /* Se la tua tabella è molto larga, nascondi colonne 5+ in ultra-compact:
+     aggiungi .table--compact al container per attivarlo */
+  .table--compact table td:nth-child(n+5),
+  .table--compact table th:nth-child(n+5) { display: none }
+}
+
+/* ≤ 480px: telefono piccolo */
+@media (max-width: 480px) {
+  .value { font-size: 26px }
+  .cards { gap: 10px }
+  .card, .mini-card, .chartbox { padding: 12px; border-radius: 12px }
+  .btn { padding: 12px 14px; border-radius: 10px }
+}
+
+/* Landscape basso: evita sidebar troppo alta */
+@media (orientation: landscape) and (max-height: 480px) {
+  aside { position: static; height: auto }
+  .app { min-height: 100dvh }
+}
+
+/* Touch targets più grandi su dispositivi touch */
+@media (pointer: coarse) {
+  nav .item { min-height: 46px }
+  .btn { min-height: 46px }
+}
+
+/* Off-canvas opzionale (se metti <body data-nav="open"> da JS) */
+@media (max-width: 900px) {
+  body[data-nav="open"] aside {
+    position: fixed; inset: var(--safe-top) 0 auto 0;
+    height: auto; max-height: calc(100dvh - var(--safe-top));
+    border-bottom: 1px solid var(--line);
+  }
+}
+
+
+/* === PATCH: Spacing tweaks + Billing + Filters === */
+.range { gap: 8px !important; }
+.cards { gap: 14px !important; }
+.card, .bill-card { padding: 16px !important; }
+.filters { display:flex; flex-wrap:wrap; gap: 12px; }
+.filters-head { display:flex; align-items:center; gap: 10px; }
+
+/* === PATCH: Sidebar mobile off-canvas + Menu button + Overlay === */
+/* === Sidebar mobile + Hamburger + Scrim (FIX) === */
+#hamburger { display: none; } /* nascosto su desktop */
+.nav-scrim {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,.45);
+  display: none;
+  z-index: 900;           /* sotto la sidebar */
+}
+@media (max-width: 900px) {
+  #hamburger.menu-btn {
+    display: inline-flex;
+    align-items: center; justify-content: center;
+    min-height: 42px; padding: 10px 14px;
+    border-radius: 12px; border: 1px solid var(--line);
+    background: var(--panel-solid); font-weight: 700;
+  }
+
+  /* Off-canvas da sinistra */
+  .app { grid-template-columns: 1fr !important; }
+  aside {
+    position: fixed !important;
+    top: 0; left: 0; width: 280px; height: 100dvh;
+    transform: translateX(-110%);
+    transition: transform .25s ease;
+    z-index: 1000;           /* sopra lo scrim */
+    border-right: 1px solid var(--line);
+    border-bottom: 0 !important;
+  }
+  body[data-nav="open"] aside { transform: translateX(0); }
+  body[data-nav="open"] .nav-scrim { display: block; pointer-events: auto; }
+}
+/* === Sidebar mobile + Hamburger + Scrim — CONSISTENTE === */
+#hamburger { display: none; } /* nascosto su desktop */
+.nav-scrim {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,.45);
+  display: none;                /* visibile solo quando nav=open */
+  z-index: 900;                 /* sotto la sidebar */
+}
+@media (max-width: 900px) {
+  #hamburger.menu-btn {
+    display: inline-flex;
+    align-items: center; justify-content: center;
+    min-height: 42px; padding: 10px 14px;
+    border-radius: 12px; border: 1px solid var(--line);
+    background: var(--panel-solid); font-weight: 700;
+  }
+  .app { grid-template-columns: 1fr !important; }
+  aside {
+    position: fixed !important;
+    top: 0; left: 0; width: 280px; height: 100dvh;
+    transform: translateX(-110%);
+    transition: transform .25s ease;
+    z-index: 1000;              /* sopra lo scrim */
+    border-right: 1px solid var(--line);
+    border-bottom: 0 !important;
+  }
+  body[data-nav="open"] aside { transform: translateX(0); }
+  body[data-nav="open"] .nav-scrim { display: block; pointer-events: auto; }
+}
+
+/* Fix CSS da aggiungere alla fine del <style> esistente */
+/* Mostra il pulsante hamburger e l'effetto off-canvas sotto i 900px */
+@media (max-width: 900px) {
+  #hamburger {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 42px;
+    padding: 10px 14px;
+    border-radius: 12px;
+    border: 1px solid var(--line);
+    background: var(--panel-solid);
+    font-weight: 700;
+  }
+}
+
+</style>
+<body>
+  <div id="navScrim" class="nav-scrim" hidden></div>
+<div class="app">
+  <aside>
+    <div class="brand"><span class="dot"></span> synkris</div>
+    <div><div class="muted" style="font-size:12px;">Diana Eni</div><div style="font-weight:600;">Prova</div></div>
+    <nav id="nav">
+      <div class="item active" data-view="dashboard">Dashboard</div>
+      <div class="item" data-view="billing">Billing</div>
+      <div class="item" data-view="analytics">Analytics</div>
+      <div class="item" data-view="clients">Clienti</div>
+      <div class="item" data-view="services">Servizi</div>
+      <div class="item" data-view="calendar">Calendario</div>
+      <div class="item" data-view="sedi">Sedi</div>
+      <div class="item" data-view="tools">Tools</div>
+      <div class="item" data-view="security">Sicurezza</div>
+      <div class="item" data-view="settings">Settings</div>
+    </nav>
+    <div class="section-title">Azioni</div>
+    <div class="action" id="exportCSV">Esporta CSV</div>
+    <div class="action" id="exportXLS">Esporta Excel (XLS)</div>
+    <div class="action" id="exportPDF">Esporta PDF report</div>
+    <div class="action" id="exportSettings">Esporta settings.json</div>
+    <div class="action" id="toggleTheme">Tema: <span id="themeLabel">Light</span></div>
+    <div class="section-title">Team</div>
+    <div class="muted">DE</div>
+    <div class="trial">Prova scade tra: <span id="trialDays">7</span> giorni</div>
+  </aside>
+  <main>
+    <div class="topbar">
+      <button id="hamburger" class="hamburger" aria-label="Apri menu" aria-expanded="false" aria-controls="nav">
+  <span></span><span></span><span></span>
+</button>
+
+      <div class="range">
+        <input type="date" id="from" />
+        <span>—</span>
+        <input type="date" id="to" />
+        <select id="fStatus">
+          <option value="all">Tutte</option><option value="confirmed">Confermate</option><option value="cancelled">Cancellate</option><option value="no_show">No-show</option>
+        </select>
+        <select id="fService"><option value="">Tutti i servizi</option></select>
+        <select id="fPro"><option value="">Tutti i professionisti</option></select>
+        <select id="fLoc"><option value="">Tutte le sedi</option></select>
+        <select id="fDaypart"><option value="">Tutte le fasce</option><option value="morning">Mattina</option><option value="afternoon">Pomeriggio</option><option value="evening">Sera</option></select>
+        <button class="btn" id="apply">Applica</button>
+      </div>
+      <div class="range">
+        <input id="file" class="hidden" type="file" accept=".json,.ics,text/calendar" multiple />
+<input id="importCfgFile" class="hidden" type="file" accept="application/json" />
+        <button id="upload" class="btn ghost">Importa (JSON/ICS)</button>
+        <button id="reload" class="btn neutral">Ricarica</button>
+        <button id="undo" class="btn neutral" title="Undo (Ctrl+Z)">↶</button>
+        <button id="redo" class="btn neutral" title="Redo (Ctrl+Y)">↷</button>
+        <button id="globalSearchBtn" class="btn neutral" title="Cerca (Ctrl/Cmd+K)">⌘K</button>
+      </div>
+    </div>
+
+    <!-- DASHBOARD -->
+    <section id="view-dashboard" class="view active">
+      <section class="cards">
+        <div class="card"><h3>Appuntamenti <span class="i" title="Confermati nel periodo">ⓘ</span></h3><div class="value" data-kpi="total">0</div></div>
+        <div class="card"><h3>No show</h3><div class="value" data-kpi="noShow">0</div></div>
+        <div class="card"><h3>Cancellazioni</h3><div class="value" data-kpi="cancellations">0</div></div>
+        <div class="card"><h3>Nuovi clienti</h3><div class="value" data-kpi="newClients">0</div></div>
+        <div class="card"><h3>% Ritorno</h3><div class="value" data-kpi="returnRate">0%</div></div>
+        <div class="card"><h3>Overbooking</h3><div class="value" data-kpi="overlaps">0</div></div>
+        <div class="card"><h3>€ / ora aperta</h3><div class="value" data-kpi="revPerOpenHour">€0</div></div>
+        <div class="card"><h3>Costo no-show</h3><div class="value" data-kpi="noShowCost">€0</div></div>
+        <div class="card"><h3>Tempo perso (cancel tardive)</h3><div class="value" data-kpi="lateCancelTime">0h</div></div>
+      </section>
+      <section class="grid" style="margin-top:12px;">
+        <div class="mini-card"><h3 style="margin:0;">Appuntamenti per Giorno</h3><canvas id="dailyChart" height="110"></canvas></div>
+        <div class="mini-card"><h3 style="margin:0;">Heatmap settimanale (giorno×ora)</h3><canvas id="heatmap" height="180"></canvas></div>
+        <div class="mini-card"><h3 style="margin:0;">Capacity gap (minuti liberi)</h3><canvas id="gapChart" height="110"></canvas></div>
+      </section>
+      <section class="grid">
+        <div class="mini-card"><h3 style="margin:0;">Leaderboard Pro (ricavi/ora)</h3>
+          <div class="tablebox" style="margin:8px 0 0 0;">
+            <table id="proLead"><thead><tr><th>Pro</th><th class="sortable">Ricavi</th><th class="sortable">Ore lavorate</th><th class="sortable">€/ora</th><th class="sortable">Utilizzo</th></tr></thead><tbody></tbody></table>
+          </div>
+        </div>
+        <div class="mini-card"><h3 style="margin:0;">Pareto 80/20 — Servizi</h3><canvas id="paretoServices" height="110"></canvas></div>
+      </section>
+    </section>
+
+    <!-- BILLING -->
+    <section id="view-billing" class="view">
+      <section class="cards">
+        <div class="card"><h3>Fatturato (netto)</h3><div class="value" data-kpi="revenue">€0</div></div>
+        <div class="card"><h3>Fatturato (IVA incl.)</h3><div class="value" data-kpi="revenueGross">€0</div></div>
+        <div class="card"><h3>Ticket medio</h3><div class="value" data-kpi="avgTicket">€0</div></div>
+        <div class="card"><h3>Tempo risparmiato</h3><div class="value" data-kpi="timeSaved">0h</div></div>
+        <div class="card"><h3>Valore tempo</h3><div class="value" data-kpi="timeValue">€0</div></div>
+        <div class="card"><h3>€ / ora aperta</h3><div class="value" data-kpi="revPerOpenHour2">€0</div></div>
+        <div class="card"><h3>IVA stimata</h3><div class="value" data-kpi="tax">€0</div></div>
+        <div class="card"><h3>Margine lordo</h3><div class="value" data-kpi="margin">€0</div></div>
+      
+        </section>
+      <section class="grid">
+        <div class="mini-card"><h3 style="margin:0;">Ricavi giornalieri</h3><canvas id="revChart" height="110"></canvas></div>
+        <div class="mini-card"><h3 style="margin:0;">Forecast 30 gg — Ricavi</h3><canvas id="revForecast" height="110"></canvas></div>
+        <div class="mini-card"><h3 style="margin:0;">Split entrate (professionisti)</h3><div class="tablebox" style="margin:8px 0 0 0;"><table id="splitTable"><thead><tr><th>Destinatario</th><th>€</th></tr></thead><tbody></tbody></table></div></div>
+      </section>
+      <section class="grid">
+        <div class="mini-card"><h3 style="margin:0;">Materiali — per Servizio</h3>
+          <div class="tablebox" style="margin:8px 0 0 0;">
+            <table id="matByService"><thead><tr><th>Servizio</th><th>Ricavi</th><th>Materiali</th><th>Incidenza</th><th>Margine</th></tr></thead><tbody></tbody></table>
+          </div>
+        </div>
+        <div class="mini-card"><h3 style="margin:0;">Materiali — per Professionista</h3>
+          <div class="tablebox" style="margin:8px 0 0 0;">
+            <table id="matByPro"><thead><tr><th>Pro</th><th>Ricavi</th><th>Materiali</th><th>Incidenza</th><th>Margine</th></tr></thead><tbody></tbody></table>
+          </div>
+        </div>
+      </section>
+    
+    </section>
+
+    <!-- ANALYTICS -->
+    <section id="view-analytics" class="view">
+      <section class="cards">
+        <div class="card"><h3>No-show rate</h3><div class="value" data-kpi="noShowRate">0%</div></div>
+        <div class="card"><h3>Cancel rate</h3><div class="value" data-kpi="cancelRate">0%</div></div>
+        <div class="card"><h3>Top servizio</h3><div class="value" data-kpi="topService">—</div></div>
+        <div class="card"><h3>Busiest day</h3><div class="value" data-kpi="busiestDay">—</div></div>
+      </section>
+      <section class="grid">
+        <div class="mini-card"><h3 style="margin:0;">RFM — Clienti</h3>
+          <div class="tablebox" style="margin:8px 0 0 0;">
+            <table id="rfmTable"><thead><tr><th>Cliente</th><th>R</th><th>F</th><th>M</th><th>Punteggio</th></tr></thead><tbody></tbody></table>
+          </div>
+        </div>
+        <div class="mini-card"><h3 style="margin:0;">Cohort (mese primo acquisto → % attivi settimane)</h3>
+          <div class="tablebox" style="margin:8px 0 0 0;">
+            <table id="cohortTable"><thead></thead><tbody></tbody></table>
+          </div>
+        </div>
+        <div class="mini-card"><h3 style="margin:0;">Outlier prezzo/durata</h3>
+          <div class="tablebox" style="margin:8px 0 0 0;"><table id="outlierTable"><thead><tr><th>Tipo</th><th>Elemento</th><th>Valore</th></tr></thead><tbody></tbody></table></div>
+        </div>
+        <div class="mini-card"><h3 style="margin:0;">Curve Retention 3/6/12 mesi</h3><canvas id="retentionChart" height="110"></canvas></div>
+      </section>
+    </section>
+
+    <!-- CLIENTI -->
+    <section id="view-clients" class="view">
+      <div class="toolbar">
+        <input class="input" id="clientSearch" placeholder="Cerca cliente (nome/telefono/tag)..." />
+        <button class="btn" id="mergeSimilar">De-duplica simili</button>
+        <button class="btn ghost" id="exportCalls">Esporta Call-sheet</button>
+      </div>
+      <div class="tablebox">
+        <table id="clientsTable"><thead><tr><th>Cliente</th><th>Telefono</th><th>Tag</th><th>Ultimo</th><th>Spesa</th><th>Note</th><th>Consenso</th><th>Azioni</th></tr></thead><tbody></tbody></table>
+      </div>
+    </section>
+
+    <!-- SERVIZI -->
+    <section id="view-services" class="view">
+      <div class="toolbar">
+        <button class="btn" id="addService">Aggiungi servizio</button>
+        <button class="btn ghost" id="saveServices">Salva servizi</button>
+      </div>
+      <div class="tablebox">
+        <table id="servicesTable"><thead><tr><th>Servizio</th><th>Alias</th><th>Prezzo</th><th>Durata (min)</th><th>Azioni</th></tr></thead><tbody></tbody></table>
+      </div>
+      <div class="toolbar"><span class="pill">What-if prezzo ±10%</span> <input id="priceWhatIf" type="range" min="-10" max="10" step="1" value="0"> <span id="priceWhatIfVal">0%</span></div>
+      <div class="mini-card"><h3 style="margin:0;">Ticket medio per servizio (+ varianza)</h3><div class="tablebox" style="margin:8px 0 0 0;"><table id="svcStats"><thead><tr><th>Servizio</th><th>Ticket medio</th><th>Varianza</th><th>Margine stimato</th></tr></thead><tbody></tbody></table></div></div>
+    </section>
+
+    <!-- CALENDARIO -->
+    <section id="view-calendar" class="view">
+  <div class="toolbar">
+    <button class="btn" id="printDay">Stampa agenda A4</button>
+    <button class="btn ghost" id="exportICS">Esporta .ics</button>
+  </div>
+  <div id="agenda" class="grid"></div>
+</section>
+
+
+    <!-- SEDI -->
+    <section id="view-sedi" class="view">
+      <div class="toolbar">
+        <button class="btn" id="addLocation">Aggiungi sede</button>
+        <button class="btn ghost" id="saveLocations">Salva</button>
+        <button class="btn ghost" id="exportLocations">Esporta sedi JSON</button>
+        <input id="importLocFile" class="hidden" type="file" accept="application/json" />
+        <button class="btn ghost" id="importLocations">Importa sedi JSON</button>
+      </div>
+      <div class="tablebox">
+        <table id="locEdit"><thead><tr><th>Nome</th><th>Indirizzo</th><th>Tel</th><th>IVA %</th><th>Note</th><th>—</th></tr></thead><tbody></tbody></table>
+      </div>
+    </section>
+
+    <!-- REPORT -->
+    <section id="view-reports" class="view">
+      <div class="toolbar">
+        <button class="btn" id="reportPDF">Genera PDF periodo</button>
+        <button class="btn ghost" id="comparePeriods">Confronto WoW/MoM/YoY</button>
+        <button class="btn ghost" id="goalsBtn">Obiettivi mensili</button>
+      </div>
+      <div class="mini-card">
+        <h3 style="margin:0;">Obiettivi</h3>
+        <div class="tablebox" style="margin:8px 0 0 0;"><table id="goalsTable"><thead><tr><th>KPI</th><th>Target</th><th>Attuale</th><th>Progresso</th></tr></thead><tbody></tbody></table></div>
+      </div>
+    </section>
+
+    <!-- TOOLS -->
+    <section id="view-tools" class="view">
+      <div class="grid">
+        <div class="mini-card">
+          <h3 style="margin:0 0 8px;">Wizard import iniziale</h3>
+          <button class="btn" id="demoSeed">Carica demo</button>
+        </div>
+        <div class="mini-card">
+          <h3 style="margin:0 0 8px;">Generatore messaggi WhatsApp</h3>
+          <input id="waText" class="input" placeholder="Testo messaggio..." style="width:60%">
+          <button class="btn" id="waReminder">Reminder</button>
+          <button class="btn ghost" id="waFollow">Follow-up</button>
+          <button class="btn ghost" id="waPromo">Promo</button>
+        </div>
+        <div class="mini-card">
+          <h3 style="margin:0 0 8px;">A/B Test promo</h3>
+          <input id="codeA" class="input" placeholder="Codice A">
+          <input id="codeB" class="input" placeholder="Codice B">
+          <button class="btn" id="saveAB">Salva</button>
+          <div id="abStats" class="muted" style="margin-top:8px;"></div>
+        </div>
+        <div class="mini-card">
+          <h3 style="margin:0 0 8px;">Coupon / Gift card</h3>
+          <button class="btn" id="addCoupon">Nuovo</button>
+          <div class="tablebox" style="margin:8px 0 0 0;"><table id="couponTable"><thead><tr><th>Codice</th><th>€</th><th>Scadenza</th><th>Usi</th><th>—</th></tr></thead><tbody></tbody></table></div>
+        </div>
+        <div class="mini-card">
+          <h3 style="margin:0 0 8px;">Lista d'attesa</h3>
+          <button class="btn" id="addWait">Aggiungi richiesta</button>
+          <div class="tablebox" style="margin:8px 0 0 0;"><table id="waitTable"><thead><tr><th>Cliente</th><th>Telefono</th><th>Sede</th><th>Servizio</th><th>Quando</th><th>Note</th><th>—</th></tr></thead><tbody></tbody></table></div>
+        </div>
+        <div class="mini-card">
+          <h3 style="margin:0 0 8px;">Magazzino base</h3>
+          <button class="btn" id="addStock">Aggiungi prodotto</button>
+          <div class="tablebox" style="margin:8px 0 0 0;"><table id="stockTable"><thead><tr><th>Prodotto</th><th>UM</th><th>Qt</th><th>Min</th><th>—</th></tr></thead><tbody></tbody></table></div>
+        </div>
+        <div class="mini-card">
+          <h3 style="margin:0 0 8px;">HACCP checklist</h3>
+          <button class="btn" id="addHaccp">Aggiungi check</button>
+          <div class="tablebox" style="margin:8px 0 0 0;"><table id="haccpTable"><thead><tr><th>Data</th><th>Voce</th><th>OK</th><th>Note</th><th>—</th></tr></thead><tbody></tbody></table></div>
+        </div>
+        <div class="mini-card">
+          <h3 style="margin:0 0 8px;">Promozioni automatiche</h3>
+          <input id="promoRule" class="input" placeholder="Esempio: lun-ven 14-16, -20% se riempimento < 50%">
+          <button class="btn" id="savePromoRule">Salva regola</button>
+          <div id="promoStatus" class="muted" style="margin-top:8px;"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SICUREZZA -->
+    <section id="view-security" class="view">
+      <div class="grid">
+        <div class="mini-card">
+          <h3 style="margin:0 0 8px;">Ruoli & permessi</h3>
+          <div class="tablebox" style="margin:8px 0 0 0;"><table id="rolesTable"><thead><tr><th>Utente</th><th>Ruolo</th><th>Permessi</th></tr></thead><tbody></tbody></table></div>
+        </div>
+        <div class="mini-card">
+          <h3 style="margin:0 0 8px;">Audit log</h3>
+          <div class="tablebox" style="margin:8px 0 0 0;"><table id="auditTable"><thead><tr><th>Quando</th><th>Chi</th><th>Azione</th></tr></thead><tbody></tbody></table></div>
+        </div>
+        <div class="mini-card">
+          <h3 style="margin:0 0 8px;">Privacy / GDPR</h3>
+          <button class="btn" id="exportPrivacy">Export privacy pack (cliente)</button>
+          <button class="btn ghost" id="forgetClient">Diritto all'oblio (hash)</button>
+        </div>
+        <div class="mini-card">
+          <h3 style="margin:0 0 8px;">PWA / Performance</h3>
+          <div>Stato SW: <span id="swState" class="pill">n/a</span></div>
+          <div>Render: <span id="perf" class="pill">0 ms</span></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SETTINGS -->
+    <section id="view-settings" class="view">
+      <div class="grid">
+        <div class="mini-card">
+          <h3 style="margin:0 0 8px;">Parametri generali</h3>
+          <div class="toolbar">
+            <label>Minuti risparmiati/prenotazione</label><input id="saveMin" type="number" min="0" step="0.5" style="width:90px"/>
+            <label>€/h tempo</label><input id="hourly" type="number" min="0" step="1" style="width:90px"/>
+            <label>Ore/giorno default PRO</label><input id="hoursPerDay" type="number" min="0" step="0.25" style="width:100px"/>
+        <label>Ore/giorno negozio</label><input class="input" id="shopHoursPerDay" type="number" min="0" step="0.25" />
+        <label>IVA % (default 22)</label><input class="input" id="vatRate"
+        />
+        <label>Prezzo default se mancante (€)</label><input class="input" id="defaultPrice" type="number" min="0" step="0.01"/>
+            <label>Valuta</label><select id="currency"><option value="EUR">EUR</option><option value="USD">USD</option></select>
+            <label>Locale</label><select id="locale"><option value="it-IT">it-IT</option><option value="en-US">en-US</option></select>
+            <button class="btn" id="saveParams">Salva</button>
+          </div>
+          <div class="toolbar">
+            <button class="btn neutral" id="resetSettings">Reset impostazioni</button>
+            <button class="btn ghost" id="compact">Compatta dataset</button>
+          </div>
+        </div>
+        <div class="mini-card">
+          <h3 style="margin:0 0 8px;">Professionisti — ore disponibili</h3>
+          <div class="tablebox" style="margin:0;"><table id="proConfig"><thead><tr><th>Pro</th><th>Ore/giorno</th><th>Quota % (split)</th></tr></thead><tbody></tbody></table></div>
+        </div>
+        <div class="mini-card">
+          <h3 style="margin:0 0 8px;">Onboarding</h3>
+          <button class="btn" id="openWizard">Apri wizard</button>
+          <div id="wizard" class="muted" style="margin-top:8px;">1) Importa dati • 2) Configura orari e prezzi • 3) Definisci obiettivi • 4) Avvia</div>
+        </div>
+      </div>
+    
+<div class="row"><button id="btnImportCfg" class="btn">Importa config.json</button><button id="btnExportCfg" class="btn">Esporta config.json</button></div>
+</section>
+
+    <footer class="muted" style="margin-top:16px;">© <span id="year"></span> synkris — demo locale</footer>
+  </main>
+</div>
+
+<!-- Modals -->
+<div id="globalSearch" class="modal"><div>
+  <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;">
+    <h3 style="margin:0">Ricerca globale</h3>
+    <button class="btn neutral" id="closeSearch">Chiudi</button>
+  </div>
+  <input id="searchInput" class="input" placeholder="Cerca clienti/servizi/appuntamenti..." style="width:100%;margin-top:8px;">
+  <div id="searchResults" class="tablebox" style="margin-top:8px;"></div>
+</div></div>
+
+<!-- Safety panel -->
+<div id="safety" class="modal"><div>
+  <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;">
+    <h3 style="margin:0">Safety panel — Import/Schema errori</h3>
+    <button class="btn neutral" id="closeSafety">Chiudi</button>
+  </div>
+  <pre id="safetyLog" style="white-space:pre-wrap;background:var(--bg);border:1px solid var(--line);padding:12px;border-radius:12px;margin-top:12px;max-height:60vh;overflow:auto"></pre>
+  <div class="toolbar"><button id="downloadLog" class="btn">Scarica log</button></div>
+</div></div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<script>
+// ===== Core and state =====
+const $=s=>document.querySelector(s), $$=s=>Array.from(document.querySelectorAll(s));
+const S = {
+  data: [],
+  charts:{}, history:[], future:[],
+  settings: { saveMin:2, hourly:0, hoursPerDay:8, proHours:{}, proShare:{}, theme:'dark', currency:'EUR', locale:'it-IT', trialDays:7, locations:[], servicesConfig:{}, roles:[{user:'DE', role:'owner', perms:['all']}] },
+  backups:[], ab:{A:'',B:''}, coupons:[], waitlist:[], stock:[], haccp:[], promoRule:'' , i18n:{}, clientsMeta:{}, goals:[{k:'revenue',target:1000},{k:'newClients',target:10},{k:'noShowRate',target:5}]
+};
+const get=(o,ks,d=null)=>{ for(const k of ks) if(o&&o[k]!=null) return o[k]; return d; };
+const st = b=> String(get(b,['status','state'],'')).toLowerCase();
+const isCanc = b=> ['cancelled','canceled'].includes(st(b));
+const isNo   = b=> st(b)==='no_show';
+const isOk   = b=> !isCanc(b) && !isNo(b);
+const svc = b => {
+  const raw = get(b, ['service','serviceName','title','treatment','servizio','name'], 'Servizio');
+  const { def, key } = cfgFor(b);
+  return def?.alias || key || raw;
+};
+
+const pro=b=> get(b,['professional','professionalName','operator','staff','pro','professionista'],'');
+const start=b=> get(b,['startTime','start','start_date'],null);
+const end=b  => get(b,['endTime','end','end_date'],null);
+const loc=b  => get(b,['location','locationName','address','sede'],'');
+const price = b => {
+  const fields = ['total','totale','price','prezzo','amount','importo','paid','pagato','payment','paymentAmount','payments'];
+  const read = (obj, keys) => {
+    for (const k of keys) {
+      const v = get(obj, [k], null);
+      if (v == null) continue;
+      if (Array.isArray(v)) {
+        const sum = v.reduce((s,x)=> s + Number((x && (x.amount||x.value||x.price||0))||0), 0);
+        if (sum > 0) return sum;
+      } else {
+        const raw = (typeof v==='string') ? v.replace(/[^0-9,.-]/g,'').replace(',','.') : v;
+        const n = Number(raw||0);
+        if (n > 0) return n;
+      }
+    }
+    return 0;
+  };
+  const fromBooking = read(b, fields);
+  if (fromBooking > 0) return fromBooking;
+
+  const cfg = (S.settings && S.settings.servicesConfig) ? S.settings.servicesConfig : {};
+  const norm = s => (s||'').toString().normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().trim();
+  const rawSvc = get(b, ['service','serviceName','title','treatment','servizio','name'], '');
+  const n = norm(rawSvc);
+  for (const key in cfg) {
+    const def = cfg[key]||{};
+    const names = [key].concat(def.synonyms||[]).map(norm);
+    if (names.includes(n)) return Number(def.price||0);
+  }
+  return Number((S.settings && S.settings.defaultPrice) || 0);
+};
+
+const cname=b=> get(b,['customerName','clientName','name','cliente'],'');
+const cphone=b=> normalizePhone(get(b,['clientPhone','customerPhone','phone','telefono'],''));
+const ckey=b => cphone(b) || ('name:'+ (cname(b)||'').toLowerCase().trim());
+const fmtISO=d=>{const z=new Date(d);return `${z.getFullYear()}-${String(z.getMonth()+1).padStart(2,'0')}-${String(z.getDate()).padStart(2,'0')}`;};
+const minutes=(a,b)=>{const A=a?new Date(a):null;const B=b?new Date(b):null;return(!A||!B)?0:Math.max(0,Math.round((B-A)/60000));};
+const inRange=(d,a,b)=> d>=a && d<=b;
+const persist=()=> localStorage.setItem('dashboard.settings', JSON.stringify(S.settings));
+const load=()=>{ try{ const j = JSON.parse(localStorage.getItem('dashboard.settings')||'{}'); Object.assign(S.settings, j); }catch{} };
+function normalizePhone(p){ return (String(p||'').replace(/\D/g,'').replace(/^39/,'+39').replace(/^00/,'+')); }
+function currency(n){ return new Intl.NumberFormat(S.settings.locale, {style:'currency', currency:S.settings.currency}).format(n||0); }
+
+// ===== Audit
+function audit(action, who='DE'){ const row=[new Date().toISOString(), who, action]; const tb=$('#auditTable tbody'); const tr=document.createElement('tr'); tr.innerHTML=`<td>${row[0]}</td><td>${row[1]}</td><td>${row[2]}</td>`; tb?.prepend(tr); }
+
+// ===== History (settings/filters)
+function pushHistory(snap){ S.history.push(JSON.stringify(snap)); if(S.history.length>20) S.history.shift(); S.future=[]; }
+function snapshot(){ return { settings: JSON.parse(JSON.stringify(S.settings)), filters:{from:$('#from').value,to:$('#to').value,fStatus:$('#fStatus').value,fService:$('#fService').value,fPro:$('#fPro').value,fLoc:$('#fLoc').value,fDaypart:$('#fDaypart').value} }; }
+function restore(s){ const o=JSON.parse(s); S.settings=o.settings; persist(); loadUI(); $('#from').value=o.filters.from; $('#to').value=o.filters.to; $('#fStatus').value=o.filters.fStatus; $('#fService').value=o.filters.fService; $('#fPro').value=o.filters.fPro; $('#fLoc').value=o.filters.fLoc; $('#fDaypart').value=o.filters.fDaypart; recompute(); }
+
+// ===== Safety panel
+const safety = { logs: [] };
+function logSafety(msg){ safety.logs.push(`[${new Date().toISOString()}] ${msg}`); }
+function showSafety(){ $('#safetyLog').textContent = safety.logs.join('\n'); $('#safety').style.display='flex'; }
+$('#closeSafety').onclick=()=> $('#safety').style.display='none';
+$('#downloadLog').onclick=()=>{ const blob=new Blob([($('#safetyLog').textContent||'')], {type:'text/plain'}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='safety-log.txt'; a.click(); };
+async function fetchJsonNoCache(url){
+  const res = await fetch(url, { cache: 'no-store' });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return await res.json();
+}
+
+function normalizeBookings(obj){
+  const arr = Array.isArray(obj) ? obj
+    : (Array.isArray(obj.bookings) ? obj.bookings
+    : (Array.isArray(obj.rows) ? obj.rows : []));
+  for (const b of arr) {
+    if (!b.endTime && b.startTime && (b.durationMin || b.duration)) {
+      const mins = Number(b.durationMin || b.duration);
+      const t = new Date(b.startTime).getTime() + mins*60000;
+      b.endTime = new Date(t).toISOString();
+    }
+  }
+  return arr;
+}
+
+async function loadBookingsFromJSON() {
+  const candidates = [
+    './bookings.json',
+    '/bookings.json',
+    './data/bookings.json'
+  ];
+  for (const url of candidates) {
+    try {
+      const j = await fetchJsonNoCache(url);
+      const arr = normalizeBookings(j);
+      if (arr.length) return arr;
+    } catch (e) {
+      logSafety?.(`fetch ${url}: ${e.message}`);
+    }
+  }
+  throw new Error('bookings.json non trovato su nessun path noto');
+}
+
+// Boot + auto-refresh sicuro
+let _poll;
+async function bootData(ms = 60000){
+  // Se sei su file:// mostra avviso e rinuncia al fetch
+  if (location.protocol === 'file:') {
+    logSafety('Apri la dashboard tramite un server HTTP (no file://) per permettere fetch() di bookings.json');
+    showSafety?.();
+    return;
+  }
+  await loadConfig(); // <--- carica listino/servizi dal config
+  S.data = await loadBookingsFromJSON();
+  setup?.();    // popola filtri/UI una volta
+  recompute?.(); // disegna KPI e chart
+
+  clearInterval(_poll);
+  _poll = setInterval(async () => {
+    try {
+      const latest = await loadBookingsFromJSON();
+      // ricalcola solo se cambia
+      if (JSON.stringify(latest) !== JSON.stringify(S.data)) {
+        S.data = latest;
+        recompute?.();
+      }
+    } catch (e) {
+      logSafety?.(`auto-refresh: ${e.message}`);
+    }
+  }, ms);
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  bootData(60000);
+  const btn = document.getElementById('reload');
+  if (btn) btn.onclick = async () => {
+    try { S.data = await loadBookingsFromJSON(); recompute?.(); }
+    catch (e) { logSafety?.(`reload: ${e.message}`); showSafety?.(); }
+  };
+
+  // chiudi eventuali overlay rimasti aperti
+  const m1 = document.getElementById('safety');        if (m1) m1.style.display = 'none';
+  const m2 = document.getElementById('globalSearch');  if (m2) m2.style.display = 'none';
+});
+
+
+// ===== Setup (init sicuro + wiring + primo compute)
+function setup(){
+  // Stato base
+  if (!window.S) window.S = {};
+  if (!S.settings) S.settings = {};
+  if (!S.ui) S.ui = {};
+
+  // Tema iniziale + label
+  if (!S.settings.theme) {
+    var dt = document.documentElement.getAttribute('data-theme') || 'dark';
+    S.settings.theme = dt;
+  }
+  try { if (typeof applyTheme === 'function') applyTheme(); } catch(e){}
+  var tl = document.getElementById('themeLabel');
+  if (tl) tl.textContent = (S.settings.theme === 'dark') ? 'Dark' : 'Light';
+
+  // Range date iniziale (se vuoto)
+var fromEl = document.getElementById('from');
+var toEl   = document.getElementById('to');
+
+var today = new Date(); today.setHours(0,0,0,0);
+var endOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+
+if (fromEl) fromEl.value = fmtISO(today);
+if (toEl)   toEl.value   = fmtISO(endOfMonth);
+
+  // Wiring filtri e range → applyFilters()
+  function wireChange(id){
+    var el = document.getElementById(id);
+    if (el && !el.__wired) {
+      el.__wired = true;
+      el.addEventListener('change', function(){ try{ applyFilters(); }catch(e){} });
+    }
+  }
+  wireChange('from');
+  wireChange('to');
+  wireChange('fStatus');
+  wireChange('fService');
+  wireChange('fPro');
+  wireChange('fLoc');
+  wireChange('fDaypart');
+
+  // Bottone "Applica" (fallback se non già collegato altrove)
+  var ap = document.getElementById('apply');
+  if (ap && !ap.__wired) {
+    ap.__wired = true;
+    ap.addEventListener('click', function(){ try{ applyFilters(); }catch(e){} });
+  }
+
+  // Bottoni calendario: "Da oggi" / "Recenti (7g)"
+  try { if (typeof wireCalendarButtons === 'function') wireCalendarButtons(); } catch(e){}
+
+  // Prima computazione
+  try { recompute(); } catch(e){ console.warn('recompute error', e); }
+}
+
+function loadUI(){  $('#saveMin').value=S.settings.saveMin; $('#hourly').value=S.settings.hourly; $('#hoursPerDay').value=S.settings.hoursPerDay; $('#currency').value=S.settings.currency; $('#locale').value=S.settings.locale; $('#themeLabel').textContent = S.settings.theme==='dark'?'Dark':'Light'; }
+
+function applyTheme(){ document.documentElement.setAttribute('data-theme', S.settings.theme||'light'); }
+
+// ===== Filters
+function getRange(){ const from=new Date($('#from').value); const to=new Date($('#to').value); to.setHours(23,59,59,999); return {from,to}; }
+function daypart(h){ if(h<12) return 'morning'; if(h<18) return 'afternoon'; return 'evening'; }
+function getFilters(){
+  var s=$('#fStatus'), sv=$('#fService'), p=$('#fPro'), l=$('#fLoc'), d=$('#fDaypart');
+  return {
+    status: s?s.value:'all',
+    service: sv?sv.value:'',
+    pro: p?p.value:'',
+    loc: l?l.value:'',
+    daypart: d?d.value:''
+  };
+}
+function filtered(){
+  const {from,to}=getRange(); const f=getFilters();
+  return S.data.filter(b=> start(b) && inRange(new Date(start(b)),from,to)).filter(b=>{
+    if(f.status==='confirmed' && !isOk(b)) return false;
+    if(f.status==='cancelled' && !isCanc(b)) return false;
+    if(f.status==='no_show' && !isNo(b)) return false;
+    if(f.service && svc(b)!==f.service) return false;
+    if(f.pro && pro(b)!==f.pro) return false;
+    if(f.loc && loc(b)!==f.loc) return false;
+    if(f.daypart && daypart(new Date(start(b)).getHours())!==f.daypart) return false;
+    return true;
+  });
+}
+
+// ===== Charts helpers
+function line(id, labels, data, key){ const ctx=document.getElementById(id)?.getContext('2d'); if(!ctx) return; if(S.charts[key]) S.charts[key].destroy(); S.charts[key]= new Chart(ctx,{type:'line',data:{labels,datasets:[{data,fill:true,label:''}]},options:{plugins:{legend:{display:false}},scales:{x:{grid:{display:false}},y:{beginAtZero:true,ticks:{precision:0}}}}});}
+function bar(id, labels, data, key){ const ctx=document.getElementById(id)?.getContext('2d'); if(!ctx) return; if(S.charts[key]) S.charts[key].destroy(); S.charts[key]= new Chart(ctx,{type:'bar',data:{labels,datasets:[{data,label:''}]},options:{plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,ticks:{precision:0}}}}});}
+function heatmapChart(id, matrix){ const ctx=document.getElementById(id)?.getContext('2d'); if(!ctx) return; if(S.charts['heat']) S.charts['heat'].destroy(); const labels=['Dom','Lun','Mar','Mer','Gio','Ven','Sab']; const datasets=[]; for(let h=0;h<24;h++){ datasets.push({label:String(h).padStart(2,'0'), data: matrix.map(row=>row[h]), stack:'x'}); } S.charts['heat']= new Chart(ctx,{type:'bar',data:{labels,datasets},options:{plugins:{legend:{display:false}},scales:{x:{stacked:true},y:{stacked:true,beginAtZero:true,ticks:{precision:0}}}}});}
+
+// ===== Recompute (lazy charts per view)
+
+// ===== Renders
+function renderClientsTable(rows){
+  const tb=$('#clientsTable tbody'); if(!tb) return; tb.innerHTML='';
+  const map=new Map();
+  rows.forEach(b=>{ const k=ckey(b); if(!map.has(k)) map.set(k,{name:cname(b)||'(s/n)', phone:cphone(b)||'', last:null, spend:0}); const r=map.get(k); const d=new Date(start(b)); r.last = (!r.last||d>r.last)? d : r.last; if(isOk(b)) r.spend+=price(b); });
+  [...map.entries()].forEach(([k,r])=>{ const meta=S.clientsMeta[k]||{tags:[], notes:'', consent:true, referredBy:''}; const tr=document.createElement('tr'); tr.innerHTML=`<td>${r.name}</td><td>${r.phone}</td><td><input value="${(meta.tags||[]).join(' ')}" data-k="tags" style="width:120px"></td><td>${r.last? new Date(r.last).toLocaleString(S.settings.locale): ''}</td><td>${currency(r.spend)}</td><td><input value="${meta.notes||''}" data-k="notes" style="width:160px"></td><td><input type="checkbox" data-k="consent" ${meta.consent?'checked':''}></td><td><button class="btn neutral" data-act="wa">WhatsApp</button> <button class="btn ghost" data-act="forget">Pseudonimizza</button></td>`;
+    tr.querySelectorAll('input').forEach(inp=> inp.addEventListener('input', ()=>{ if(!S.clientsMeta[k]) S.clientsMeta[k]={tags:[],notes:'',consent:true}; if(inp.dataset.k==='tags') S.clientsMeta[k].tags = inp.value.split(/\s+/).filter(Boolean); else if(inp.dataset.k==='notes') S.clientsMeta[k].notes = inp.value; else if(inp.dataset.k==='consent') S.clientsMeta[k].consent = inp.checked; persist(); }));
+    tr.querySelector('[data-act="wa"]').onclick=()=>{ const text=encodeURIComponent($('#waText').value||'Ciao!'); window.open(`https://wa.me/${r.phone}?text=${text}`,'_blank'); };
+    tr.querySelector('[data-act="forget"]').onclick=()=>{ const anon='Cliente '+(r.phone? r.phone.slice(-4): Math.floor(Math.random()*9999)); S.clientsMeta[k]={tags:['anon'],notes:'',consent:false}; audit('forget '+k); tr.children[0].textContent=anon; tr.children[1].textContent='(hash)'; persist(); };
+    tb.appendChild(tr);
+  });
+}
+$('#mergeSimilar').onclick=()=>{ // simple dedup: same last 7 digits
+  const keys=Object.keys(S.clientsMeta); const map=new Map();
+  keys.forEach(k=>{ const phone=k.startsWith('name:')?'':k.replace(/^\D+/,''); const sig=phone.slice(-7); if(!map.has(sig)) map.set(sig,[]); map.get(sig).push(k); });
+  let merges=0; map.forEach(list=>{ if(list.length>1){ const base=list[0]; for(let i=1;i<list.length;i++){ const m=list[i]; // merge tags/notes
+        const A=S.clientsMeta[base]||{tags:[],notes:''}; const B=S.clientsMeta[m]||{tags:[],notes:''};
+        S.clientsMeta[base]={tags: Array.from(new Set([ ...(A.tags||[]), ...(B.tags||[]) ])), notes: ((A.notes||'') + ' ' + (B.notes||'')).trim(), consent: (A.consent ?? true) && (B.consent ?? true)}; delete S.clientsMeta[m]; merges++; } } });
+  persist(); alert('Clienti uniti: '+merges); audit('dedup '+merges);
+  recompute();
+};
+$('#exportCalls').onclick=()=>{ const rows=filtered(); const need = rows.filter(b=> isCanc(b)||isNo(b)); const header=['cliente','telefono','motivo']; const lines=[header.join(',')].concat(need.map(b=>[cname(b), cphone(b), isNo(b)?'no-show':'cancellazione'].map(x=> '"'+String(x||'').replaceAll('"','""')+'"').join(','))); const blob=new Blob([lines.join('\n')], {type:'text/csv'}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='call_sheet.csv'; a.click(); };
+
+function renderServiceStats(confirmed){
+  const tb=$('#svcStats tbody'); if(!tb) return; tb.innerHTML='';
+  const groups=new Map(); confirmed.forEach(b=>{ const s=svc(b); if(!groups.has(s)) groups.set(s,[]); groups.get(s).push(price(b)); });
+  groups.forEach((arr, name)=>{ const m=arr.reduce((a,b)=>a+b,0)/(arr.length||1); const v=arr.reduce((s,x)=> s+(x-m)*(x-m),0)/(arr.length||1); const mc = 0; const margin = (S.settings.servicesConfig[name]?.price? S.settings.servicesConfig[name].price - mc : m - mc); const tr=document.createElement('tr'); tr.innerHTML=`<td>${name}</td><td>${currency(m)}</td><td>${v.toFixed(2)}</td><td>${currency(margin)}</td>`; tb.appendChild(tr); });
+  // what-if
+  const delta = Number($('#priceWhatIf').value||0)/100; $('#priceWhatIfVal').textContent = (delta*100).toFixed(0)+'%';
+}
+
+// Disegna l'agenda raggruppando per giorno; rispetta il flag S.ui.futureOnly
+function renderAgenda(rows){
+  var root = document.getElementById('agenda');
+  if (!root) return;
+
+  // Filtro "solo futuro" se richiesto dal bottone "Da oggi"
+  if (window.S && S.ui && S.ui.futureOnly) {
+    var todayKey = fmtISO(new Date()); // YYYY-MM-DD
+    rows = (rows || []).filter(function(b){
+      var s = start(b);
+      return s && fmtISO(s) >= todayKey;
+    });
+  }
+
+  // Raggruppa per giorno
+  var byDay = new Map();
+  (rows || []).forEach(function(b){
+    var s = start(b);
+    if (!s) return;
+    var key = fmtISO(s); // YYYY-MM-DD
+    if (!byDay.has(key)) byDay.set(key, []);
+    byDay.get(key).push(b);
+  });
+
+  // Ordina i giorni e gli appuntamenti
+  var dayKeys = Array.from(byDay.keys()).sort(function(a,b){ return a < b ? -1 : a > b ? 1 : 0; });
+  dayKeys.forEach(function(k){
+    byDay.get(k).sort(function(a,b){ return new Date(start(a)) - new Date(start(b)); });
+  });
+
+  // Helpers locali per formattazione
+  function fmtDayHeader(key){ // "YYYY-MM-DD" → "lunedi 01/03"
+    var d = new Date(key);
+    var wd = ['domenica','lunedì','martedì','mercoledì','giovedì','venerdì','sabato'][d.getDay()];
+    var dd = String(d.getDate()).padStart(2,'0');
+    var mm = String(d.getMonth()+1).padStart(2,'0');
+    return wd + ' ' + dd + '/' + mm;
+  }
+  function fmtHM(d){ // "HH:MM"
+    var z = new Date(d);
+    var hh = String(z.getHours()).padStart(2,'0');
+    var mm = String(z.getMinutes()).padStart(2,'0');
+    return hh + ':' + mm;
+  }
+  function statusPill(b){
+    if (typeof isCanc==='function' && isCanc(b)) return '<span class="pill warn">Canc</span>';
+    if (typeof isNo==='function'   && isNo(b))   return '<span class="pill warn">No-show</span>';
+    if (typeof isOk==='function'   && isOk(b))   return '<span class="pill ok">OK</span>';
+    return '<span class="pill">—</span>';
+  }
+
+  // Rendering
+  var html = '';
+  if (dayKeys.length === 0) {
+    html = '<div class="card"><p>Nessun appuntamento nel range corrente.</p></div>';
+  } else {
+    html = dayKeys.map(function(key){
+      var items = byDay.get(key).map(function(b){
+        var t   = fmtHM(start(b));
+        var svcName = (typeof svc==='function' ? (svc(b)||'') : (b.service||''));
+        var who = (typeof cname==='function' ? (cname(b)||'') : (b.customerName||''));
+        var proName = (typeof pro==='function' ? (pro(b)||'') : (b.professionalName||''));
+        var mail = (b.professionalEmail || b.proEmail || b.email || '').toString();
+
+        // Link GCal se presente (fallback no-op)
+        var gcal = (b.htmlLink || '#');
+        var emailTxt = mail ? '(' + mail + ')' : '';
+        return (
+          '<div class="slot">' +
+            '<b>'+ t + '</b> — ' + esc(svcName) + '<br>' +
+            (emailTxt ? '<span class="muted">'+esc(emailTxt)+'</span> • ' : '') + esc(who) + ' ' +
+            statusPill(b) + ' ' +
+            '<a class="pill link" href="'+esc(gcal)+'">GCal</a>' +
+          '</div>'
+        );
+      }).join('');
+      return (
+        '<div class="card">' +
+          '<h3>'+ esc(fmtDayHeader(key)) +'</h3>' +
+          (items || '<div class="slot muted">—</div>') +
+        '</div>'
+      );
+    }).join('');
+  }
+
+  root.innerHTML = html;
+
+  // util: escape HTML
+  function esc(s){
+    return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+}
+// Attiva i bottoni "Da oggi" e "Recenti (7g)" e forza il ricalcolo/visione calendario
+function wireCalendarButtons(){
+  if (!window.S) window.S = {};
+  if (!S.ui) S.ui = {};
+
+  // Da oggi → mostra solo appuntamenti futuri
+  var tBtn = document.getElementById('calToday');
+  if (tBtn && !tBtn.__wired) {
+    tBtn.__wired = true;
+    tBtn.addEventListener('click', function(){
+      S.ui.futureOnly = true; // flag usato da renderAgenda
+
+      var now = new Date();
+      var ds  = (S.data || [])
+        .map(function(x){ return start(x); })
+        .filter(Boolean)
+        .map(function(s){ return new Date(s); });
+      var max = ds.length ? new Date(Math.max.apply(null, ds)) : now;
+
+      var fromEl = document.getElementById('from');
+      var toEl   = document.getElementById('to');
+      if (fromEl) fromEl.value = fmtISO(now);
+      if (toEl)   toEl.value   = fmtISO(max);
+
+      try { if (typeof audit === 'function') audit('calendar: da_oggi'); } catch(e){}
+      try { if (typeof recompute === 'function') recompute(); } catch(e){}
+
+      var nav = document.querySelector('[data-view="calendar"]');
+      if (nav) nav.click();
+    });
+  }
+
+  // Recenti (7g) → ultima settimana (disattiva filtro futuro)
+  var rBtn = document.getElementById('calRecent');
+  if (rBtn && !rBtn.__wired) {
+    rBtn.__wired = true;
+    rBtn.addEventListener('click', function(){
+      S.ui.futureOnly = false;
+
+      var to   = new Date();
+      var from = new Date(); from.setDate(to.getDate() - 7);
+
+      var fromEl = document.getElementById('from');
+      var toEl   = document.getElementById('to');
+      if (fromEl) fromEl.value = fmtISO(from);
+      if (toEl)   toEl.value   = fmtISO(to);
+
+      try { if (typeof audit === 'function') audit('calendar: recenti_7g'); } catch(e){}
+      try { if (typeof recompute === 'function') recompute(); } catch(e){}
+
+      var nav = document.querySelector('[data-view="calendar"]');
+      if (nav) nav.click();
+    });
+  }
+}
+
+
+function renderGoals(K){
+  const tb=$('#goalsTable tbody'); if(!tb) return; tb.innerHTML='';
+  const current = { revenue: K.revenue, newClients: K.newClients, noShowRate: K.noShowRate };
+  S.settings.goals = S.settings.goals || [{k:'revenue',target:1000},{k:'newClients',target:10},{k:'noShowRate',target:5}];
+  S.settings.goals.forEach(g=>{ const val=current[g.k] || 0; const pct = g.k==='noShowRate' ? Math.max(0, 100 - (val/g.target*100)) : Math.min(100, Math.round((val/g.target)*100)); const tr=document.createElement('tr'); tr.innerHTML=`<td>${g.k}</td><td>${g.k==='revenue'?currency(g.target):g.target}</td><td>${g.k==='revenue'?currency(val):val}</td><td><div class="pill">${pct}%</div></td>`; tb.appendChild(tr); if((g.k==='noShowRate' && val>g.target) || (g.k!=='noShowRate' && val<g.target)) audit('goal warning '+g.k); });
+}
+
+// ===== Editors (Sedi/Pro/Services)
+function renderLocationsEditor(){
+  const tb=$('#locEdit tbody'); if(!tb) return; tb.innerHTML='';
+  (S.settings.locations||[]).forEach((L,i)=>{ const tr=document.createElement('tr'); tr.innerHTML=`<td><input value="${L.name||''}" data-k="name"></td><td><input value="${L.address||''}" data-k="address"></td><td><input value="${L.phone||''}" data-k="phone"></td><td><input type="number" min="0" step="0.1" value="${Number(L.vat||0)}" data-k="vat" style="width:80px"></td><td><input value="${L.notes||''}" data-k="notes"></td><td><button class="btn neutral" data-act="del">X</button></td>`; tr.querySelectorAll('input').forEach(inp=> inp.addEventListener('input', ()=>{ S.settings.locations[i][inp.dataset.k] = inp.type==='number'? Number(inp.value||0): inp.value; persist(); })); tr.querySelector('[data-act="del"]').onclick=()=>{ S.settings.locations.splice(i,1); persist(); renderLocationsEditor(); }; tb.appendChild(tr); });
+}
+$('#addLocation').onclick=()=>{ S.settings.locations.push({name:'',address:'',phone:'',vat:0,notes:''}); persist(); renderLocationsEditor(); audit('add location'); };
+$('#saveLocations').onclick=()=>{ persist(); alert('Sedi salvate'); audit('save locations'); };
+$('#exportLocations').onclick=()=>{ const blob=new Blob([JSON.stringify({locations:S.settings.locations},null,2)],{type:'application/json'}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='sedi.json'; a.click(); };
+$('#importLocations').onclick=()=> $('#importLocFile').click();
+$('#importLocFile').onchange=e=>{ const f=e.target.files[0]; if(!f) return; const r=new FileReader(); r.onload=ev=>{ try{ const j=JSON.parse(ev.target.result); if(!Array.isArray(j.locations)) throw new Error('Formato sedi non valido'); S.settings.locations=j.locations; persist(); renderLocationsEditor(); audit('import locations'); }catch(err){ logSafety('Import sedi: '+err.message); showSafety(); } }; r.readAsText(f); };
+
+function renderProConfig(){
+  const pro = b => b.professionalName || b.professional || b.pro || '';
+  const fromData = new Set((S.data||[]).map(pro).filter(Boolean));
+  const fromCfg  = new Set(Object.values(S.settings?.proEmailToName||{}));
+  const pros = [...new Set([...fromData, ...fromCfg])].sort();
+
+  const tb = document.querySelector('#proConfig tbody');
+  if (!tb) return;
+  tb.innerHTML = '';
+
+  pros.forEach(p=>{
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${p}</td>
+      <td><input type="number" min="0" step="0.25"
+                 value="${S.settings?.proHours?.[p] ?? S.settings?.hoursPerDay ?? 8}"
+                 data-pro="${p}" style="width:90px"></td>
+      <td><input type="number" min="0" max="100" step="1"
+                 value="${S.settings?.proShare?.[p] ?? 0}"
+                 data-share="${p}" style="width:90px"></td>`;
+
+    tr.querySelector('[data-pro]').addEventListener('input', e=>{
+      S.settings.proHours = S.settings.proHours || {};
+      S.settings.proHours[p] = Number(e.target.value||0);
+      persist?.(); recompute?.();
+    });
+
+    tr.querySelector('[data-share]').addEventListener('input', e=>{
+      S.settings.proShare = S.settings.proShare || {};
+      S.settings.proShare[p] = Number(e.target.value||0);
+      persist?.(); recompute?.();
+    });
+
+    tb.appendChild(tr);
+  });
+}
+
+
+function renderServicesEditor(){
+  const tb=$('#servicesTable tbody'); if(!tb) return; tb.innerHTML='';
+  const set = new Set(S.data.map(x=> get(x,['service','serviceName','title','treatment','servizio','name'],'Servizio'))); const list=[...new Set([...set, ...Object.keys(S.settings.servicesConfig||{})])].sort();
+  list.forEach(name=>{ const cfg=S.settings.servicesConfig[name]||{alias:name, price:0, duration:60}; const tr=document.createElement('tr'); tr.innerHTML=`<td>${name}</td><td><input value="${cfg.alias||name}" data-k="alias"></td><td><input type="number" min="0" step="0.01" value="${cfg.price||0}" data-k="price" style="width:90px"></td><td><input type="number" min="0" step="5" value="${cfg.duration||60}" data-k="duration" style="width:90px"></td><td><button class="btn neutral" data-act="del">X</button></td>`;
+    tr.querySelectorAll('input').forEach(inp=> inp.addEventListener('input',()=>{ if(!S.settings.servicesConfig[name]) S.settings.servicesConfig[name]={}; S.settings.servicesConfig[name][inp.dataset.k] = (inp.type==='number')? Number(inp.value||0): inp.value; persist(); }));
+    tr.querySelector('[data-act="del"]').onclick=()=>{ delete S.settings.servicesConfig[name]; persist(); renderServicesEditor(); };
+    tb.appendChild(tr);
+  });
+}
+$('#addService').onclick=()=>{ const n=prompt('Nome servizio?'); if(!n) return; S.settings.servicesConfig[n]={alias:n, price:0, duration:60}; persist(); renderServicesEditor(); };
+$('#saveServices').onclick=()=>{ persist(); alert('Servizi salvati'); };
+
+// ===== Exporters
+$('#exportCSV').onclick=()=>{ const rows=filtered(); const header=['start','end','service','professional','client','phone','status','price','location']; const lines=[header.join(',')].concat(rows.map(b=>[start(b),end(b),svc(b),pro(b),cname(b),cphone(b),st(b),price(b),loc(b)].map(x=> '"'+String(x??'').replaceAll('"','""')+'"').join(','))); const blob=new Blob([lines.join('\n')],{type:'text/csv'}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='prenotazioni.csv'; a.click(); };
+// ===== Print agenda A4 (Calendar)
+function printAgendaA4(){
+  try{
+    const esc = s => String(s ?? '').replace(/[&<>]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[m]));
+    const toKey = d => {
+      const x = d instanceof Date ? new Date(+d) : new Date(d);
+      if (isNaN(x)) return '';
+      return `${x.getFullYear()}-${String(x.getMonth()+1).padStart(2,'0')}-${String(x.getDate()).padStart(2,'0')}`;
+    };
+
+    // range: oggi → ultimo giorno mese corrente (in locale)
+    const locale = (S && S.settings && S.settings.locale) || navigator.language || 'it-IT';
+    const today = new Date(); today.setHours(0,0,0,0);
+    const eom = new Date(today.getFullYear(), today.getMonth()+1, 0); // fine mese
+    const todayKey = toKey(today);
+    const eomKey   = toKey(eom);
+
+    // dati
+    const src = (typeof filtered === 'function' ? (filtered() || []) : []);
+    const rows = src.filter(b => {
+      const dt = new Date(start(b));
+      if (isNaN(dt)) return false;
+      const k = toKey(dt);
+      return k >= todayKey && k <= eomKey;
+    });
+
+    // group by day (key YYYY-MM-DD)
+    const byDay = new Map();
+    for (const b of rows) {
+      const k = toKey(new Date(start(b)));
+      if (!k) continue;
+      if (!byDay.has(k)) byDay.set(k, []);
+      byDay.get(k).push(b);
+    }
+    const days = [...byDay.keys()].sort();
+
+    const dayTitle = k => {
+      const [y,m,d] = k.split('-').map(n=>parseInt(n,10));
+      return new Date(y, m-1, d).toLocaleDateString(locale, { weekday:'long', day:'2-digit', month:'2-digit' });
+    };
+
+    const body = days.length
+      ? days.map(k=>{
+          const list = byDay.get(k).sort((a,b)=> new Date(start(a)) - new Date(start(b)));
+          return `<h2>${dayTitle(k)}</h2>` + list.map(b=>{
+            const t = new Date(start(b)).toLocaleTimeString(locale,{hour:'2-digit',minute:'2-digit'});
+            const badge = (typeof isCanc==='function' && isCanc(b)) ? 'Canc'
+                        : (typeof isNo==='function' && isNo(b)) ? 'No-show' : 'OK';
+            return `<div class="row">
+                      <div class="time">${t}</div>
+                      <div class="svc">${esc((typeof svc==='function'?svc(b):'') || '')}</div>
+                      <div class="meta">${esc((typeof pro==='function'?pro(b):'') || '')} • ${esc((typeof cname==='function'?cname(b):'') || '')} • ${badge}</div>
+                    </div>`;
+          }).join('');
+        }).join('')
+      : `<p>Nessun appuntamento dal ${today.toLocaleDateString(locale)} al ${eom.toLocaleDateString(locale)}.</p>`;
+
+    const html = `<!doctype html><html><head><meta charset="utf-8">
+<title>Agenda</title>
+<style>
+  @page { size: A4; margin: 12mm; }
+  * { box-sizing: border-box; }
+  body { font: 12pt system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica, Arial; color: #000; }
+  h1 { margin: 0 0 8mm; font-size: 16pt; }
+  h2 { margin: 6mm 0 2mm; font-size: 13pt; text-transform: capitalize; }
+  .row { display:flex; gap:6mm; margin:1.5mm 0; align-items: baseline; }
+  .time { width:22mm; font-weight:600; }
+  .svc { flex:1; }
+  .meta { width:70mm; color:#333; }
+  @media print { .row { break-inside: avoid; } }
+</style>
+</head><body>
+<h1>Agenda dal ${today.toLocaleDateString(locale)} al ${eom.toLocaleDateString(locale)}</h1>
+${body}
+</body></html>`;
+
+    // stampa tramite iframe nascosto (niente popup block)
+    const iframe = document.createElement('iframe');
+    iframe.style.position='fixed';
+    iframe.style.right='0';
+    iframe.style.bottom='0';
+    iframe.style.width='0';
+    iframe.style.height='0';
+    iframe.style.border='0';
+    iframe.setAttribute('aria-hidden','true');
+    document.body.appendChild(iframe);
+
+    const doc = iframe.contentDocument || iframe.contentWindow.document;
+    iframe.onload = () => {
+      try { iframe.contentWindow?.focus(); iframe.contentWindow?.print(); } catch(_) {}
+    };
+    doc.open(); doc.write(html); doc.close();
+
+    const cleanup = () => { try { iframe.remove(); } catch(_) {} };
+    iframe.contentWindow?.addEventListener?.('afterprint', cleanup);
+    setTimeout(cleanup, 5000); // fallback
+  } catch(e){
+    console.error('printAgendaA4 failed', e);
+  }
+}
+
+// ===== Export Excel (SpreadsheetML)
+function exportXLS(){
+  try{
+    const rows = filtered();
+
+    // Sheet A: Appointments
+    const A = [['start','end','service','professional','client','phone','status','price','location']]
+      .concat(rows.map(b=>[start(b), end(b), svc(b), pro(b), cname(b), cphone(b), st(b), String(price(b)), loc(b)]));
+
+    // Sheet B: Clients (spend)
+    const clients = new Map();
+    rows.forEach(b=>{
+      const k = ckey(b);
+      if(!clients.has(k)) clients.set(k,{name:cname(b), phone:cphone(b), spend:0});
+      if(isOk(b)) clients.get(k).spend += price(b);
+    });
+    const B = [['client','phone','spend']].concat([...clients.values()].map(x=>[x.name, x.phone, String(x.spend)]));
+
+    // Sheet C: Services (revenue)
+    const services = new Map();
+    rows.forEach(b=>{ const s = svc(b); services.set(s, (services.get(s)||0) + price(b)); });
+    const C = [['service','revenue']].concat([...services.entries()].map(([s,v])=>[s, String(v)]));
+
+    const esc = s => String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    const sheetXml = (name, arr) =>
+      `<Worksheet ss:Name="${esc(name)}"><Table>${
+        arr.map(r=>`<Row>${r.map(c=>`<Cell><Data ss:Type="String">${esc(c)}</Data></Cell>`).join('')}</Row>`).join('')
+      }</Table></Worksheet>`;
+
+    const xml = `<?xml version="1.0"?><Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">${sheetXml('Appointments',A)}${sheetXml('Clients',B)}${sheetXml('Services',C)}</Workbook>`;
+
+    const blob = new Blob([xml], {type:'application/vnd.ms-excel'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'report.xls';
+    document.body.appendChild(a); a.click();
+    setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 100);
+  }catch(e){ console.error('exportXLS failed', e); }
+}
+document.getElementById('printDay')?.addEventListener('click', printAgendaA4);
+(()=>{ const b=document.getElementById('exportXLS'); if(b && !b.__wired){ b.__wired=true; b.addEventListener('click', exportXLS); }})();
+
+$('#exportPDF').onclick=()=>{ const w=window.open('','_blank'); w.document.write('<h1>Report periodo</h1><p>Usa Stampa → Salva come PDF.</p>'); w.document.close(); w.focus(); w.print(); };
+
+$('#reportPDF').onclick=()=> $('#exportPDF').click();
+$('#comparePeriods').onclick=()=>{ alert('Confronto WoW/MoM/YoY pronto: imposta range e riapplica. (UI sintetica)'); };
+$('#goalsBtn').onclick=()=>{ const tg=prompt('Target ricavi,nuovi,no-show% (es: 5000,30,5)', '5000,30,5'); if(!tg) return; const [r,n,ns]=tg.split(',').map(x=>Number(x.trim())); S.settings.goals=[{k:'revenue',target:r},{k:'newClients',target:n},{k:'noShowRate',target:ns}]; persist(); recompute(); };
+
+// ===== Import / Merge (JSON + ICS) with backup + schema checks
+$('#upload').onclick=()=> $('#file').click();
+$('#file').onchange = e=>{
+  const files = Array.from(e.target.files||[]); if(!files.length) return;
+  // backup
+  try{ S.backups.push({ts:new Date().toISOString(), size:S.data.length}); const blob=new Blob([JSON.stringify(S.data,null,2)],{type:'application/json'}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='bookings_backup_'+S.backups.length+'.json'; a.click(); }catch(err){ logSafety('Backup fallo: '+err.message); }
+  let merged = [...S.data];
+const seen = new Set(merged.map(b => (b.eventId||'')+'|'+(cphone(b)||'')));
+list.forEach(b => {
+  const key = (b.eventId||'')+'|'+(cphone(b)||'');
+  if (!seen.has(key)) { seen.add(key); merged.push(b); }
+});
+S.data = merged;
+  const promises=files.map(f=> new Promise(res=>{ const r=new FileReader(); r.onload=ev=> res({name:f.name,text:ev.target.result}); r.readAsText(f); }));
+  Promise.all(promises).then(list=>{
+    list.forEach(file=>{ try{
+      if (file.name.toLowerCase().endsWith('.ics') || file.text.startsWith('BEGIN:VCALENDAR')){
+        const added=parseICS(file.text); added.forEach(b=>{ const key=(b.eventId||'')+'|'+(cphone(b)||'')+'|'+(start(b)||''); if(!seen.has(key)){ merged.push(b); seen.add(key);} });
+        audit('import ics '+file.name);
+      } else {
+        const parsed=JSON.parse(file.text); if(!Array.isArray(parsed)) throw new Error('JSON non è un array'); const bad=parsed.filter(b=> !start(b)); if(bad.length) logSafety(`${file.name}: ${bad.length} record senza start`);
+        parsed.forEach(b=>{ const key=(b.eventId||'')+'|'+(get(b,['clientPhone','customerPhone','phone','telefono'],'')||'')+'|'+(get(b,['startTime','start','start_date'],'')||''); if(!seen.has(key)){ merged.push(b); seen.add(key);} });
+        audit('import json '+file.name);
+      }
+    }catch(err){ logSafety('Errore parsing '+file.name+': '+err.message); }});
+    S.data=merged; setup(); recompute(); if(safety.logs.length) showSafety();
+  });
+};
+function parseICS(text){
+  const items=[]; const blocks=text.split('BEGIN:VEVENT').slice(1); blocks.forEach(b=>{ const get=(re)=> (b.match(re)||[])[1]||''; const dt= get(/DTSTART[:;].*?:([0-9TZ]+)/); const de= get(/DTEND[:;].*?:([0-9TZ]+)/); const sum=get(/SUMMARY:(.*)/); const loc=get(/LOCATION:(.*)/); const uid=get(/UID:(.*)/); const s = dt? new Date(dt.replace('Z','')).toISOString(): null; const e = de? new Date(de.replace('Z','')).toISOString(): null; if(!s) return; items.push({ start: s, end: e, serviceName: sum||'ICS', locationName: loc||'', eventId: uid||'' }); }); return items;
+}
+
+// ===== Tools & Misc
+// Demo dataset loader
+$('#demoSeed').onclick=()=>{ try{ const el=document.getElementById('seed'); if(!el){ alert('Nessun seed incorporato'); return; } const json=JSON.parse(el.textContent||'[]'); if(!Array.isArray(json)){ alert('Seed non è un array'); return; } S.data=json; setup(); recompute(); audit('demo seed loaded'); }catch(e){ alert('Errore seed: '+e.message); } };
+$('#toggleTheme').onclick=()=>{ S.settings.theme = (S.settings.theme==='dark'?'light':'dark'); persist(); applyTheme(); pushHistory(snapshot()); };
+$('#saveParams').onclick=()=>{ S.settings.saveMin=Number($('#saveMin').value||2); S.settings.hourly=Number($('#hourly').value||0); S.settings.hoursPerDay=Number($('#hoursPerDay').value||8); S.settings.currency=$('#currency').value; S.settings.locale=$('#locale').value; persist(); pushHistory(snapshot()); recompute(); };
+$('#resetSettings').onclick=()=>{ S.settings={ saveMin:2,hourly:0,hoursPerDay:8,shopHoursPerDay:8,vatRate:22,defaultPrice:0,shopHoursPerDay:8,vatRate:22,defaultPrice:0,proHours:{},proShare:{},theme:S.settings.theme,currency:'EUR',locale:'it-IT',trialDays:S.settings.trialDays,locations:S.settings.locations,servicesConfig:S.settings.servicesConfig,roles:S.settings.roles,goals:S.settings.goals }; persist(); loadUI(); pushHistory(snapshot()); recompute(); };
+$('#compact').onclick=()=>{ // remove duplicates, normalize phones
+  const map=new Map(); const out=[]; S.data.forEach(b=>{ const key=(b.eventId||'')+'|'+(cphone(b)||'')+'|'+(start(b)||''); if(!map.has(key)){ map.set(key,1); out.push(b);} }); S.data=out; audit('compact '+out.length); alert('Compattato: '+out.length+' record'); };
+
+$('#saveServices').onclick=()=> audit('save services');
+{ const btn = document.getElementById('printDay');
+  if (btn && !btn.__wired) { btn.__wired = true; btn.addEventListener('click', printAgendaA4); }
+}
+
+// WhatsApp templates
+function waOpen(text){ window.open('https://wa.me/?text='+encodeURIComponent(text),'_blank'); }
+$('#waReminder').onclick=()=> waOpen('Ciao! Ti ricordiamo il tuo appuntamento. Rispondi per confermare.');
+$('#waFollow').onclick=()=> waOpen('Grazie per la visita! Come ti sei trovato? Puoi lasciare una recensione qui! -> youtube.com <-');
+$('#waPromo').onclick=()=> waOpen('Promo limitata: -20% su refill unghie gel! Prenota ora.');
+$('#saveAB').onclick=()=>{ S.ab.A=$('#codeA').value; S.ab.B=$('#codeB').value; persist(); $('#abStats').textContent='A/B salvati. Usa i codici nei tag cliente per tracciare.'; };
+$('#addCoupon').onclick = () => {
+  const c = 'CPN' + Math.random().toString(36).slice(2,8).toUpperCase();
+  S.coupons.push({ code: c, value: 10, exp: fmtISO(new Date()), used: 0 });
+  renderCoupons(); persist();
+  postDump(buildDumpSnapshot());
+};
+
+function renderCoupons(){
+  const tb = $('#couponTable tbody'); if (!tb) return;
+  tb.innerHTML = '';
+  S.coupons.forEach((c, i) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${c.code}</td>
+      <td><input type="number" min="0" step="0.01" value="${Number(c.value||0)}" data-k="value" style="width:100px"></td>
+      <td><input type="date" value="${c.exp||''}" data-k="exp"></td>
+      <td>${c.used||0}</td>
+      <td><button class="btn neutral" data-del="${i}">X</button></td>`;
+    // Wire inputs → stato + autosave
+    tr.querySelectorAll('input').forEach(inp=>{
+      inp.addEventListener('input', () => {
+        const k = inp.dataset.k;
+        if (k === 'value') S.coupons[i].value = Number(inp.value||0);
+        if (k === 'exp')   S.coupons[i].exp   = inp.value;
+        persist();
+        postDump(buildDumpSnapshot());
+      });
+    });
+    tr.querySelector('[data-del]').onclick = () => {
+      S.coupons.splice(i, 1);
+      renderCoupons(); persist();
+      postDump(buildDumpSnapshot());
+    };
+    tb.appendChild(tr);
+  });
+}
+
+$('#addWait').onclick=()=>{ const r={name:'',phone:'',loc:'',svc:'',when:'',notes:''}; S.waitlist.push(r); renderWait(); persist(); postDump(buildDumpSnapshot()); };
+function renderWait(){ const tb=$('#waitTable tbody'); if(!tb) return; tb.innerHTML=''; S.waitlist.forEach((w,i)=>{ const tr=document.createElement('tr'); tr.innerHTML=`<td><input value="${w.name}"></td><td><input value="${w.phone}"></td><td><input value="${w.loc}"></td><td><input value="${w.svc}"></td><td><input value="${w.when}"></td><td><input value="${w.notes}"></td><td><button class="btn neutral">X</button></td>`; tr.querySelectorAll('input').forEach((inp,idx)=> inp.addEventListener('input',()=>{ ['name','phone','loc','svc','when','notes'][idx] && (w[['name','phone','loc','svc','when','notes'][idx]]=inp.value); persist(); postDump(buildDumpSnapshot()); })); tr.querySelector('button').onclick=()=>{ S.waitlist.splice(i,1); renderWait(); persist(); postDump(buildDumpSnapshot()); }; tb.appendChild(tr); }); }
+tr.querySelector('button').onclick=()=>{ S.waitlist.splice(i,1); renderWait(); persist(); postDump(buildDumpSnapshot()); };
+function renderStock(){ const tb=$('#stockTable tbody'); if(!tb) return; tb.innerHTML=''; S.stock.forEach((s,i)=>{ const tr=document.createElement('tr'); tr.innerHTML=`<td><input value="${s.name}"></td><td><input value="${s.um}" style="width:60px"></td><td><input type="number" value="${s.qty}" style="width:80px"></td><td><input type="number" value="${s.min}" style="width:80px"></td><td><button class="btn neutral">X</button></td>`; tr.querySelectorAll('input').forEach((inp,idx)=> inp.addEventListener('input',()=>{ ['name','um','qty','min'][idx] && (s[['name','um','qty','min'][idx]]=inp.type==='number'?Number(inp.value):inp.value); persist(); })); tr.querySelector('button').onclick=()=>{ S.stock.splice(i,1); renderStock(); persist(); postDump(buildDumpSnapshot()); }; tb.appendChild(tr); }); }
+
+$('#addHaccp').onclick=()=>{ S.haccp.push({date:fmtISO(new Date()),item:'Check',ok:true,notes:''}); renderHaccp(); persist();postDump(buildDumpSnapshot()); };
+function renderHaccp(){ const tb=$('#haccpTable tbody'); if(!tb) return; tb.innerHTML=''; S.haccp.forEach((h,i)=>{ const tr=document.createElement('tr'); tr.innerHTML=`<td><input type="date" value="${h.date}"></td><td><input value="${h.item}"></td><td><input type="checkbox" ${h.ok?'checked':''}></td><td><input value="${h.notes}"></td><td><button class="btn neutral">X</button></td>`; const inputs=tr.querySelectorAll('input'); inputs[0].oninput=()=>{h.date=inputs[0].value;persist();}; inputs[1].oninput=()=>{h.item=inputs[1].value;persist();}; inputs[2].oninput=()=>{h.ok=inputs[2].checked;persist();}; inputs[3].oninput=()=>{h.notes=inputs[3].value;persist();}; tr.querySelector('button').onclick=()=>{ S.haccp.splice(i,1); renderHaccp(); persist();postDump(buildDumpSnapshot()); }; tb.appendChild(tr); }); }
+
+$('#savePromoRule').onclick=()=>{ S.promoRule=$('#promoRule').value; $('#promoStatus').textContent='Regola salvata.'; persist(); };
+
+// ===== Roles & Permissions (UI only)
+function renderRoles(){ const tb=$('#rolesTable tbody'); if(!tb) return; tb.innerHTML=''; S.settings.roles.forEach((r,i)=>{ const tr=document.createElement('tr'); tr.innerHTML=`<td>${r.user}</td><td><select><option>owner</option><option>manager</option><option>operator</option></select></td><td><input value="${(r.perms||[]).join(',')}"></td>`; tr.querySelector('select').value=r.role; tr.querySelector('select').onchange=e=>{ r.role=e.target.value; persist(); }; tr.querySelector('input').oninput=e=>{ r.perms=e.target.value.split(',').map(x=>x.trim()); persist(); }; tb.appendChild(tr); }); }
+renderRoles();
+
+// ===== ICS export
+$('#exportICS').onclick=()=>{ const rows=filtered().filter(isOk); const lines=['BEGIN:VCALENDAR','VERSION:2.0']; rows.forEach(b=>{ const dt=(d)=> new Date(d).toISOString().replace(/[-:]/g,'').replace('.000',''); lines.push('BEGIN:VEVENT'); lines.push('UID:'+(b.eventId||Math.random().toString(36).slice(2))); lines.push('DTSTART:'+dt(start(b))); if(end(b)) lines.push('DTEND:'+dt(end(b))); lines.push('SUMMARY:'+svc(b)+' - '+cname(b)); if(loc(b)) lines.push('LOCATION:'+loc(b)); lines.push('END:VEVENT'); }); lines.push('END:VCALENDAR'); const blob=new Blob([lines.join('\n')],{type:'text/calendar'}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='export.ics'; a.click(); };
+
+// ===== Global search (Ctrl/Cmd+K)
+function openSearch(){ $('#globalSearch').style.display='flex'; $('#searchInput').focus(); }
+function closeSearch(){ $('#globalSearch').style.display='none'; }
+$('#globalSearchBtn').onclick=openSearch; $('#closeSearch').onclick=closeSearch;
+document.addEventListener('keydown', e=>{ if((e.ctrlKey||e.metaKey)&& e.key.toLowerCase()==='k'){ e.preventDefault(); openSearch(); } });
+$('#searchInput').oninput=()=>{ const q=($('#searchInput').value||'').toLowerCase(); const rows=filtered(); const hitA=rows.filter(b=> [cname(b), cphone(b), svc(b), pro(b), loc(b)].join(' ').toLowerCase().includes(q)); const div=$('#searchResults'); const html=['<table><thead><tr><th>Quando</th><th>Servizio</th><th>Cliente</th><th>Pro</th><th>Sede</th></tr></thead><tbody>'].concat(hitA.slice(0,100).map(b=>`<tr><td>${new Date(start(b)).toLocaleString(S.settings.locale)}</td><td>${svc(b)}</td><td>${cname(b)}</td><td>${pro(b)}</td><td>${loc(b)}</td></tr>`)).concat(['</tbody></table>']).join(''); div.innerHTML=html; };
+
+// ===== PWA
+function registerSW(){ if('serviceWorker' in navigator){ try{ navigator.serviceWorker.register('sw.js').then(r=> $('#swState').textContent='registrato').catch(_=> $('#swState').textContent='non attivo'); }catch{ $('#swState').textContent='non supportato'; } } else { $('#swState').textContent='non disponibile'; }}
+
+// ===== Undo/Redo + Shortcuts
+$('#undo').onclick=()=>{ if(!S.history.length) return; const snap=S.history.pop(); S.future.push(JSON.stringify(snapshot())); restore(snap); };
+$('#redo').onclick=()=>{ if(!S.future.length) return; const snap=S.future.pop(); S.history.push(JSON.stringify(snapshot())); restore(snap); };
+document.addEventListener('keydown', e=>{ if((e.ctrlKey||e.metaKey)&& e.key==='z'){ e.preventDefault(); $('#undo').click(); } if((e.ctrlKey||e.metaKey)&& (e.key==='y' || (e.shiftKey && e.key==='Z'))){ e.preventDefault(); $('#redo').click(); } });
+
+// ===== Lazy view charts
+document.getElementById('nav').addEventListener('click', function(e){
+  const el = e.target.closest('.item');
+  if (!el) return;
+  $$('#nav .item').forEach(i=> i.classList.toggle('active', i===el));
+  $$('.view').forEach(v=> v.classList.remove('active'));
+  document.getElementById('view-'+el.dataset.view).classList.add('active');
+  // Close mobile menu if open
+  document.body.removeAttribute('data-nav'); document.body.style.overflow='';
+  // scrim disabled
+  var __btn = document.getElementById('hamburger'); if (__btn) __btn.setAttribute('aria-expanded','false');
+  recompute();
+});
+
+
+// ===== Save/Export settings
+$('#exportSettings').onclick=()=>{ const blob=new Blob([JSON.stringify(S.settings,null,2)],{type:'application/json'}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='settings.json'; a.click(); };
+function applyFilters(){
+  try{ if (typeof pushHistory==='function') pushHistory(snapshot()); }catch(e){}
+  try{ recompute(); }catch(e){ console.warn('recompute failed', e); }
+}
+(function(){
+  var ap=document.getElementById('apply');
+  if(ap && !ap.__wired){ ap.__wired=true; ap.addEventListener('click', applyFilters); }
+})();
+['from','to','fStatus','fService','fPro','fLoc','fDaypart']
+  .forEach(id => document.getElementById(id)?.addEventListener('change', applyFilters));
+
+document.getElementById('apply')?.addEventListener('click', applyFilters);
+// ===== Config loader (config.json) + service lookup =====
+S.config = { }; // opzionale, solo per debug/ispezione
+
+const _norm = s => (s ?? '')
+  .toString()
+  .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+  .toLowerCase().trim();
+
+// Carica config.json e mappa in S.settings.servicesConfig
+async function loadConfig() {
+  // 1) seed inline, se presente
+  try {
+    const el = document.getElementById('configSeed');
+    if (el?.textContent?.trim()) {
+      const cfg = JSON.parse(el.textContent);
+      applyConfig(cfg);
+      S.config = cfg;
+      return;
+    }
+  } catch {}
+
+  // 2) file esterno
+  const candidates = [
+    './config.json', '/config.json', '../config.json'
+  ];
+  for (const url of candidates) {
+    try {
+      const cfg = await fetchJsonNoCache(url);
+      applyConfig(cfg);
+      S.config = cfg;
+      return;
+    } catch (e) { /* continua */ }
+  }
+
+  // se non trovato: lascia vuoto -> KPI € = 0 (voluto)
+  console.warn('config.json non caricato: prezzi a 0');
+}
+
+// Adatta formati possibili di config → S.settings.servicesConfig
+function applyConfig(cfg) {
+  const dst = (S.settings.servicesConfig ||= {});
+  const src =
+    cfg?.servicesConfig ??
+    cfg?.services ??
+    {}; // può essere { name: {price, duration, material, synonyms[]} } oppure array
+
+  const entries = Array.isArray(src)
+    ? src.map(x => [x.name || x.alias || x.title, x])
+    : Object.entries(src);
+
+  for (const [name, def0] of entries) {
+    if (!name) continue;
+    const def = def0 || {};
+    const cur = dst[name] || {};
+    dst[name] = {
+      alias: def.alias ?? cur.alias ?? name,
+      price: Number(def.price ?? def.amount ?? cur.price ?? 0),
+      duration: Number(def.duration ?? cur.duration ?? 0), synonyms: Array.isArray(def.synonyms) ? def.synonyms : (cur.synonyms || [])
+    };
+  }
+
+  // opzionale: porta dentro altre chiavi utili se presenti
+  if (cfg.hourly != null) S.settings.hourly = Number(cfg.hourly);
+  if (cfg.hoursPerDay != null) S.settings.hoursPerDay = Number(cfg.hoursPerDay);
+  if (Array.isArray(cfg.locations)) S.settings.locations = cfg.locations;
+  if (cfg.proHours) S.settings.proHours = cfg.proHours;
+}
+
+// Trova la chiave servizio in servicesConfig usando nome o sinonimi
+function findServiceKey(rawName) {
+  const n = _norm(rawName);
+  const map = S.settings.servicesConfig || {};
+  // match diretto sul nome chiave
+  for (const k of Object.keys(map)) if (_norm(k) === n) return k;
+  // match su alias
+  for (const [k, v] of Object.entries(map)) if (_norm(v?.alias) === n) return k;
+  // match su sinonimi
+  for (const [k, v] of Object.entries(map)) {
+    const syn = Array.isArray(v?.synonyms) ? v.synonyms : [];
+    if (syn.some(s => _norm(s) === n)) return k;
+  }
+  return null;
+}
+
+// Config per una booking row
+function cfgFor(b) {
+  const raw = get(b, ['service','serviceName','title','treatment','servizio','name'], '');
+  const key = findServiceKey(raw);
+  return key ? { key, def: S.settings.servicesConfig[key] } : { key: null, def: null };
+}
+
+// ===== Init
+setup(); pushHistory(snapshot()); recompute();
+
+// ===== Autoload local files (optional) =====
+async function autoloadLocalFiles(){
+  // 1) config.json (services)
+  try{
+    const r = await fetch('config.json', {cache:'no-store'});
+    if(r.ok){
+      const j = await r.json();
+      const svc = j?.services || j?.Services || j?.SERVICES || (Array.isArray(j)? null : j);
+      if(svc && typeof svc === 'object'){
+        const map = {};
+        for (const [name, v] of Object.entries(svc)){
+          map[name] = {
+            alias: v?.alias || name,
+            price: Number(v?.price || v?.prezzo || v?.cost || v?.costo || 0),
+            duration: Number(v?.duration || v?.durata || 60),
+            synonyms: Array.isArray(v?.synonyms) ? v.synonyms : []
+          };
+        }
+        S.settings.servicesConfig = map;
+        persist();
+        renderServicesEditor?.();
+      }
+    }
+  }catch(e){ /* silenzioso: assente va bene */ }
+
+  // 2) bookings.json (se S.data è vuoto e c'è il file nella stessa cartella)
+  try{
+    if(!(S.data&&S.data.length)){
+      const r2 = await fetch('bookings.json', {cache:'no-store'});
+      if(r2.ok){
+        const j2 = await r2.json();
+        const rows = Array.isArray(j2) ? j2 : (Array.isArray(j2?.bookings) ? j2.bookings : (Array.isArray(j2?.rows)? j2.rows : []));
+        if(Array.isArray(rows) && rows.length){
+          S.data = rows;
+          setup();
+        }
+      }
+    }
+  }catch(e){ /* silenzioso */ }
+
+  recompute?.();
+}
+
+autoloadLocalFiles();
+
+// === Config import/export (services)
+$('#btnImportCfg')?.addEventListener('click', ()=> $('#importCfgFile').click());
+$('#importCfgFile')?.addEventListener('change', ev => {
+  const f = ev.target.files && ev.target.files[0];
+  if(!f) return;
+  const rd = new FileReader();
+  rd.onload = () => {
+    try{
+      const j = JSON.parse(String(rd.result||'{}'));
+      const svc = j?.services || j?.Services || j?.SERVICES || (Array.isArray(j)? null : j);
+      if(!svc || typeof svc !== 'object'){ alert('File config non valido: manca "services"'); return; }
+      // Normalizza: copia solo campi utili
+      const map = {};
+      for (const [name, v] of Object.entries(svc)){
+        map[name] = {
+          alias: v?.alias || name,
+          price: Number(v?.price || v?.prezzo || v?.cost || v?.costo || 0),
+          duration: Number(v?.duration || v?.durata || 60),
+          synonyms: Array.isArray(v?.synonyms) ? v.synonyms : []
+        };
+      }
+      S.settings.servicesConfig = map;
+      persist();
+      renderServicesEditor?.();
+      recompute?.();
+      audit?.('config services imported');
+      alert('Config servizi importato: ' + Object.keys(map).length + ' servizi');
+    }catch(e){ alert('Errore lettura config: ' + e.message); }
+  };
+  rd.readAsText(f);
+});
+
+$('#btnExportCfg')?.addEventListener('click', ()=>{
+  try{
+    const data = JSON.stringify({ services: S.settings.servicesConfig||{} }, null, 2);
+    const blob = new Blob([data], {type:'application/json'});
+    const a = document.createElement('a'); a.download = 'config.services.json';
+    a.href = URL.createObjectURL(blob); a.click(); URL.revokeObjectURL(a.href);
+  }catch(e){ alert('Errore export: '+e.message); }
+});
+
+
+// === Revenue by CONFIG (explicit for-loop)
+// Somma il costo di ogni prenotazione cercando il prezzo nel config servizi.
+// Fallback: se non trova nel config, prova i campi del booking (total, price, payments).
+function sumRevenueByConfig(bookings){
+  const cfg = (S.settings && S.settings.servicesConfig) ? S.settings.servicesConfig : {};
+  const toNum = v => {
+    if (v==null) return 0;
+    if (Array.isArray(v)) return v.reduce((s,x)=> s + toNum(x && (x.amount||x.value||x.price||x)), 0);
+    if (typeof v==='string') {
+      const n = Number(v.replace(/[^0-9,.-]/g,'').replace(',', '.'));
+      return isFinite(n) ? n : 0;
+    }
+    const n = Number(v);
+    return isFinite(n) ? n : 0;
+  };
+  let sum = 0;
+  for (const b of bookings){
+    const raw = get(b, ['service','serviceName','title','treatment','servizio','name'], '');
+    const key = typeof findServiceKey === 'function' ? findServiceKey(raw) : raw;
+    const def = (key && cfg[key]) ? cfg[key] : null;
+    let p = 0;
+    if (def){
+      p = toNum(def.price || def.prezzo || def.cost || def.costo);
+    }
+    if (!p){
+      // fallback su campi del booking
+      p = toNum(get(b,['total','totale','price','prezzo','amount','paid','pagato','payment','paymentAmount','payments'],0));
+    }
+      if (!p) p = Number(S.settings?.defaultPrice || 0);
+    sum += p;
+  }
+  return sum;
+}
+(function(){
+  // Da oggi → [oggi .. max data presente]
+  var tBtn = document.getElementById('calToday');
+  if (tBtn && !tBtn.__wired) {
+    tBtn.__wired = true;
+    tBtn.addEventListener('click', function(){
+      var now = new Date();
+      var ds  = (S.data||[]).map(function(x){ return start(x); }).filter(Boolean).map(function(s){ return new Date(s); });
+      var max = ds.length ? new Date(Math.max.apply(null, ds)) : now;
+      document.getElementById('from').value = fmtISO(now);
+      document.getElementById('to').value   = fmtISO(max);
+      if (typeof audit==='function') audit('calendar: da oggi');
+      if (typeof recompute==='function') recompute();
+      var nav = document.querySelector('[data-view="calendar"]'); if (nav) nav.click();
+    });
+  }
+
+  // Recenti (7 giorni) → [oggi-7 .. oggi]
+  var rBtn = document.getElementById('calRecent');
+  if (rBtn && !rBtn.__wired) {
+    rBtn.__wired = true;
+    rBtn.addEventListener('click', function(){
+      var to   = new Date();
+      var from = new Date(); from.setDate(to.getDate() - 7);
+      document.getElementById('from').value = fmtISO(from);
+      document.getElementById('to').value   = fmtISO(to);
+      if (typeof audit==='function') audit('calendar: recenti 7g');
+      if (typeof recompute==='function') recompute();
+      var nav = document.querySelector('[data-view="calendar"]'); if (nav) nav.click();
+    });
+  }
+})();
+
+
+
+
+/* ===== Autosave Dump v3 ===== */
+(function(){
+  const DUMP_KEY = 'synkris_dump_v3';
+
+  function ensureS(){ if (!window.S) window.S = {settings:{}}; if(!window.S.settings) window.S.settings = {}; }
+
+  function snapshot(){
+    ensureS();
+    const filters = {
+      from: document.getElementById('from')?.value || null,
+      to: document.getElementById('to')?.value || null,
+      status: document.getElementById('fStatus')?.value || null,
+      service: document.getElementById('fService')?.value || null,
+      pro: document.getElementById('fPro')?.value || null,
+      loc: document.getElementById('fLoc')?.value || null,
+      daypart: document.getElementById('fDaypart')?.value || null
+    };
+    const S = window.S;
+    const pick = k => (S && S[k] != null ? S[k] : undefined);
+
+    // Bookings lite (id, start, service, pro, price)
+    const rows = Array.isArray(S?.data) ? S.data : [];
+    const bookingsLite = rows.map(b => ({
+      eventId: b.eventId || b.id || null,
+      startTime: b.startTime || b.start || null,
+      service: b.service || null,
+      professionalEmail: b.professionalEmail || null,
+      professionalName: b.professionalName || null,
+      durationMin: b.durationMin || b.duration || null,
+      total: (b.total ?? b.price ?? null)
+    }));
+
+    return {
+      version:'v3',
+      savedAt: new Date().toISOString(),
+      filters,
+      settings: S.settings || {},
+      coupons: pick('coupons') || [],
+      waitlist: pick('waitlist') || [],
+      stock: pick('stock') || [],
+      haccp: pick('haccp') || [],
+      promoRule: pick('promoRule') || '',
+      promotions: pick('promotions') || [],
+      goals: pick('goals') || [],
+      clientsMeta: pick('clientsMeta') || {},
+      i18n: pick('i18n') || {},
+      bookingsLite
+    };
+  }
+  window.__snapshotDump = snapshot;
+
+  function saveDumpLocal(){
+    try {
+      const obj = snapshot();
+      localStorage.setItem(DUMP_KEY, JSON.stringify(obj));
+    } catch(e){}
+  }
+  function saveDumpDownload(){
+    try {
+      const obj = snapshot();
+      localStorage.setItem(DUMP_KEY, JSON.stringify(obj));
+      const blob = new Blob([JSON.stringify(obj, null, 2)], {type:'application/json'});
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'dashboard.json';
+      document.body.appendChild(a); a.click();
+      setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 500);
+    } catch(e){}
+  }
+
+  function loadDump(){
+    try {
+      const raw = localStorage.getItem(DUMP_KEY);
+      if (!raw) return false;
+      const obj = JSON.parse(raw);
+      ensureS();
+      const S = window.S;
+      if (obj.settings)  S.settings = Object.assign({}, S.settings||{}, obj.settings);
+      if (Array.isArray(obj.coupons))   S.coupons = obj.coupons.slice();
+      if (Array.isArray(obj.waitlist))  S.waitlist = obj.waitlist.slice();
+      if (Array.isArray(obj.stock))     S.stock = obj.stock.slice();
+      if (Array.isArray(obj.haccp))     S.haccp = obj.haccp.slice();
+      if (Array.isArray(obj.promotions))S.promotions = obj.promotions.slice();
+      if (obj.promoRule != null)        S.promoRule = obj.promoRule;
+      if (Array.isArray(obj.goals))     S.goals = obj.goals.slice();
+      if (obj.clientsMeta)              S.clientsMeta = obj.clientsMeta;
+      if (obj.i18n)                     S.i18n = obj.i18n;
+      // Restore filters
+      try {
+        const f = obj.filters||{};
+        if (f.from!=null) document.getElementById('from')?.setAttribute('value', f.from);
+        if (f.to!=null)   document.getElementById('to')?.setAttribute('value', f.to);
+        if (f.status!=null)  document.getElementById('fStatus') && (document.getElementById('fStatus').value = f.status);
+        if (f.service!=null) document.getElementById('fService') && (document.getElementById('fService').value = f.service);
+        if (f.pro!=null)     document.getElementById('fPro') && (document.getElementById('fPro').value = f.pro);
+        if (f.loc!=null)     document.getElementById('fLoc') && (document.getElementById('fLoc').value = f.loc);
+        if (f.daypart!=null) document.getElementById('fDaypart') && (document.getElementById('fDaypart').value = f.daypart);
+      } catch(e){}
+      return true;
+    } catch(e){ return false; }
+  }
+
+  // Hook: buttons -> download; proxies -> local only
+  function attachActionAutosave(){
+    const ids = ['apply','createCoupon','addCoupon','addToWaitlist','addWaitlist','addStockItem','saveStock','saveHaccp','savePromo','savePromotions','saveSettings','saveGeneral','openEditConf'];
+    ids.forEach(id=>{
+      const el = document.getElementById(id);
+      if (el && !el.__autosave3){
+        el.__autosave3 = true;
+        el.addEventListener('click', ()=> setTimeout(()=> saveDumpDownload(), 0));
+      }
+    });
+    // Generic: any button with matching text
+    document.addEventListener('click', (e)=>{
+      const t = e.target;
+      if (!(t instanceof HTMLElement)) return;
+      if (t.closest('[data-autosave]')) { setTimeout(()=> saveDumpDownload(), 0); return; }
+      if (t.tagName === 'BUTTON'){
+        const txt = (t.textContent||'').toLowerCase();
+        if (/(applica|crea|aggiungi|salva|conferma|nuovo)/.test(txt)){
+          setTimeout(()=> saveDumpDownload(), 0);
+        }
+      }
+    }, {capture:true});
+    // Settings/filters: local save on change
+    document.addEventListener('change', (e)=>{
+      const el = e.target;
+      if (!(el instanceof HTMLElement)) return;
+      if (el.closest('#settings, [data-section="settings"], form.settings')){
+        setTimeout(()=> saveDumpLocal(), 0);
+      }
+      if (el.matches('#from,#to,#fStatus,#fService,#fPro,#fLoc,#fDaypart')){
+        setTimeout(()=> saveDumpLocal(), 0);
+      }
+    }, {capture:true});
+  }
+
+  function proxifyArrayLocal(name){
+    try {
+      ensureS();
+      const S = window.S;
+      if (!Array.isArray(S[name])) S[name] = [];
+      if (S[name].__proxied3) return;
+      const arr = S[name];
+      const handler = {
+        get(target, prop, recv){
+          const v = Reflect.get(target, prop, recv);
+          if (typeof v === 'function' && ['push','pop','splice','shift','unshift','sort','reverse','copyWithin','fill'].includes(prop)){
+            return function(...args){
+              const r = Array.prototype[prop].apply(target, args);
+              try { saveDumpLocal(); } catch(e){}
+              return r;
+            }
+          }
+          return v;
+        },
+        set(target, prop, value){
+          const ok = Reflect.set(target, prop, value);
+          try { saveDumpLocal(); } catch(e){}
+          return ok;
+        }
+      };
+      const proxy = new Proxy(arr, handler);
+      proxy.__proxied3 = true;
+      S[name] = proxy;
+    } catch(e){}
+  }
+
+  function proxifyObjectLocal(name){
+    try {
+      ensureS();
+      const S = window.S;
+      if (typeof S[name] !== 'object' || S[name] === null) S[name] = {};
+      if (S[name].__proxied3) return;
+      const obj = S[name];
+      const handler = {
+        set(target, prop, value){
+          const ok = Reflect.set(target, prop, value);
+          try { saveDumpLocal(); } catch(e){}
+          return ok;
+        }
+      };
+      const proxy = new Proxy(obj, handler);
+      proxy.__proxied3 = true;
+      S[name] = proxy;
+    } catch(e){}
+  }
+
+  if (!window.__autosave_dump_v3){
+    window.__autosave_dump_v3 = true;
+    loadDump();
+    ensureS();
+    proxifyArrayLocal('coupons');
+    proxifyArrayLocal('waitlist');
+    proxifyArrayLocal('stock');
+    proxifyArrayLocal('haccp');
+    proxifyArrayLocal('promotions');
+    proxifyObjectLocal('settings');
+    attachActionAutosave();
+  }
+})();
+
+
+// ============ PATCH: Autosave Dump v4 + Materials-only in Billing + Mobile Sidebar ============
+
+// Ensure defaults
+S.settings = S.settings || {};
+if (!S.settings.dumpEndpoint) S.settings.dumpEndpoint = 'http://127.0.0.1:8001/dump';
+if (S.settings.vatRate == null) S.settings.vatRate = 22;
+if (S.settings.shopHoursPerDay == null) S.settings.shopHoursPerDay = 8;
+
+// Materials cost helper (service config -> booking fallback)
+function _normKey(s){ return (s||'').toString().normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().trim(); }
+function cfgFor(b){
+  const cfg = S.settings.servicesConfig || {};
+  const raw = get(b,['service','serviceName','title','treatment','servizio','name'],'').toString();
+  const nk = _normKey(raw);
+  for (const key in cfg){
+    const def = cfg[key]||{};
+    const names = [key].concat(def.synonyms||[]).map(_normKey);
+    if (names.includes(nk)) return {key, def};
+  }
+  return {key: raw, def: (cfg[raw]||{})};
+}
+function materialsCost(b){
+  const {def} = cfgFor(b);
+  const svcMat = Number(def.materialsCost ?? def.materialCost ?? 0);
+  const bMat   = Number(get(b,['materialsCost','materialCost'], 0));
+  return bMat > 0 ? bMat : svcMat;
+}
+
+// === Billing compute extension (materials, incidence, margin, profit) ===
+const _recompute_old = (typeof recompute === 'function') ? recompute : null;
+recompute = function(){
+  if (_recompute_old) _recompute_old();
+
+  try {
+    const rows = filtered?.() || [];
+    const ok = rows.filter(isOk);
+
+    // sums
+    const sum = (arr, f) => arr.reduce((s,x)=> s + Number(f(x)||0), 0);
+    const rev = sum(ok, price);
+    const mat = sum(ok, materialsCost);
+    const vatRate = Number(S.settings.vatRate||22)/100;
+    const tax = rev * vatRate;
+    const margin = rev - mat;
+    const profit = margin; // placeholder: utile stimato = margine lordo
+
+    const set = (k,v)=>{ const el = document.querySelector(`[data-kpi="${k}"]`); if(el) el.textContent = currency(v); };
+    if (document.querySelector('[data-kpi="materialsCost"]')) document.querySelector('[data-kpi="materialsCost"]').textContent = currency(mat);
+    if (document.querySelector('[data-kpi="profit"]')) document.querySelector('[data-kpi="profit"]').textContent = currency(profit);
+
+    // Tables per service / pro
+    const by = (keyFn) => {
+      const map = new Map();
+      ok.forEach(b=>{
+        const k = keyFn(b) || '—';
+        if (!map.has(k)) map.set(k,{rev:0,mat:0});
+        const o = map.get(k);
+        o.rev += Number(price(b)||0);
+        o.mat += Number(materialsCost(b)||0);
+      });
+      return map;
+    };
+    const fillTable = (sel, map) => {
+      const tb = document.querySelector(sel + ' tbody');
+      if (!tb) return;
+      tb.innerHTML = '';
+      [...map.entries()].sort((a,b)=> b[1].rev - a[1].rev).forEach(([k,v])=>{
+        const inc = v.rev ? (v.mat / v.rev) : 0;
+        const mar = v.rev - v.mat;
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>${k}</td><td class="bill-right">${currency(v.rev)}</td><td class="bill-right">${currency(v.mat)}</td><td class="bill-right">${(inc*100).toFixed(1)}%</td><td class="bill-right">${currency(mar)}</td>`;
+        tb.appendChild(tr);
+      });
+    };
+    fillTable('#matByService', by(b=>svc(b)));
+    fillTable('#matByPro', by(b=>pro(b)));
+  } catch (e) {
+    console.warn('billing patch error', e);
+  }
+};
+
+// === Autosave Dump v4 ===
+function buildDumpSnapshot(){
+  const rows = (S.data||[]);
+  const lite = rows.map(b => ({
+    eventId: b.eventId || b.id || null,
+    startTime: start(b) || null,
+    service: svc(b) || null,
+    professionalEmail: get(b,['professionalEmail','proEmail','email'],'') || '',
+    professionalName: pro(b) || '',
+    durationMin: Number(b.durationMin || b.duration || 0),
+    total: Number(price(b) || 0)
+  }));
+
+  const f = {
+    from: $('#from')?.value || '',
+    to: $('#to')?.value || '',
+    status: $('#fStatus')?.value || 'all',
+    service: $('#fService')?.value || '',
+    pro: $('#fPro')?.value || '',
+    loc: $('#fLoc')?.value || '',
+    daypart: $('#fDaypart')?.value || ''
+  };
+
+  const snap = {
+    version: "v4",
+    savedAt: new Date().toISOString(),
+    filters: f,
+    settings: S.settings,
+    coupons: S.coupons || [],
+    waitlist: S.waitlist || [],
+    stock: S.stock || [],
+    haccp: S.haccp || [],
+    promotions: S.promotions || [],
+    promoRule: S.promoRule || '',
+    goals: S.goals || [],
+    clientsMeta: S.clientsMeta || {},
+    i18n: S.i18n || {},
+    bookingsLite: lite
+  };
+  return snap;
+}
+
+async function postDump(snap){
+  const tried = new Set();
+  const candidates = [];
+
+  if (S.settings.dumpEndpoint) candidates.push(S.settings.dumpEndpoint);
+  candidates.push(`${location.origin}/cgi-bin/dump.py`,
+                  `${location.origin}/dump`,
+                  'http://127.0.0.1:8001/dump');
+
+  for (const url of candidates){
+    if (!url || tried.has(url)) continue;
+    tried.add(url);
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type':'application/json' },
+        body: JSON.stringify(snap)
+      });
+      // cache locale a prescindere
+      localStorage.setItem('synkris_dump_v4', JSON.stringify(snap));
+      if (res.ok){
+        if (S.settings.dumpEndpoint !== url) { S.settings.dumpEndpoint = url; persist?.(); }
+        return true;
+      }
+    } catch(e){ /* prova il prossimo */ }
+  }
+  logSafety?.('autosave dump failed: nessun endpoint raggiungibile');
+  return false;
+}
+
+function attachAutosaveV4(){
+  if (document.__autosaveV4Attached) return;
+  document.__autosaveV4Attached = true;
+
+  const ID_LIST = [
+    '#apply','#createCoupon','#addCoupon','#addToWaitlist','#addWaitlist','#addStockItem',
+    '#saveStock','#saveHaccp','#savePromo','#savePromotions','#saveSettings','#saveGeneral','#openEditConf'
+  ];
+
+  document.addEventListener('click', async (ev) => {
+    const t = ev.target;
+    if (!t) return;
+    const text = (t.innerText || t.textContent || '').trim().toLowerCase();
+    const matchesText = /^(applica|crea|aggiungi|salva|conferma|nuovo)$/.test(text);
+    const matchesId = ID_LIST.some(sel => t.matches?.(sel));
+    const matchesAttr = t.hasAttribute?.('data-autosave');
+
+    if (matchesText || matchesId || matchesAttr) {
+      const snap = buildDumpSnapshot();
+      await postDump(snap);
+    }
+  });
+}
+
+// Restore from local dump on boot
+function restoreFromLocalDump(){
+  try {
+    const raw = localStorage.getItem('synkris_dump_v4');
+    if (!raw) return;
+    const dump = JSON.parse(raw);
+    if (dump && dump.settings) {
+      // shallow merge settings
+      S.settings = Object.assign({}, S.settings, dump.settings);
+      persist?.(); loadUI?.();
+    }
+    // restore filters UI
+    const f = dump.filters || {};
+    if ($('#from')) $('#from').value = f.from || $('#from').value;
+    if ($('#to')) $('#to').value = f.to || $('#to').value;
+    if ($('#fStatus')) $('#fStatus').value = f.status || $('#fStatus').value;
+    if ($('#fService')) $('#fService').value = f.service || $('#fService').value;
+    if ($('#fPro')) $('#fPro').value = f.pro || $('#fPro').value;
+    if ($('#fLoc')) $('#fLoc').value = f.loc || $('#fLoc').value;
+    if ($('#fDaypart')) $('#fDaypart').value = f.daypart || $('#fDaypart').value;
+  } catch(e){
+    console.warn('restore dump error', e);
+  }
+}
+// end patch 
+// === PATCH: Kill legacy JSON downloads & force POST dump ===
+(function killLegacyDownloads(){
+  // Replace common export/dump functions if they exist
+  ['dump','dumpJSON','dumpJson','downloadDump','saveJson','saveJSON','saveFile','exportJSON','exportData'].forEach(name=>{
+    if (typeof window[name]==='function'){
+      const old = window[name];
+      window[name] = function(...args){
+        try { postDump(buildDumpSnapshot()); } catch(e){ console.warn('postDump failed', e); }
+        console.info('[disabled download]', name);
+        return false;
+      };
+    }
+  });
+
+  // Intercept anchor blob downloads with .json
+  try{
+    const origClick = HTMLAnchorElement.prototype.click;
+    HTMLAnchorElement.prototype.click = function(){
+      const href = this.getAttribute('href') || '';
+      const d = this.getAttribute('download') || '';
+      const isBlob = /^blob:/.test(href);
+      const isJson = /\.json$/i.test(d) || /json/i.test(String(this.type||''));
+      if (isBlob && (isJson || /json/.test(href))){
+        console.info('[blocked] blob json download → POST dump');
+        try { postDump(buildDumpSnapshot()); } catch(e){}
+        return;
+      }
+      return origClick.apply(this, arguments);
+    };
+  }catch(e){}
+
+  // Block setting download attribute for .json on anchors
+  try{
+    const origSet = Element.prototype.setAttribute;
+    Element.prototype.setAttribute = function(name, value){
+      if (this.tagName === 'A' && name === 'download' && /\.json$/i.test(String(value||''))){
+        console.info('[blocked] setAttribute download on JSON');
+        return;
+      }
+      return origSet.apply(this, arguments);
+    };
+  }catch(e){}
+
+  // Also capture clicks on visible elements named "dump/download/esporta"
+  document.addEventListener('click', (ev)=>{
+    const t = ev.target;
+    if (!t) return;
+    const txt = (t.textContent||'').toLowerCase();
+    const idn = (t.id||'').toLowerCase();
+    if (/(dump|download|esporta|export)/.test(txt) || /(dump|download|export)/.test(idn)){
+      ev.preventDefault(); ev.stopPropagation();
+      try { postDump(buildDumpSnapshot()); } catch(e){}
+      console.info('[rerouted] legacy button to POST dump');
+    }
+  }, true);
+})();
+// === END Kill legacy JSON downloads ===
+// Patch JS da aggiungere alla fine di <body>
+const items = document.querySelectorAll('#nav .item');
+const views = document.querySelectorAll('.view');
+const hamburger = document.getElementById('hamburger');
+const navScrim = document.getElementById('navScrim');
+
+// Funzione per attivare la vista corretta al click sulla sidebar
+items.forEach(item => {
+  item.addEventListener('click', () => {
+    // Rimuove 'active' da tutti gli item e alle views
+    items.forEach(i => i.classList.remove('active'));
+    views.forEach(v => v.classList.remove('active'));
+    // Attiva l'item e la view corrispondente
+    item.classList.add('active');
+    const viewId = 'view-' + item.dataset.view;
+    document.getElementById(viewId)?.classList.add('active');
+    // Chiude il menu mobile se aperto
+    document.body.removeAttribute('data-nav');
+    hamburger.setAttribute('aria-expanded', 'false');
+    navScrim.hidden = true;
+  });
+});
+
+// Toggle della sidebar con il pulsante hamburger
+hamburger.addEventListener('click', () => {
+  const open = document.body.getAttribute('data-nav') === 'open';
+  if (!open) {
+    document.body.setAttribute('data-nav', 'open');
+    hamburger.setAttribute('aria-expanded', 'true');
+    navScrim.hidden = false;
+  } else {
+    document.body.removeAttribute('data-nav');
+    hamburger.setAttribute('aria-expanded', 'false');
+    navScrim.hidden = true;
+  }
+});
+
+// Chiude la sidebar cliccando sullo scrim
+navScrim.addEventListener('click', () => {
+  document.body.removeAttribute('data-nav');
+  hamburger.setAttribute('aria-expanded', 'false');
+  navScrim.hidden = true;
+});
+
+</script>
+<script>
+(function(){
+  const nav = document.getElementById('nav');
+  const views = Array.from(document.querySelectorAll('.view'));
+  const hamburger = document.getElementById('hamburger');
+  const navScrim = document.getElementById('navScrim');
+
+  // Delegation robusta: prende anche click su figli dentro .item
+  function findItem(el){
+    return el?.closest?.('.item[data-view]');
+  }
+
+  function showView(key){
+    // disattiva tutti
+    document.querySelectorAll('#nav .item').forEach(i=>i.classList.remove('active'));
+    views.forEach(v=>v.classList.remove('active'));
+    // attiva target
+    const item = document.querySelector(`#nav .item[data-view="${key}"]`);
+    item?.classList.add('active');
+    const panel = document.getElementById('view-' + key);
+    panel?.classList.add('active');
+  
+    try { if (key === 'calendar') renderAgenda(filtered()); if (key === 'clients') renderClientsTable(filtered()); } catch(_) {}
+}
+
+  // Click sulla sidebar
+  if (nav && !nav.__patched) {
+    nav.__patched = true;
+    nav.addEventListener('click', (e) => {
+      const it = findItem(e.target);
+      if (!it) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const key = it.getAttribute('data-view');
+      if (!key) return;
+      showView(key);
+      // chiudi off-canvas su mobile
+      document.body.removeAttribute('data-nav');
+      if (hamburger) hamburger.setAttribute('aria-expanded', 'false');
+      if (navScrim) navScrim.hidden = true;
+    }, { capture: true });
+  }
+
+  // Toggle hamburger (mobile)
+  if (hamburger && !hamburger.__patched) {
+    hamburger.__patched = true;
+    hamburger.addEventListener('click', (e)=>{
+      e.preventDefault();
+      const open = document.body.getAttribute('data-nav') === 'open';
+      if (open) {
+        document.body.removeAttribute('data-nav');
+        hamburger.setAttribute('aria-expanded', 'false');
+        if (navScrim) navScrim.hidden = true;
+      } else {
+        document.body.setAttribute('data-nav', 'open');
+        hamburger.setAttribute('aria-expanded', 'true');
+        if (navScrim) navScrim.hidden = false;
+      }
+    });
+  }
+
+  // Chiudi cliccando sullo scrim
+  if (navScrim && !navScrim.__patched) {
+    navScrim.__patched = true;
+    navScrim.addEventListener('click', ()=>{
+      document.body.removeAttribute('data-nav');
+      if (hamburger) hamburger.setAttribute('aria-expanded', 'false');
+      navScrim.hidden = true;
+    });
+  }
+
+  // Safety: se un overlay fosse rimasto aperto, chiudilo all’avvio
+  window.addEventListener('load', ()=>{
+    const modals = ['safety','globalSearch'];
+    modals.forEach(id => {
+      const el = document.getElementById(id);
+      if (el && getComputedStyle(el).display !== 'none') el.style.display = 'none';
+    });
+    // imposta attiva la prima view se nulla è attivo
+    if (!document.querySelector('.view.active')) {
+      const first = document.querySelector('#nav .item[data-view]');
+      if (first) showView(first.getAttribute('data-view'));
+    }
+  });
+})();
+</script>
+<script>
+/* ===== PATCH: config + bookings loader robusto + import ===== */
+
+(async function(){
+  // --- util già presenti ma se mancassero, li difendiamo
+  const $ = window.$ || (s=>document.querySelector(s));
+  const logSafety = window.logSafety || (m=>console.warn('[safety]', m));
+  const persist = window.persist || (()=>{ try{
+    localStorage.setItem('dashboard.settings', JSON.stringify(window.S?.settings||{}));
+  }catch(e){} });
+
+  async function fetchJsonNoCache(url){
+    const res = await fetch(url, { cache: 'no-store' });
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+    return await res.json();
+  }
+
+  // --- NORMALIZZATORI ---
+  function normalizeBookings(obj){
+    const arr = Array.isArray(obj) ? obj
+      : (Array.isArray(obj.bookings) ? obj.bookings
+      : (Array.isArray(obj.rows) ? obj.rows : []));
+    for (const b of arr) {
+      if (!b.endTime && b.startTime && (b.durationMin || b.duration)) {
+        const mins = Number(b.durationMin || b.duration);
+        b.endTime = new Date(new Date(b.startTime).getTime() + mins*60000).toISOString();
+      }
+    }
+    return arr;
+  }
+
+  function normalizeServicesConfig(raw){
+    // accetta {servicesConfig:{...}} o {services:[{name,price,synonyms,...}]} o {listino:[...]}
+    const out = {};
+    if (raw?.servicesConfig && typeof raw.servicesConfig === 'object') {
+      return raw.servicesConfig;
+    }
+    const list = raw?.services || raw?.listino || [];
+    if (Array.isArray(list)) {
+      list.forEach(s=>{
+        const key = s.key || s.name || s.service || s.servizio;
+        if (!key) return;
+        out[key] = {
+          price: Number(s.price ?? s.prezzo ?? 0),
+          duration: Number(s.duration ?? s.durata ?? 0),
+          alias: s.alias || '',
+          synonyms: Array.isArray(s.synonyms) ? s.synonyms : (s.aliases || []),
+          materialsCost: Number(s.materialsCost ?? s.materiali ?? 0)
+        };
+      });
+      return out;
+    }
+    return out; // vuoto se niente
+  }
+
+  // --- LOADER CONFIG ---
+  async function loadConfig(){
+    const S = window.S || (window.S = {settings:{}});
+    const candidates = [
+      './config.json',
+      '/config.json',
+    ];
+    for (const url of candidates) {
+      try {
+        const j = await fetchJsonNoCache(url);
+        const cfg = normalizeServicesConfig(j);
+        if (Object.keys(cfg).length) {
+          S.settings = S.settings || {};
+          S.settings.servicesConfig = cfg;
+
+          // opzionali se presenti nel file
+          if (j.vatRate != null) S.settings.vatRate = Number(j.vatRate);
+          if (j.defaultPrice != null) S.settings.defaultPrice = Number(j.defaultPrice);
+          if (j.currency) S.settings.currency = j.currency;
+          if (j.locale) S.settings.locale = j.locale;
+
+          persist();
+          logSafety(`config caricato da ${url} (${Object.keys(cfg).length} servizi)`);
+          return cfg;
+        }
+      } catch(e) { logSafety(`config fetch ${url}: ${e.message}`); }
+    }
+
+    // Fallback da localStorage
+    try {
+      const stored = JSON.parse(localStorage.getItem('dashboard.settings')||'{}');
+      if (stored.servicesConfig && Object.keys(stored.servicesConfig).length){
+        window.S.settings = Object.assign(window.S.settings||{}, stored);
+        logSafety('config caricato da localStorage');
+        return stored.servicesConfig;
+      }
+    } catch(e){}
+
+    logSafety('config non trovato');
+    return {};
+  }
+
+  // --- LOADER BOOKINGS ---
+  async function loadBookings(){
+    // NB: richiede server HTTP (non file://)
+    const candidates = [
+      './bookings.json',
+      '/bookings.json',
+      './data/bookings.json'
+    ];
+    for (const url of candidates) {
+      try {
+        const j = await fetchJsonNoCache(url);
+        const arr = normalizeBookings(j);
+        if (arr.length) {
+          logSafety(`bookings caricati da ${url} (${arr.length} righe)`);
+          return arr;
+        }
+      } catch(e){ logSafety(`bookings fetch ${url}: ${e.message}`); }
+    }
+    throw new Error('bookings.json non trovato su nessun path noto');
+  }
+
+  // --- POPOLA SELECT SERVIZI/PRO/SEDI QUANDO POSSIBILE ---
+  function populateFilters(){
+    const S = window.S || {};
+    const data = S.data || [];
+    const cfg = S.settings?.servicesConfig || {};
+
+    const svcSel = $('#fService');
+    const proSel = $('#fPro');
+    const locSel = $('#fLoc');
+
+    if (svcSel) {
+      const set = new Set(Object.keys(cfg));
+      svcSel.innerHTML = '<option value="">Tutti i servizi</option>' +
+        [...set].sort().map(s=>`<option value="${s}">${s}</option>`).join('');
+    }
+    if (proSel) {
+      const set = new Set(data.map(b=> b.professionalName || b.professional || b.pro || '').filter(Boolean));
+      proSel.innerHTML = '<option value="">Tutti i professionisti</option>' +
+        [...set].sort().map(p=>`<option value="${p}">${p}</option>`).join('');
+    }
+    if (locSel) {
+      const set = new Set(data.map(b=> b.location || b.locationName || b.address || b.sede || '').filter(Boolean));
+      locSel.innerHTML = '<option value="">Tutte le sedi</option>' +
+        [...set].sort().map(l=>`<option value="${l}">${l}</option>`).join('');
+    }
+  }
+
+  // --- WIRING IMPORT (JSON/ICS) ---
+  function wireImports(){
+    const S = window.S || (window.S = {settings:{}, data:[]});
+
+    // Importa dataset: #upload apre #file (già nel DOM)
+    const btnUpload = $('#upload');
+    const fileInput = $('#file');
+    if (btnUpload && fileInput && !btnUpload.__wired) {
+      btnUpload.__wired = true;
+      btnUpload.addEventListener('click', ()=> fileInput.click());
+      fileInput.addEventListener('change', async (e)=>{
+        const files = Array.from(e.target.files||[]);
+        const acc = [];
+        for (const f of files) {
+          const text = await f.text();
+          if (f.name.toLowerCase().endsWith('.json')) {
+            try {
+              const j = JSON.parse(text);
+              acc.push(...normalizeBookings(j));
+            } catch(err){ logSafety(`JSON import errore ${f.name}: ${err.message}`); }
+          } else if (f.name.toLowerCase().endsWith('.ics') || text.startsWith('BEGIN:VCALENDAR')) {
+            // parser ICS minimale (solo DTSTART/DTEND/SUMMARY)
+            const lines = text.split(/\r?\n/);
+            let cur=null;
+            for (const ln of lines) {
+              if (ln.startsWith('BEGIN:VEVENT')) cur = {};
+              else if (ln.startsWith('END:VEVENT')) { if (cur?.startTime) acc.push(cur); cur=null; }
+              else if (cur) {
+                if (ln.startsWith('DTSTART')) {
+                  const v = ln.split(':').pop().trim();
+                  cur.startTime = v.length===8 ? v.replace(
+                    /(\d{4})(\d{2})(\d{2})/,'$1-$2-$3T09:00:00.000Z'
+                  ) : new Date(v.replace('Z','Z')).toISOString();
+                } else if (ln.startsWith('DTEND')) {
+                  const v = ln.split(':').pop().trim();
+                  cur.endTime = v.length===8 ? v.replace(
+                    /(\d{4})(\d{2})(\d{2})/,'$1-$2-$3T10:00:00.000Z'
+                  ) : new Date(v.replace('Z','Z')).toISOString();
+                } else if (ln.startsWith('SUMMARY')) {
+                  cur.service = ln.split(':').slice(1).join(':').trim();
+                } else if (ln.startsWith('LOCATION')) {
+                  cur.location = ln.split(':').slice(1).join(':').trim();
+                }
+              }
+            }
+          }
+        }
+        if (acc.length) {
+          S.data = acc;
+          try { window.recompute?.(); } catch(e){}
+          populateFilters();
+          logSafety(`Import completato: ${acc.length} righe`);
+        } else {
+          logSafety('Nessuna riga importata');
+        }
+        e.target.value = ''; // reset input
+      });
+    }
+
+    // Importa config: #btnImportCfg apre #importCfgFile
+    const btnCfg = $('#btnImportCfg') || $('#importLocations'); // fallback se usi altro id
+    const cfgInput = $('#importCfgFile');
+    const realBtnCfg = $('#btnImportCfg') || $('#importCfg'); // prova più id possibili
+    const triggerBtn = realBtnCfg || btnCfg;
+
+    if (triggerBtn && cfgInput && !triggerBtn.__wired) {
+      triggerBtn.__wired = true;
+      triggerBtn.addEventListener('click', ()=> cfgInput.click());
+      cfgInput.addEventListener('change', async (e)=>{
+        const f = e.target.files?.[0];
+        if (!f) return;
+        try {
+          const j = JSON.parse(await f.text());
+          const cfg = normalizeServicesConfig(j);
+          const S = window.S || (window.S = {settings:{}});
+          S.settings = S.settings || {};
+          S.settings.servicesConfig = cfg;
+          if (j.vatRate != null) S.settings.vatRate = Number(j.vatRate);
+          if (j.defaultPrice != null) S.settings.defaultPrice = Number(j.defaultPrice);
+          if (j.currency) S.settings.currency = j.currency;
+          if (j.locale) S.settings.locale = j.locale;
+          persist();
+          populateFilters();
+          window.recompute?.();
+          logSafety(`config importato (${Object.keys(cfg).length} servizi)`);
+        } catch(err){
+          logSafety(`config import errore: ${err.message}`);
+        }
+        e.target.value = '';
+      });
+    }
+  }
+
+  // --- BOOT SEQUENZA SAFE ---
+  try {
+    // se apri con file://, evita fetch e aspetta un import manuale
+    if (location.protocol === 'file:') {
+      logSafety('Apri con server HTTP. Intanto puoi usare i bottoni Importa.');
+      wireImports();
+      return;
+    }
+
+    await loadConfig();
+    const bookings = await loadBookings();
+    window.S = window.S || {settings:{}, data:[]};
+    window.S.data = bookings;
+
+    // prima recompute se esiste, altrimenti safe
+    try { window.setup?.(); } catch(e){}
+    try { window.recompute?.(); } catch(e){}
+    wireImports();
+    // filtri allineati
+    populateFilters();
+  } catch(err){
+    logSafety(`boot loader: ${err.message}`);
+    wireImports(); // almeno gli import funzionano
+  }
+})();
+</script>
+<script>
+// ======= DROP-IN PATCH: recompute harden =======
+
+// Helper locali (non toccano altri nomi)
+function _sum(arr, fn){ let s=0; for(const x of arr) s+=Number(fn?fn(x):x)||0; return s; }
+function _groupBy(arr, keyFn){ const m=new Map(); for(const x of arr){ const k=keyFn(x); if(!m.has(k)) m.set(k,[]); m.get(k).push(x);} return m; }
+function _fmtDay(d){ const z=new Date(d); z.setHours(0,0,0,0); return z.toISOString().slice(0,10); }
+function _daysInRange(from,to){ const A=new Date(from), B=new Date(to); A.setHours(0,0,0,0); B.setHours(0,0,0,0); return Math.max(1, Math.round((B-A)/86400000)+1); }
+
+function recompute(){
+  const t0 = performance.now();
+  if(!window.S) return;
+  const rows = (typeof filtered==='function') ? filtered() : (S.data||[]);
+  const ok   = rows.filter(b=> !['cancelled','canceled','no_show'].includes(String((b.status||b.state||'').toLowerCase())));
+  const nos  = rows.filter(b=> String((b.status||b.state||'').toLowerCase())==='no_show');
+  const canc = rows.filter(b=> ['cancelled','canceled'].includes(String((b.status||b.state||'').toLowerCase())));
+
+  // --- utilities dal file
+  const p = (b)=> (typeof price==='function') ? price(b) : Number(b.price||b.total||b.amount||0);
+  const st = (b)=> new Date(b.startTime || b.start || b.start_date);
+  const en = (b)=> new Date(b.endTime   || b.end   || b.end_date);
+  const pro = (b)=> (b.professionalName||b.professional||b.pro||'—');
+  const svc = (b)=> {
+    const raw = (b.service||b.serviceName||b.title||b.treatment||b.servizio||'Servizio');
+    // prova alias da config se c'è
+    const cfg = S.settings?.servicesConfig||{};
+    const def = cfg[raw];
+    return def?.alias || raw;
+  };
+  const loc = (b)=> (b.location||b.locationName||b.address||b.sede||'');
+
+  // ====== KPI base (Dashboard già ok nel tuo file, li rifacciamo robusti)
+  const set = (k,v)=>{ const el=document.querySelector(`[data-kpi="${k}"]`); if(el) el.textContent=v; };
+  set('total', ok.length);
+  set('noShow', nos.length);
+  set('cancellations', canc.length);
+
+  // nuovi clienti nel range
+  const all = S.data||[];
+  const byClient = _groupBy(all.filter(b=>b.startTime), b=>{
+    return (b.clientPhone||b.customerPhone||b.phone||'') || ('name:'+(b.customerName||b.clientName||b.name||'').toLowerCase().trim());
+  });
+  const {from,to} = (typeof getRange==='function') ? getRange() : {from:new Date('1970-01-01'),to:new Date()};
+  let newClients=0, actives=0;
+  for(const [k,arr] of byClient){
+    const first = arr.map(st).filter(Boolean).sort((a,b)=>a-b)[0];
+    const had   = arr.some(b=> st(b)>=from && st(b)<=to && !['cancelled','canceled','no_show'].includes(String((b.status||b.state||'').toLowerCase())));
+    if (had) actives++;
+    if (first && first>=from && first<=to) newClients++;
+  }
+  const returning = Math.max(0, actives - newClients);
+  set('newClients', newClients);
+  set('returnRate', actives? Math.round((returning/actives)*100)+'%':'0%');
+
+  // ====== DASHBOARD CHARTS ======
+  // 1) Daily appointments (ok only)
+  if (document.getElementById('dailyChart')) {
+    const g = _groupBy(ok, b=> _fmtDay(st(b)));
+    const days = [...g.keys()].sort();
+    const vals = days.map(d=> g.get(d).length);
+    line('dailyChart', days, vals, 'daily');
+  }
+
+  // 2) Heatmap (ok only)
+  if (document.getElementById('heatmap')) {
+    const matrix = Array.from({length:7},()=>Array(24).fill(0));
+    ok.forEach(b=>{
+      const d = st(b); const dow = (d.getDay()+7)%7; const h = d.getHours();
+      matrix[dow][h] += 1;
+    });
+    heatmapChart('heatmap', matrix);
+  }
+
+  // 3) Capacity gap (minuti liberi, stima robusta)
+  if (document.getElementById('gapChart')) {
+    const days = _daysInRange(from,to);
+    const pros = new Set(ok.map(pro)); // se non hai config proHours, usa count pros attivi
+    const hoursPerDay = Number(S.settings?.hoursPerDay||8);
+    const openMins = days * pros.size * hoursPerDay * 60;
+
+    const bookedMins = _sum(ok, b=>{
+      const A=st(b), B=en(b);
+      return (A&&B)? Math.max(0, Math.round((B-A)/60000)) : Number(b.durationMin||b.duration||0);
+    });
+    const gap = Math.max(0, openMins - bookedMins);
+    // Mostra come serie singola (giorno unico)
+    bar('gapChart', ['liberi'], [Math.round(gap)], 'gap');
+  }
+
+  // ====== BILLING ======
+  // Ricavi netti (solo ok)
+  const revenue = _sum(ok, p);
+  const vat = Number(S.settings?.vatRate ?? 22);
+  const revenueGross = revenue * (1 + (vat/100));
+  const avgTicket = ok.length ? revenue/ok.length : 0;
+
+  // Tempo risparmiato + valore
+  const saveMin = Number(S.settings?.saveMin||0);
+  const hourly = Number(S.settings?.hourly||0);
+  const timeSavedH = (ok.length * saveMin)/60;
+  const timeValue = timeSavedH * hourly;
+
+  // € / ora aperta (stima come sopra)
+  const days = _daysInRange(from,to);
+  const prosSet = new Set((S.data||[]).map(pro).filter(Boolean));
+  const hoursPerDay = Number(S.settings?.hoursPerDay||8);
+  const hoursOpen = Math.max(1, days * Math.max(1, prosSet.size) * hoursPerDay);
+  const revPerOpenHour = revenue / hoursOpen;
+
+  set('revenue', currency(revenue));
+  set('revenueGross', currency(revenueGross));
+  set('avgTicket', currency(avgTicket));
+  set('timeSaved', `${Math.round(timeSavedH*10)/10}h`);
+  set('timeValue', currency(timeValue));
+  set('revPerOpenHour2', currency(revPerOpenHour));
+  set('tax', currency(revenueGross - revenue)); // IVA stimata
+
+  // ====== MATERIALI & MARGINE ======
+  const cfg = S.settings?.servicesConfig || {};
+  const materialsCostBySvc = {};
+  const revenueBySvc = {};
+  ok.forEach(b=>{
+    const s = svc(b);
+    revenueBySvc[s] = (revenueBySvc[s]||0) + p(b);
+    const m = Number(cfg[s]?.materialsCost||0);
+    materialsCostBySvc[s] = (materialsCostBySvc[s]||0) + m;
+  });
+  const materialsTot = _sum(Object.values(materialsCostBySvc));
+  const margin = revenue - materialsTot;
+  set('margin', currency(margin));
+
+  // Tabella Materiali — per Servizio
+  const t1 = document.querySelector('#matByService tbody');
+  if (t1) {
+    t1.innerHTML = '';
+    const services = Object.keys(revenueBySvc).sort((a,b)=>revenueBySvc[b]-revenueBySvc[a]);
+    services.forEach(s=>{
+      const rev = revenueBySvc[s]||0;
+      const mat = materialsCostBySvc[s]||0;
+      const inc = rev? (mat/rev)*100 : 0;
+      const mar = rev-mat;
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>${s}</td><td class="bill-right">${currency(rev)}</td><td class="bill-right">${currency(mat)}</td><td class="bill-right">${inc.toFixed(1)}%</td><td class="bill-right">${currency(mar)}</td>`;
+      t1.appendChild(tr);
+    });
+  }
+
+  // Tabella Materiali — per Professionista
+  const revenueByPro = {};
+  const materialsByPro = {};
+  ok.forEach(b=>{
+    const pr = pro(b)||'—';
+    revenueByPro[pr] = (revenueByPro[pr]||0) + p(b);
+    const mc = Number(cfg[svc(b)]?.materialsCost||0);
+    materialsByPro[pr] = (materialsByPro[pr]||0) + mc;
+  });
+  const t2 = document.querySelector('#matByPro tbody');
+  if (t2) {
+    t2.innerHTML='';
+    Object.keys(revenueByPro).sort((a,b)=>revenueByPro[b]-revenueByPro[a]).forEach(pr=>{
+      const rev=revenueByPro[pr]||0, mat=materialsByPro[pr]||0, inc=rev? (mat/rev)*100:0, mar=rev-mat;
+      const tr=document.createElement('tr');
+      tr.innerHTML=`<td>${pr}</td><td class="bill-right">${currency(rev)}</td><td class="bill-right">${currency(mat)}</td><td class="bill-right">${inc.toFixed(1)}%</td><td class="bill-right">${currency(mar)}</td>`;
+      t2.appendChild(tr);
+    });
+  }
+
+  // ====== SPLIT ENTRATE (Settings→proShare %) ======
+  const splitT = document.querySelector('#splitTable tbody');
+  if (splitT) {
+    splitT.innerHTML='';
+    const share = S.settings?.proShare || {}; // { "Melissa":30, "Diana":40, ... }
+    const totals = {};
+    Object.keys(revenueByPro).forEach(pr=>{
+      const perc = Number(share[pr]||0)/100;
+      totals[pr] = revenueByPro[pr] * perc;
+    });
+    Object.keys(totals).sort((a,b)=>totals[b]-totals[a]).forEach(pr=>{
+      const tr=document.createElement('tr');
+      tr.innerHTML = `<td>${pr}</td><td class="bill-right">${currency(totals[pr])}</td>`;
+      splitT.appendChild(tr);
+    });
+  }
+
+  // ====== LEADERBOARD PRO ======
+  const lead = document.querySelector('#proLead tbody');
+  if (lead) {
+    lead.innerHTML='';
+    // minuti lavorati per pro
+    const minsByPro = {};
+    ok.forEach(b=>{
+      const pr = pro(b)||'—';
+      const mins = (()=>{ const A=st(b), B=en(b); return (A&&B)? Math.max(0,Math.round((B-A)/60000)) : Number(b.durationMin||b.duration||0); })();
+      minsByPro[pr] = (minsByPro[pr]||0) + mins;
+    });
+    const days = _daysInRange(from,to);
+    const proHours = S.settings?.proHours || {}; // ore/giorno per pro
+    const rowsLead = Object.keys(revenueByPro).map(pr=>{
+      const rev = revenueByPro[pr]||0;
+      const workH = (minsByPro[pr]||0)/60;
+      const oh = Number(proHours[pr] ?? S.settings?.hoursPerDay ?? 8) * days;
+      const util = oh? Math.min(100, (workH/oh)*100) : 0;
+      const eph = workH? rev/workH : 0;
+      return {pr, rev, workH, eph, util};
+    }).sort((a,b)=>b.eph-a.eph);
+    rowsLead.forEach(r=>{
+      const tr=document.createElement('tr');
+      tr.innerHTML = `<td>${r.pr}</td><td class="bill-right">${currency(r.rev)}</td><td class="bill-right">${r.workH.toFixed(1)}</td><td class="bill-right">${currency(r.eph)}</td><td class="bill-right">${r.util.toFixed(1)}%</td>`;
+      lead.appendChild(tr);
+    });
+  }
+
+  // ====== PARETO SERVIZI ======
+  if (document.getElementById('paretoServices')) {
+    const svcRev = Object.entries(revenueBySvc).sort((a,b)=>b[1]-a[1]);
+    const labels = svcRev.map(([s])=>s);
+    const vals   = svcRev.map(([,v])=>v);
+    bar('paretoServices', labels, vals, 'paretoSvc');
+  }
+
+  // ====== RICAVI GIORNALIERI + FORECAST NAIVE ======
+  if (document.getElementById('revChart') || document.getElementById('revForecast')) {
+    const g = _groupBy(ok, b=> _fmtDay(st(b)));
+    const days = [...g.keys()].sort();
+    const vals = days.map(d=> _sum(g.get(d), p));
+    if (document.getElementById('revChart')) line('revChart', days, vals, 'revDaily');
+
+    // forecast: media mobile semplice → prossimi 30 giorni
+    const mean = vals.length ? _sum(vals)/vals.length : 0;
+    const fDays = Array.from({length:30},(_,i)=>{
+      const d=new Date(days[days.length-1]||new Date()); d.setDate(d.getDate()+i+1); return d.toISOString().slice(0,10);
+    });
+    const fVals = fDays.map(()=>mean);
+    if (document.getElementById('revForecast')) line('revForecast', fDays, fVals, 'revForecast');
+  }
+
+  const t1ms = Math.round(performance.now()-t0);
+  const perf = document.getElementById('perf'); if (perf) perf.textContent = t1ms+' ms';
+}
+</script>
+
+<script>
+(function(){
+  const log = m=>console.warn('[loader]', m);
+
+  async function fetchJson(url){
+    const r = await fetch(url, {cache:'no-store'});
+    if(!r.ok) throw new Error(r.status+' '+r.statusText);
+    return r.json();
+  }
+
+  async function boot(){
+    window.S = window.S || {settings:{}, data:[]};
+
+    // CONFIG: prova ./config.json, poi ./data/config.json; se fallisce, vai avanti lo stesso
+    const cfgPaths = ['./config.json','./data/config.json'];
+    for(const u of cfgPaths){
+      try{
+        const j = await fetchJson(u);
+        S.settings.servicesConfig = (j.servicesConfig)||{};
+        if (j.proShare) S.settings.proShare = j.proShare;
+        if (j.proHours) S.settings.proHours = j.proHours;
+        if (j.vatRate!=null) S.settings.vatRate = Number(j.vatRate);
+        if (j.hoursPerDay!=null) S.settings.hoursPerDay = Number(j.hoursPerDay);
+        log('config ok: '+u);
+        break;
+      }catch(e){ log('config miss: '+u); }
+    }
+
+    // BOOKINGS: prova ./bookings.json, poi ./data/bookings.json
+    const bkPaths = ['./bookings.json','./data/bookings.json'];
+    let loaded = false;
+    for(const u of bkPaths){
+      try{
+        const j = await fetchJson(u);
+        S.data = Array.isArray(j) ? j : (j.bookings||j.rows||[]);
+        loaded = true;
+        log('bookings ok: '+u+' ('+S.data.length+')');
+        break;
+      }catch(e){ log('bookings miss: '+u); }
+    }
+
+    // anche senza config, fai partire la UI; senza bookings mostra 0
+    try{ window.setup?.(); }catch(e){}
+    try{ window.recompute?.(); }catch(e){ console.error(e); }
+  }
+
+  if (location.protocol === 'file:') {
+    alert('Apri via HTTP (python -m http.server). I fetch non funzionano su file://');
+  } else {
+    boot();
+  }
+})();
+
+
+
+
+/* ===== Server Dump Loader (non-distruttivo) ===== */
+async function loadServerDump(){
+  const urls = [
+    (S.settings && S.settings.dumpGetEndpoint)||null,
+    `${location.origin}/data/dashboard_dump.json`,
+    `${location.origin}/dashboard_dump.json`,
+    './data/dashboard_dump.json',
+    './dashboard_dump.json',
+    'http://127.0.0.1:8001/dump'
+  ].filter(Boolean);
+  for (const url of urls){
+    try{
+      const res = await fetch(url, {cache:'no-store'});
+      if (!res.ok) continue;
+      const obj = await res.json();
+      if (obj && typeof obj==='object') return obj;
+    }catch(e){}
+  }
+  return null;
+}
+function mergeArraysBy(a,b,keys){
+  a = Array.isArray(a)? a.slice(): [];
+  b = Array.isArray(b)? b.slice(): [];
+  const pickId = (o)=>{
+    for (const k of keys){ if (o && o[k]!=null) return String(o[k]); }
+    try { return JSON.stringify(o); } catch(_){ return String(o); }
+  };
+  const map = new Map(a.map(x=>[pickId(x), x]));
+  b.forEach(x=>{
+    const id = pickId(x);
+    if (map.has(id) && typeof map.get(id)==='object' && typeof x==='object') Object.assign(map.get(id), x);
+    else map.set(id, x);
+  });
+  return Array.from(map.values());
+}
+function mergeDumpIntoS(obj){
+  if (!obj || typeof obj!=='object') return;
+  S.settings    = Object.assign({}, obj.settings||{}, S.settings||{}); // server first, poi locale
+  S.coupons     = mergeArraysBy(obj.coupons||[],     S.coupons,     ['id','code']);
+  S.waitlist    = mergeArraysBy(obj.waitlist||[],    S.waitlist,    ['id','phone']);
+  S.stock       = mergeArraysBy(obj.stock||[],       S.stock,       ['sku','name','id']);
+  S.haccp       = mergeArraysBy(obj.haccp||[],       S.haccp,       ['id','name']);
+  S.promotions  = mergeArraysBy(obj.promotions||[],  S.promotions,  ['id','name']);
+  S.goals       = mergeArraysBy(obj.goals||[],       S.goals,       ['k','id','name']);
+  S.clientsMeta = Object.assign({}, obj.clientsMeta||{}, S.clientsMeta||{});
+  S.i18n        = Object.assign({}, obj.i18n||{}, S.i18n||{});
+}
+let __dumpOnce = false;
+async function ensureDumpLoaded(){
+  if (__dumpOnce) return;
+  const snap = await loadServerDump();
+  if (snap) mergeDumpIntoS(snap);
+  __dumpOnce = true;
+}
+// Hook: bootData + showView -> carica dump prima di disegnare
+const __origBoot = window.bootData;
+window.bootData = async function(ms){
+  try { await ensureDumpLoaded(); } catch(_){}
+  return __origBoot.apply(this, arguments);
+};
+const __origShowView = window.showView;
+window.showView = async function(key){
+  try { await ensureDumpLoaded(); } catch(_){}
+  return __origShowView.apply(this, arguments);
+};
+
+
+</script>
+
+</body>
+</html>

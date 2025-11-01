@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Editor Configurazione JSON — Patch Materiali & Modifica</title>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px; max-width: 980px; margin: auto; }
+    h1 { text-align: center; margin-bottom: 12px; }
+    .top-actions { display: flex; justify-content: center; gap: 12px; margin-bottom: 16px; }
+    .btn { margin-top: 0; padding: 10px 15px; background: #007bff; color: #fff; border: none; cursor: pointer; border-radius: 6px; text-decoration: none; display: inline-block; }
+    .btn:hover { background: #0056b3; }
+    .btn.secondary { background: #6b7280; }
+    .btn.secondary:hover { background: #4b5563; }
+    h2, h3 { margin-top: 30px; border-bottom: 1px solid #ccc; padding-bottom: 5px; }
+    label { display: block; margin-top: 10px; font-weight: normal; }
+    input[type="text"], input[type="number"], input[type="email"], input[type="time"], textarea { width: 100%; padding: 8px; margin-top: 5px; box-sizing: border-box; }
+    textarea { font-family: monospace; }
+    .item { border: 1px solid #ddd; padding: 10px; margin-top: 10px; position: relative; background: #f9f9f9; border-radius: 6px; }
+    .remove-btn { position: absolute; top: 10px; right: 10px; background: #e74c3c; color: #fff; border: none; padding: 4px 8px; cursor: pointer; border-radius: 4px; }
+    .icon-btn { position: absolute; top: 10px; right: 48px; background: #555; color: #fff; border: none; padding: 4px 8px; cursor: pointer; border-radius: 4px; }
+    .icon-btn:hover { background: #333; }
+    .info { background: #eaf4ff; padding: 15px; border: 1px solid #90caf9; margin-bottom: 20px; }
+    #livePreview { background: #f4f4f4; padding: 10px; white-space: pre-wrap; margin-top: 15px; height: 220px; overflow: auto; }
+    #spinnerOverlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(255,255,255,0.8); align-items: center; justify-content: center; z-index: 999; }
+    .spinner { border: 8px solid #f3f3f3; border-top: 8px solid #007bff; border-radius: 50%; width: 60px; height: 60px; animation: spin 1s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #jsonError { color: red; margin-top: 5px; font-family: monospace; white-space: pre-wrap; }
+    .fade-in { opacity: 0; transform: translateY(10px); animation: fadeInUp 0.5s forwards; }
+    @keyframes fadeInUp { to { opacity: 1; transform: translateY(0); } }
+    #toast { position: fixed; bottom: 20px; right: 20px; background: #333; color: #fff; padding: 10px 20px; border-radius: 4px; display: none; }
+    .filter-input { margin-bottom: 10px; }
+    .editor { margin-top: 10px; padding: 10px; background: #fff; border: 1px dashed #ccc; display: none; border-radius: 6px; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .row > div { display: flex; flex-direction: column; }
+    .checkbox-list label { display: inline-block; margin-right: 12px; margin-top: 6px; }
+    .muted { color: #6b7280; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <h1 id="title">Editor Configurazione JSON</h1>
+  <div class="top-actions">
+    <a href="dashboard.html" id="btnBack" class="btn secondary" aria-label="Indietro (dashboard)">← Indietro (dashboard)</a>
+  </div>
+
+  <div id="spinnerOverlay"><div class="spinner"></div></div>
+  <div class="info" role="status" id="infoText">Carica il tuo config.json oppure crea nuova configurazione.</div>
+
+  <h2 id="labelConfigInit">Config iniziale</h2>
+  <button id="btnNewConfig" class="btn" aria-label="Nuova Configurazione">Nuova Configurazione</button>
+  <label for="jsonInput" id="labelOrPaste">Oppure incolla JSON esistente:</label>
+  <textarea id="jsonInput" rows="6" placeholder=""></textarea>
+  <div id="jsonError" role="alert"></div>
+  <label for="jsonFile" id="labelOrSelect">Oppure seleziona file JSON:</label>
+  <input type="file" id="jsonFile" accept="application/json">
+  <button id="btnLoadConfig" class="btn" disabled aria-disabled="true" aria-label="Carica Configurazione">Carica Configurazione</button>
+
+  <div id="editor" class="fade-in" style="display:none;" aria-live="polite">
+    <h2 id="labelServices">Servizi</h2>
+    <input id="filterService" class="filter-input" type="text" placeholder="Cerca servizio...">
+    <div id="servicesContainer"></div>
+    <h3 id="labelAddService">Aggiungi Nuovo Servizio</h3>
+    <label for="newServiceName" id="labelServiceName">Nome servizio</label>
+    <input type="text" id="newServiceName" required>
+    <div class="row">
+      <div>
+        <label for="newServiceDuration" id="labelServiceDuration">Durata (min)</label>
+        <input type="number" id="newServiceDuration" required>
+      </div>
+      <div>
+        <label for="newServicePrice" id="labelServicePrice">Prezzo (€)</label>
+        <input type="number" id="newServicePrice" step="0.01" required>
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label for="newServiceMaterialsCost" id="labelServiceMaterialsCost">Costo materiali (€)</label>
+        <input type="number" id="newServiceMaterialsCost" step="0.01" value="0">
+        <span class="muted">Usato nel calcolo margine: prezzo - costo materiali.</span>
+      </div>
+      <div>
+        <label id="labelServiceProfessionals">Professionisti</label>
+        <div id="newServiceProfessionals" class="checkbox-list"></div>
+      </div>
+    </div>
+    <label for="newServiceAllergens" id="labelServiceAllergens">Allergeni (separati da virgola)</label>
+    <input type="text" id="newServiceAllergens" pattern="^[A-Za-zÀ-ž, ]*$">
+    <label for="newServiceSynonyms">Sinonimi (separati da virgola)</label>
+    <input type="text" id="newServiceSynonyms" placeholder="es. spa pedicure, pedicure deluxe">
+    <button id="btnAddService" class="btn" aria-label="Aggiungi Servizio">Aggiungi Servizio</button>
+
+    <h2 id="labelProfessionals">Professionisti</h2>
+    <input id="filterProf" class="filter-input" type="text" placeholder="Cerca professionista...">
+    <div id="professionalsContainer"></div>
+    <h3 id="labelAddProfessional">Aggiungi Nuovo Professionista</h3>
+    <label for="newProfessionalName" id="labelProfessionalName">Nome e Cognome</label>
+    <input type="text" id="newProfessionalName" required>
+    <label for="newProfessionalEmail" id="labelProfessionalEmail">Email</label>
+    <input type="email" id="newProfessionalEmail" required>
+    <button id="btnAddProfessional" class="btn" aria-label="Aggiungi Professionista">Aggiungi Professionista</button>
+
+    <h2>Giorni di Riposo / Ferie (Professionisti)</h2>
+    <div id="unavailabilityContainer"></div>
+
+    <h2>Orari di Apertura e Pausa Pranzo</h2>
+    <div id="hoursContainer"></div>
+
+    <h2>Giorni di Riposo / Ferie (Centro)</h2>
+    <div id="daysOffContainer"></div>
+
+    <h2 id="labelPreview">Anteprima JSON</h2>
+    <textarea id="livePreview" readonly rows="10"></textarea>
+
+    <h2 id="labelExport">Esporta Configurazione</h2>
+    <button id="btnExport" class="btn" aria-label="Scarica JSON">Scarica JSON</button>
+    <button id="btnCopy" class="btn" aria-label="Copia JSON">Copia JSON</button>
+  </div>
+
+  <div id="toast" role="alert" aria-live="assertive"></div>
+
+  <script>
+    const i18n = {
+      title: "Editor Configurazione JSON",
+      infoText: "Carica il tuo config.json oppure crea nuova configurazione.",
+      labelConfigInit: "Config iniziale",
+      btnNewConfig: "Nuova Configurazione",
+      labelOrPaste: "Oppure incolla JSON esistente:",
+      labelOrSelect: "Oppure seleziona file JSON:",
+      btnLoadConfig: "Carica Configurazione",
+      labelServices: "Servizi",
+      labelAddService: "Aggiungi Nuovo Servizio",
+      labelServiceName: "Nome servizio",
+      labelServiceDuration: "Durata (min)",
+      labelServicePrice: "Prezzo (€)",
+      labelServiceMaterialsCost: "Costo materiali (€)",
+      labelServiceProfessionals: "Professionisti",
+      labelServiceAllergens: "Allergeni (separati da virgola)",
+      btnAddService: "Aggiungi Servizio",
+      labelProfessionals: "Professionisti",
+      labelAddProfessional: "Aggiungi Nuovo Professionista",
+      labelProfessionalName: "Nome e Cognome",
+      labelProfessionalEmail: "Email",
+      btnAddProfessional: "Aggiungi Professionista",
+      btnEdit: "Modifica",
+      btnSave: "Salva modifiche",
+      btnCancel: "Annulla",
+      labelPreview: "Anteprima JSON",
+      labelExport: "Esporta Configurazione",
+      btnExport: "Scarica JSON",
+      btnCopy: "Copia JSON",
+      toastCopied: "Copiato!",
+      errorIncomplete: "Completa tutti i campi obbligatori",
+      errorJson: "Errore JSON: "
+    };
+
+    // Inject labels (id-based). Keep HTML defaults as fallback.
+    Object.keys(i18n).forEach(key => {
+      const el = document.getElementById(key);
+      if (!el) return;
+      if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
+        el.placeholder = i18n[key + 'Placeholder'] || el.placeholder || '';
+      } else {
+        el.textContent = i18n[key] || el.textContent;
+      }
+    });
+
+    function showToast(msg) { const t = document.getElementById('toast'); t.textContent = msg; t.style.display = 'block'; setTimeout(() => t.style.display = 'none', 1600); }
+    function showSpinner() { document.getElementById('spinnerOverlay').style.display = 'flex'; }
+    function hideSpinner() { document.getElementById('spinnerOverlay').style.display = 'none'; }
+
+    // Robust back: try to reach dashboard.html; if not, fallback to history/back
+    (function setupBack(){
+      const back = document.getElementById('btnBack');
+      if(!back) return;
+      back.addEventListener('click', async (e) => {
+        try {
+          const res = await fetch('dashboard.html', { method: 'HEAD' });
+          if (res.ok) return; // allow native navigation
+          e.preventDefault();
+        } catch {
+          e.preventDefault();
+        }
+        if (history.length > 1) history.back(); else location.href = './';
+      });
+    })();
+
+    // ====== STATE ======
+    let config = { services: {}, professionals: {}, unavailability: {}, businessHours: {}, lunchBreaks: {}, closedDays: {}, daysOff: {} };
+    const daysMap = {"1":"Lunedì","2":"Martedì","3":"Mercoledì","4":"Giovedì","5":"Venerdì","6":"Sabato","7":"Domenica"};
+
+    // ====== HELPERS ======
+    const toSlug = (name) => btoa(unescape(encodeURIComponent(name))).replace(/=+$/,'');
+    const fromSlug = (slug) => decodeURIComponent(escape(atob(slug)));
+
+    function normalizeConfig() {
+      if (Array.isArray(config.professionals)) {
+        const o = {};
+        config.professionals.forEach(p => o[p.email || p.id] = { name: p.name });
+        config.professionals = o;
+      }
+      if (Array.isArray(config.services)) {
+        const o = {};
+        config.services.forEach(s => {
+          o[s.name] = {
+            duration: s.duration,
+            price: s.price,
+            materialsCost: s.materialsCost != null ? s.materialsCost : 0,
+            professionals: s.professionals || [],
+            allergens: s.allergens || [],
+            synonyms: s.synonyms || []
+          };
+        });
+        config.services = o;
+      } else {
+        Object.values(config.services).forEach(s => {
+          s.professionals = s.professionals || [];
+          s.allergens = s.allergens || [];
+          s.synonyms = s.synonyms || [];
+          if (s.materialsCost == null) s.materialsCost = 0;
+        });
+      }
+    }
+
+    function updatePreview() {
+      document.getElementById('livePreview').value = JSON.stringify(config, null, 2);
+    }
+
+    // ====== RENDER ======
+    function renderServices() {
+      const q = document.getElementById('filterService').value.toLowerCase();
+      const cont = document.getElementById('servicesContainer'); cont.innerHTML = '';
+      Object.keys(config.services).sort().forEach(name => {
+        if (!name.toLowerCase().includes(q)) return;
+        const S = config.services[name];
+        const slug = toSlug(name);
+        const div = document.createElement('div'); div.className = 'item';
+        div.innerHTML = `
+          <strong>${name}</strong><br>
+          Durata: ${S.duration} min<br>
+          Prezzo: €${Number(S.price || 0).toFixed(2)}<br>
+          Costo materiali: €${Number(S.materialsCost || 0).toFixed(2)}<br>
+          Margine stimato: €${(Number(S.price||0) - Number(S.materialsCost||0)).toFixed(2)}<br>
+          Prof: ${S.professionals.join(', ') || 'Nessuno'}<br>
+          Allergeni: ${Array.isArray(S.allergens)? S.allergens.join(', ') : (S.allergens || 'Nessuno')}
+        `;
+
+        // Edit & Remove buttons
+        const editBtn = document.createElement('button');
+        editBtn.className = 'icon-btn'; editBtn.textContent = i18n.btnEdit;
+        editBtn.onclick = () => toggleServiceEditor(name);
+        div.appendChild(editBtn);
+
+        const delBtn = document.createElement('button');
+        delBtn.className = 'remove-btn'; delBtn.textContent = 'X';
+        delBtn.onclick = () => { delete config.services[name]; renderAll(); };
+        div.appendChild(delBtn);
+
+        // Editor
+        const ed = document.createElement('div');
+        ed.className = 'editor';
+        ed.id = `editor-${slug}`;
+
+        // Build professionals checkboxes for edit
+        let profBoxes = '';
+        Object.keys(config.professionals).forEach(email => {
+          const isChecked = S.professionals.includes(email) ? 'checked' : '';
+          const nm = config.professionals[email]?.name || email;
+          profBoxes += `<label><input type="checkbox" data-email="${email}" ${isChecked}> ${nm}</label>`;
+        });
+
+        const allergTxt = Array.isArray(S.allergens) ? S.allergens.join(', ') : (S.allergens || '');
+        const synTxt = Array.isArray(S.synonyms) ? S.synonyms.join(', ') : (S.synonyms || '');
+
+        ed.innerHTML = `
+          <div class="row">
+            <div>
+              <label>Nome servizio</label>
+              <input type="text" data-field="name" value="${name}">
+            </div>
+            <div>
+              <label>Durata (min)</label>
+              <input type="number" data-field="duration" value="${S.duration||0}">
+            </div>
+          </div>
+          <div class="row">
+            <div>
+              <label>Prezzo (€)</label>
+              <input type="number" step="0.01" data-field="price" value="${S.price||0}">
+            </div>
+            <div>
+              <label>Costo materiali (€)</label>
+              <input type="number" step="0.01" data-field="materialsCost" value="${S.materialsCost||0}">
+            </div>
+          </div>
+          <label>Professionisti</label>
+          <div class="checkbox-list" data-field="professionals">
+            ${profBoxes || '<span class="muted">Nessun professionista presente</span>'}
+          </div>
+          <label>Allergeni (separati da virgola)</label>
+          <input type="text" data-field="allergens" value="${allergTxt}">
+          <label>Sinonimi (separati da virgola)</label>
+          <input type="text" data-field="synonyms" value="${synTxt}">
+          <div style="margin-top:10px; display:flex; gap:8px;">
+            <button class="btn" onclick="saveServiceEdits('${encodeURIComponent(name)}')">${i18n.btnSave}</button>
+            <button class="btn secondary" type="button" onclick="toggleServiceEditor('${name}')">${i18n.btnCancel}</button>
+          </div>
+        `;
+        div.appendChild(ed);
+
+        cont.appendChild(div);
+      });
+    }
+
+    function renderProfessionals() {
+      const q = document.getElementById('filterProf').value.toLowerCase();
+      const cont = document.getElementById('professionalsContainer'); cont.innerHTML = '';
+      Object.entries(config.professionals).sort((a, b) => a[1].name.localeCompare(b[1].name)).forEach(([email, p]) => {
+        if (!p.name.toLowerCase().includes(q)) return;
+        const div = document.createElement('div'); div.className = 'item';
+        div.innerHTML = `<strong>${p.name}</strong><br>Email: ${email}`;
+        const btn = document.createElement('button'); btn.className = 'remove-btn'; btn.textContent = 'X'; btn.onclick = () => { delete config.professionals[email]; renderAll(); };
+        div.appendChild(btn); cont.appendChild(div);
+      });
+    }
+
+    function renderProfessionalOptions() {
+      const cont = document.getElementById('newServiceProfessionals'); cont.innerHTML = '';
+      Object.entries(config.professionals).forEach(([email, p]) => {
+        const lbl = document.createElement('label'); lbl.innerHTML = `<input type="checkbox" value="${email}"> ${p.name}`;
+        cont.appendChild(lbl);
+      });
+    }
+
+    function renderUnavailability() {
+      const cont = document.getElementById('unavailabilityContainer'); cont.innerHTML = '';
+      Object.entries(config.professionals).forEach(([email, p]) => {
+        const div = document.createElement('div'); div.className = 'item'; div.innerHTML = `<strong>${p.name}</strong>`;
+        const sub = document.createElement('div');
+        Object.entries(daysMap).forEach(([d, dn]) => {
+          const checked = config.unavailability?.[email]?.some(u => u.type === 'day' && u.days.includes(d));
+          const lbl = document.createElement('label'); lbl.innerHTML = `<input type="checkbox"${checked ? ' checked' : ''} onchange="updateUnavailability('${email}','${d}',this.checked)"> ${dn}`;
+          sub.appendChild(lbl);
+        }); div.appendChild(sub);
+        const others = config.unavailability?.[email]?.filter(u => u.type !== 'day') || [];
+        if (others.length) {
+          const ul = document.createElement('ul');
+          others.forEach(u => {
+            const li = document.createElement('li');
+            if (u.type === 'range') li.textContent = `Ferie: dal ${u.start} al ${u.end}`;
+            if (u.type === 'recurrence') li.textContent = `Ricorrenza: ${u.rule}`;
+            ul.appendChild(li);
+          }); div.appendChild(ul);
+        }
+        cont.appendChild(div);
+      });
+    }
+
+    function renderHours() {
+      const cont = document.getElementById('hoursContainer'); cont.innerHTML = '';
+      Object.entries(daysMap).forEach(([d, dn]) => {
+        const bh = config.businessHours?.[d] || ['', ''];
+        const lb = config.lunchBreaks?.[d] || ['', ''];
+        const closed = config.closedDays?.[d];
+        const hasLunch = config.lunchBreaks?.hasOwnProperty(d);
+        const div = document.createElement('div'); div.className = 'item';
+        div.innerHTML = `
+          <strong>${dn}</strong><br>
+          Apertura: <input type="time" value="${bh[0]}" onchange="updateHour('${d}',0,this.value)"${closed ? ' disabled' : ''}> 
+          Chiusura: <input type="time" value="${bh[1]}" onchange="updateHour('${d}',1,this.value)"${closed ? ' disabled' : ''}><br>
+          <label><input type="checkbox" onchange="toggleLunch('${d}',this.checked)"${hasLunch ? ' checked' : ''}> Pausa Pranzo</label>
+          <div id="lunchBlock-${d}" style="${hasLunch ? '' : 'display:none;'}; margin-top:8px;">
+            Inizio: <input type="time" value="${lb[0]}" onchange="updateLunch('${d}',0,this.value)"${closed ? ' disabled' : ''}><br>
+            Fine:   <input type="time" value="${lb[1]}" onchange="updateLunch('${d}',1,this.value)"${closed ? ' disabled' : ''}>
+          </div><br>
+          <label><input type="checkbox" onchange="updateClosed('${d}',this.checked)"${closed ? ' checked' : ''}> Chiuso</label>
+        `;
+        cont.appendChild(div);
+      });
+    }
+
+    function renderDaysOff() {
+      const cont = document.getElementById('daysOffContainer'); cont.innerHTML = '';
+      Object.entries(daysMap).forEach(([d, dn]) => {
+        const lbl = document.createElement('label'); lbl.innerHTML = `<input type="checkbox" onchange="updateDayOff('${d}',this.checked)"${config.daysOff?.[d] ? ' checked' : ''}> ${dn}`;
+        cont.appendChild(lbl);
+      });
+    }
+
+    // ====== UPDATE HELPERS ======
+    function updateUnavailability(e, d, chk) { config.unavailability = config.unavailability || {}; config.unavailability[e] = config.unavailability[e] || []; let ent = config.unavailability[e].find(u => u.type === 'day'); if (!ent) { ent = { type: 'day', days: [] }; config.unavailability[e].push(ent); } if (chk) ent.days.push(d); else ent.days = ent.days.filter(x => x !== d); if (!ent.days.length) config.unavailability[e] = config.unavailability[e].filter(x => x !== ent); renderUnavailability(); updatePreview(); }
+    function toggleLunch(d, chk) { if (chk) { config.lunchBreaks[d] = config.lunchBreaks[d] || ['', '']; document.getElementById(`lunchBlock-${d}`).style.display = ''; } else { delete config.lunchBreaks[d]; document.getElementById(`lunchBlock-${d}`).style.display = 'none'; } renderHours(); updatePreview(); }
+    function updateHour(d, i, v) { config.businessHours[d] = config.businessHours[d] || ['', '']; config.businessHours[d][i] = v; renderHours(); updatePreview(); }
+    function updateLunch(d, i, v) { config.lunchBreaks[d] = config.lunchBreaks[d] || ['', '']; config.lunchBreaks[d][i] = v; updatePreview(); }
+    function updateClosed(d, chk) { if (chk) config.closedDays[d] = true; else delete config.closedDays[d]; renderHours(); updatePreview(); }
+    function updateDayOff(d, chk) { if (chk) config.daysOff[d] = true; else delete config.daysOff[d]; renderDaysOff(); updatePreview(); }
+
+    // ====== EDITOR TOGGLE & SAVE ======
+    function toggleServiceEditor(name){
+      const id = `editor-${toSlug(name)}`;
+      const box = document.getElementById(id);
+      if (!box) return;
+      box.style.display = (box.style.display === 'none' || box.style.display === '') ? 'block' : 'none';
+    }
+
+    function saveServiceEdits(encOldName){
+      const oldName = decodeURIComponent(encOldName);
+      const slug = toSlug(oldName);
+      const box = document.getElementById(`editor-${slug}`);
+      if (!box) return;
+
+      const getVal = (sel) => (box.querySelector(sel)?.value || '').trim();
+      const getNum = (sel) => {
+        const v = parseFloat(box.querySelector(sel)?.value || '0');
+        return isNaN(v) ? 0 : v;
+      };
+
+      const newName = getVal('input[data-field="name"]');
+      const newDur  = parseInt(getVal('input[data-field="duration"]') || '0', 10);
+      const newPrice= getNum('input[data-field="price"]');
+      const newMC   = getNum('input[data-field="materialsCost"]');
+      const newAlls = getVal('input[data-field="allergens"]').split(',').map(s => s.trim()).filter(Boolean);
+      const newSyns = getVal('input[data-field="synonyms"]').split(',').map(s => s.trim()).filter(Boolean);
+      const newPros = Array.from(box.querySelectorAll('[data-field="professionals"] input[type="checkbox"][data-email]:checked')).map(i => i.getAttribute('data-email'));
+
+      if (!newName || !newDur || isNaN(newPrice)) { showToast(i18n.errorIncomplete); return; }
+
+      const old = config.services[oldName] || {};
+      const updated = {
+        ...old,
+        duration: newDur,
+        price: newPrice,
+        materialsCost: newMC,
+        allergens: newAlls,
+        synonyms: newSyns,
+        professionals: newPros
+      };
+
+      if (newName !== oldName){
+        delete config.services[oldName];
+        config.services[newName] = updated;
+      } else {
+        config.services[oldName] = updated;
+      }
+      renderAll();
+      toggleServiceEditor(newName);
+      showToast("Servizio aggiornato");
+    }
+
+    function renderAll() { renderServices(); renderProfessionals(); renderProfessionalOptions(); renderUnavailability(); renderHours(); renderDaysOff(); updatePreview(); }
+
+    // ====== EVENTS ======
+    document.getElementById('filterService').addEventListener('input', renderServices);
+    document.getElementById('filterProf').addEventListener('input', renderProfessionals);
+
+    document.getElementById('btnNewConfig').addEventListener('click', async () => {
+      showSpinner(); await new Promise(r => setTimeout(r, 150));
+      config = { services: {}, professionals: {}, unavailability: {}, businessHours: {}, lunchBreaks: {}, closedDays: {}, daysOff: {} };
+      document.getElementById('editor').style.display = 'block';
+      renderAll(); hideSpinner();
+    });
+
+    document.getElementById('btnLoadConfig').addEventListener('click', () => {
+      showSpinner();
+      try {
+        config = JSON.parse(document.getElementById('jsonInput').value);
+        normalizeConfig();
+        document.getElementById('editor').style.display = 'block';
+        renderAll();
+      } catch (e) { showToast(i18n.errorJson + e.message); }
+      hideSpinner();
+    });
+
+    document.getElementById('jsonInput').addEventListener('keyup', () => {
+      const btn = document.getElementById('btnLoadConfig');
+      try { JSON.parse(document.getElementById('jsonInput').value); document.getElementById('jsonError').textContent = ''; btn.disabled = false; btn.removeAttribute('aria-disabled'); }
+      catch (e) { document.getElementById('jsonError').textContent = i18n.errorJson + e.message; btn.disabled = true; btn.setAttribute('aria-disabled','true'); }
+    });
+
+    document.getElementById('jsonFile').addEventListener('change', e => {
+      const f = e.target.files[0]; if (!f) return;
+      const r = new FileReader();
+      r.onload = () => { document.getElementById('jsonInput').value = r.result; document.getElementById('jsonInput').dispatchEvent(new Event('keyup')); };
+      r.readAsText(f);
+    });
+
+    document.getElementById('btnAddService').addEventListener('click', () => {
+      const name = document.getElementById('newServiceName').value.trim();
+      const dur = +document.getElementById('newServiceDuration').value;
+      const pr = +document.getElementById('newServicePrice').value;
+      const mc = parseFloat(document.getElementById('newServiceMaterialsCost').value || '0');
+      const profs = [...document.querySelectorAll('#newServiceProfessionals input:checked')].map(i => i.value);
+      const alls = document.getElementById('newServiceAllergens').value.split(',').map(a => a.trim()).filter(a => a);
+      const syns = document.getElementById('newServiceSynonyms').value.split(',').map(a => a.trim()).filter(a => a);
+      if (!name || !dur || isNaN(pr)) { showToast(i18n.errorIncomplete); return; }
+      config.services[name] = { duration: dur, price: pr, materialsCost: isNaN(mc) ? 0 : mc, professionals: profs, allergens: alls, synonyms: syns };
+      ['newServiceName','newServiceDuration','newServicePrice','newServiceMaterialsCost','newServiceAllergens','newServiceSynonyms'].forEach(id => document.getElementById(id).value = id==='newServiceMaterialsCost' ? '0' : '');
+      document.querySelectorAll('#newServiceProfessionals input:checked').forEach(i => i.checked = false);
+      renderAll();
+      showToast('Servizio aggiunto');
+    });
+
+    document.getElementById('btnAddProfessional').addEventListener('click', () => {
+      const nm = document.getElementById('newProfessionalName').value.trim();
+      const em = document.getElementById('newProfessionalEmail').value.trim();
+      if (!nm || !em) { showToast(i18n.errorIncomplete); return; }
+      config.professionals[em] = { name: nm };
+      ['newProfessionalName','newProfessionalEmail'].forEach(id => document.getElementById(id).value = '');
+      renderAll();
+      showToast('Professionista aggiunto');
+    });
+
+    document.getElementById('btnExport').addEventListener('click', () => {
+      const out = JSON.stringify(config, null, 2);
+      document.getElementById('livePreview').value = out;
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([out], { type: 'application/json' }));
+      a.download = 'config.json';
+      a.click();
+    });
+
+    document.getElementById('btnCopy').addEventListener('click', () => {
+      navigator.clipboard.writeText(JSON.stringify(config, null, 2)).then(() => showToast(i18n.toastCopied));
+    });
+
+    // Inizializzazione automatica
+    document.getElementById('btnNewConfig').click();
+  </script>
+</body>
+</html>

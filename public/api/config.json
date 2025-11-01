@@ -1,0 +1,86 @@
+{
+  "services": [
+    {
+      "name": "Massaggio Relax",
+      "duration": 60,
+      "price": 60,
+      "professionals": ["giulia.bianchi@example.com", "luca.neri@example.com"]
+    },
+    {
+      "name": "Pedicure Spa",
+      "duration": 75,
+      "price": 60,
+      "professionals": ["marco.verdi@example.com"]
+    },
+    {
+      "name": "Viso Anti-età",
+      "duration": 90,
+      "price": 85,
+      "professionals": ["anna.rossi@example.com"]
+    },
+    {
+      "name": "Microdermoabrasione",
+      "duration": 45,
+      "price": 70,
+      "professionals": ["marco.verdi@example.com", "anna.rossi@example.com"]
+    },
+    {
+      "name": "Scrub Corpo",
+      "duration": 50,
+      "price": 65,
+      "professionals": ["giulia.bianchi@example.com"]
+    },
+    {
+      "name": "Mani+Piedi",
+      "duration": 120,
+      "price": 80,
+      "professionals": ["anna.rossi@example.com"]
+    }
+  ],
+  "businessHours": [
+    { "day": 1, "slots": ["09:00", "13:00", "14:00", "18:00"] },
+    { "day": 2, "slots": ["09:00", "13:00", "14:00", "18:00"] },
+    { "day": 3, "slots": ["09:00", "13:00", "14:00", "18:00"] },
+    { "day": 4, "slots": ["09:00", "13:00", "14:00", "18:00"] },
+    { "day": 5, "slots": ["09:00", "13:00", "14:00", "18:00"] },
+    { "day": 6, "slots": ["09:00", "13:00"] }
+  ],
+  "maxOverrun": 15,
+  "unavailability": [
+    {
+      "email": "marco.verdi@example.com",
+      "entries": [
+        { "type": "day", "days": [3, 17, 25] },
+        { "type": "range", "start": "2025-07-05", "end": "2025-07-07" },
+        { "type": "recurrence", "rule": "FREQ=WEEKLY;BYDAY=TU" }
+      ]
+    },
+    {
+      "email": "anna.rossi@example.com",
+      "entries": [
+        { "type": "day", "days": [1, 15] },
+        { "type": "range", "start": "2025-08-10", "end": "2025-08-12" },
+        { "type": "recurrence", "rule": "FREQ=MONTHLY;BYDAY=MO,WE,FR" }
+      ]
+    },
+    {
+      "email": "luca.neri@example.com",
+      "entries": [
+        { "type": "range", "start": "2025-07-20", "end": "2025-07-22" }
+      ]
+    },
+    {
+      
+      "email": "giulia.bianchi@example.com",
+      "entries": [
+        { "type": "recurrence", "rule": "FREQ=DAILY;BYHOUR=12;BYMINUTE=0" }
+      ]
+    }
+  ],
+  "professionals": [
+    { "id": 1, "email": "giulia.bianchi@example.com", "name": "Giulia Bianchi" },
+    { "id": 2, "email": "luca.neri@example.com", "name": "Luca Neri" },
+    { "id": 3, "email": "marco.verdi@example.com", "name": "Marco Verdi" },
+    { "id": 4, "email": "anna.rossi@example.com", "name": "Anna Rossi" }
+  ]
+}

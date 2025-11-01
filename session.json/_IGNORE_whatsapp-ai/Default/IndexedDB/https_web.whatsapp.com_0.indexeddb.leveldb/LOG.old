@@ -1,0 +1,116 @@
+2025/10/30-20:26:22.283 3ac Reusing MANIFEST C:\Users\oakvx\Desktop\whatsapp-ai\session.json\_IGNORE_whatsapp-ai\Default\IndexedDB\https_web.whatsapp.com_0.indexeddb.leveldb/MANIFEST-000001
+2025/10/30-20:26:22.284 3ac Recovering log #3678
+2025/10/30-20:26:22.312 3ac Reusing old log C:\Users\oakvx\Desktop\whatsapp-ai\session.json\_IGNORE_whatsapp-ai\Default\IndexedDB\https_web.whatsapp.com_0.indexeddb.leveldb/003678.log 
+2025/10/30-20:26:23.374 3ac Level-0 table #3690: started
+2025/10/30-20:26:23.391 3ac Level-0 table #3690: 654102 bytes OK
+2025/10/30-20:26:23.394 3ac Delete type=0 #3678
+2025/10/30-20:26:23.395 3ac Manual compaction at level-0 from ' G\x01\x00\x00\x00' @ 72057594037927935 : 1 .. ' H\x01\x00\x00\x00' @ 0 : 0; will stop at (end)
+2025/10/30-20:26:25.469 1bec Compacting 1@1 + 8@2 files
+2025/10/30-20:26:25.573 1bec Generated table #3691@1: 85428 keys, 2235959 bytes
+2025/10/30-20:26:25.663 1bec Generated table #3692@1: 95605 keys, 2247032 bytes
+2025/10/30-20:26:25.759 1bec Generated table #3693@1: 101411 keys, 2254540 bytes
+2025/10/30-20:26:25.844 1bec Generated table #3694@1: 58999 keys, 2358270 bytes
+2025/10/30-20:26:25.887 1bec Generated table #3695@1: 9482 keys, 2158766 bytes
+2025/10/30-20:26:25.965 1bec Generated table #3696@1: 29670 keys, 2194420 bytes
+2025/10/30-20:26:26.054 1bec Generated table #3697@1: 87348 keys, 2232294 bytes
+2025/10/30-20:26:26.103 1bec Generated table #3698@1: 56855 keys, 1142856 bytes
+2025/10/30-20:26:26.104 1bec Compacted 1@1 + 8@2 files => 16824137 bytes
+2025/10/30-20:26:26.107 1bec compacted to: files[ 0 0 8 0 0 0 0 ]
+2025/10/30-20:26:26.107 1bec Delete type=2 #3680
+2025/10/30-20:26:26.107 1bec Delete type=2 #3681
+2025/10/30-20:26:26.107 1bec Delete type=2 #3682
+2025/10/30-20:26:26.107 1bec Delete type=2 #3683
+2025/10/30-20:26:26.107 1bec Delete type=2 #3684
+2025/10/30-20:26:26.108 1bec Delete type=2 #3685
+2025/10/30-20:26:26.108 1bec Delete type=2 #3686
+2025/10/30-20:26:26.108 1bec Delete type=2 #3687
+2025/10/30-20:26:26.108 1bec Delete type=2 #3690
+2025/10/30-20:26:29.184 1bec Level-0 table #3700: started
+2025/10/30-20:26:29.212 1bec Level-0 table #3700: 919987 bytes OK
+2025/10/30-20:26:29.215 1bec Delete type=0 #3689
+2025/10/30-20:26:29.217 1bec Compacting 1@1 + 6@2 files
+2025/10/30-20:26:29.319 1bec Generated table #3701@1: 84441 keys, 2234480 bytes
+2025/10/30-20:26:29.400 1bec Generated table #3702@1: 95480 keys, 2247720 bytes
+2025/10/30-20:26:29.495 1bec Generated table #3703@1: 101384 keys, 2255007 bytes
+2025/10/30-20:26:29.591 1bec Generated table #3704@1: 61602 keys, 2360678 bytes
+2025/10/30-20:26:29.629 1bec Generated table #3705@1: 8772 keys, 2159077 bytes
+2025/10/30-20:26:29.701 1bec Generated table #3706@1: 30763 keys, 2196065 bytes
+2025/10/30-20:26:29.705 1bec Generated table #3707@1: 217 keys, 45724 bytes
+2025/10/30-20:26:29.705 1bec Compacted 1@1 + 6@2 files => 13498751 bytes
+2025/10/30-20:26:29.707 1bec compacted to: files[ 0 0 9 0 0 0 0 ]
+2025/10/30-20:26:34.674 3ac Level-0 table #3709: started
+2025/10/30-20:26:34.702 3ac Level-0 table #3709: 1127736 bytes OK
+2025/10/30-20:26:34.705 3ac Delete type=2 #3691
+2025/10/30-20:26:34.705 3ac Delete type=2 #3692
+2025/10/30-20:26:34.705 3ac Delete type=2 #3693
+2025/10/30-20:26:34.705 3ac Delete type=2 #3694
+2025/10/30-20:26:34.705 3ac Delete type=2 #3695
+2025/10/30-20:26:34.705 3ac Delete type=2 #3696
+2025/10/30-20:26:34.705 3ac Delete type=0 #3699
+2025/10/30-20:26:34.705 3ac Delete type=2 #3700
+2025/10/30-20:26:41.441 1bec Compacting 1@1 + 6@2 files
+2025/10/30-20:26:41.543 1bec Generated table #3710@1: 86434 keys, 2236482 bytes
+2025/10/30-20:26:41.628 1bec Generated table #3711@1: 95692 keys, 2249266 bytes
+2025/10/30-20:26:41.714 1bec Generated table #3712@1: 101414 keys, 2254733 bytes
+2025/10/30-20:26:41.798 1bec Generated table #3713@1: 59981 keys, 2359207 bytes
+2025/10/30-20:26:41.849 1bec Generated table #3714@1: 8907 keys, 2159653 bytes
+2025/10/30-20:26:41.915 1bec Generated table #3715@1: 30481 keys, 2195557 bytes
+2025/10/30-20:26:41.918 1bec Generated table #3716@1: 32 keys, 10324 bytes
+2025/10/30-20:26:41.918 1bec Compacted 1@1 + 6@2 files => 13465222 bytes
+2025/10/30-20:26:41.920 1bec compacted to: files[ 0 0 10 0 0 0 0 ]
+2025/10/30-20:26:41.921 1bec Delete type=2 #3701
+2025/10/30-20:26:41.921 1bec Delete type=2 #3702
+2025/10/30-20:26:41.921 1bec Delete type=2 #3703
+2025/10/30-20:26:41.921 1bec Delete type=2 #3704
+2025/10/30-20:26:41.921 1bec Delete type=2 #3705
+2025/10/30-20:26:41.922 1bec Delete type=2 #3706
+2025/10/30-20:26:41.922 1bec Delete type=2 #3709
+2025/10/30-20:31:09.495 1bec Level-0 table #3718: started
+2025/10/30-20:31:09.525 1bec Level-0 table #3718: 1050390 bytes OK
+2025/10/30-20:31:09.528 1bec Delete type=0 #3708
+2025/10/30-20:31:09.591 1bec Compacting 1@1 + 10@2 files
+2025/10/30-20:31:09.680 1bec Generated table #3719@1: 86394 keys, 2236145 bytes
+2025/10/30-20:31:09.762 1bec Generated table #3720@1: 95644 keys, 2248604 bytes
+2025/10/30-20:31:09.849 1bec Generated table #3721@1: 101426 keys, 2255149 bytes
+2025/10/30-20:31:09.918 1bec Generated table #3722@1: 60411 keys, 2362431 bytes
+2025/10/30-20:31:09.964 1bec Generated table #3723@1: 8735 keys, 2157609 bytes
+2025/10/30-20:31:10.025 1bec Generated table #3724@1: 30679 keys, 2197289 bytes
+2025/10/30-20:31:10.100 1bec Generated table #3725@1: 82969 keys, 2227782 bytes
+2025/10/30-20:31:10.151 1bec Generated table #3726@1: 61825 keys, 1244094 bytes
+2025/10/30-20:31:10.151 1bec Compacted 1@1 + 10@2 files => 16929103 bytes
+2025/10/30-20:31:10.153 1bec compacted to: files[ 0 0 8 0 0 0 0 ]
+2025/10/30-20:31:10.154 1bec Delete type=2 #3697
+2025/10/30-20:31:10.154 1bec Delete type=2 #3698
+2025/10/30-20:31:10.154 1bec Delete type=2 #3707
+2025/10/30-20:31:10.154 1bec Delete type=2 #3710
+2025/10/30-20:31:10.154 1bec Delete type=2 #3711
+2025/10/30-20:31:10.154 1bec Delete type=2 #3712
+2025/10/30-20:31:10.154 1bec Delete type=2 #3713
+2025/10/30-20:31:10.155 1bec Delete type=2 #3714
+2025/10/30-20:31:10.155 1bec Delete type=2 #3715
+2025/10/30-20:31:10.155 1bec Delete type=2 #3716
+2025/10/30-20:31:10.155 1bec Delete type=2 #3718
+2025/10/30-20:31:27.684 2b68 Level-0 table #3728: started
+2025/10/30-20:31:27.696 2b68 Level-0 table #3728: 266302 bytes OK
+2025/10/30-20:31:27.699 2b68 Delete type=0 #3717
+2025/10/30-20:31:27.700 3ac Manual compaction at level-0 from ' H\x01\x00\x00\x00' @ 72057594037927935 : 1 .. ' I\x01\x00\x00\x00' @ 0 : 0; will stop at (end)
+2025/10/30-20:31:32.427 33ac Compacting 1@1 + 8@2 files
+2025/10/30-20:31:32.553 33ac Generated table #3729@1: 86225 keys, 2237468 bytes
+2025/10/30-20:31:32.643 33ac Generated table #3730@1: 95599 keys, 2248123 bytes
+2025/10/30-20:31:32.732 33ac Generated table #3731@1: 101327 keys, 2253131 bytes
+2025/10/30-20:31:32.812 33ac Generated table #3732@1: 61217 keys, 2364223 bytes
+2025/10/30-20:31:32.856 33ac Generated table #3733@1: 8837 keys, 2158571 bytes
+2025/10/30-20:31:32.924 33ac Generated table #3734@1: 30693 keys, 2196886 bytes
+2025/10/30-20:31:33.009 33ac Generated table #3735@1: 81910 keys, 2227480 bytes
+2025/10/30-20:31:33.068 33ac Generated table #3736@1: 63029 keys, 1268129 bytes
+2025/10/30-20:31:33.068 33ac Compacted 1@1 + 8@2 files => 16954011 bytes
+2025/10/30-20:31:33.071 33ac compacted to: files[ 0 0 8 0 0 0 0 ]
+2025/10/30-20:31:33.071 33ac Delete type=2 #3719
+2025/10/30-20:31:33.071 33ac Delete type=2 #3720
+2025/10/30-20:31:33.071 33ac Delete type=2 #3721
+2025/10/30-20:31:33.071 33ac Delete type=2 #3722
+2025/10/30-20:31:33.072 33ac Delete type=2 #3723
+2025/10/30-20:31:33.072 33ac Delete type=2 #3724
+2025/10/30-20:31:33.072 33ac Delete type=2 #3725
+2025/10/30-20:31:33.072 33ac Delete type=2 #3726
+2025/10/30-20:31:33.072 33ac Delete type=2 #3728

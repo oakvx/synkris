@@ -1,0 +1,13 @@
+{
+  "type": "service_account",
+  "project_id": "synkris",
+  "private_key_id": "a9fe36286daf5bbf11bd4f53ff40f3f4e15842d9",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDdcPZRdNzAgcKZ\newf00Dimiwe3Z/Aw6pae6VhNH59SauRN+cP6aMapT9/3MD9UUGOviu8JxMjhPr9w\ns8GqqWTK0Eb7Mhrs8NdLcrm8ycsQwRN7/O97T1otSjeG+UGG1MD2e3omASV9pu/T\nWBbSvBeQL5b8Kg+1KhL1LDfX36BjKTQQQBiAOI8zIGPf1GxZ2/NDZhsqC5w+1JmL\n0dc8HPrS36/0zteJOBEIXqSFuFSXACXJbkg4rWUunbB2NFI+3uNDZeQza0a1UmF2\nHJrhDFy2zYBIx9AVegQLZSy6y3KjS5JW5HSbKuHt8PvdTA5puoCpZE56YGhNjBwa\nrwXVPReJAgMBAAECggEAC6dbPzQwPe1WSW+BHrAqmxEsCcntiRV/ccOEAyML5nF7\nrGLdnnsPIW/zsHWYj55fcKiWJeR2UexUdODw60NY65eEdMnRQvD106GpBrdz+WC/\n3sGT9OBbNZD3VSIfAbKGqTIcXo2m5HL5ohy7rsF5V/w5LPIlu3oIX2DBW5oIPc+f\nPA0me/uvgf/TUsg+KCaJDRT3e6VFZI90yZYM5iFp+uM1EuUNVU9MToRp6YzdNiFs\n4otaOwD8h5GaTcxqk0r6HNGm7igRsm9gIImsOqY69m1ukJsB+ivoZJoh+5eGPoN3\nmYFtHfmJJnYiJCNTYm9QShzsA43w+rswgXL3R0z25QKBgQD1xYa+sImGKcnT+WJw\npKe58U3Bd/Rc8jxdOWOpZc1ncD6h6iOBmgCY0V2mpaUC1a8C3Y+RS1M0USj/6bT/\nQHLAnt4Hx3ngK4rX47kRLja+vyAzxSq+QW/Xr8ETphd+n+Bx2aDKrYrl2xbHkO34\ndSwcAYLBzL1zFnrlNOlQOa3TowKBgQDmqDfdGrZF2YNLpJDweILjBq6J5WXsGywj\nmiSpL0heJNxJ7uZmwauVxRcUJTHq4WiqFhYHSSbcukN9Ad3uvP1cxor/P0KJ5+P/\ncla24JjIJwC6SgwQ7J3WhEbnJfWnaTOZQSP/eq1V9ak+5GsvSJnFHajVKQA35Jdl\nBIpZn7K64wKBgDmkoWzaJPc1l+PCqwb2Z2xiHzWQN90Q532J90kE2n83QUlii/9a\nqmctO8TZNvGKQqjuZDzUqOgtXOtg2hW//OoWmMbET153d/IYtBBGgYqNczUROmwz\nFtNEoolEPGBziQXK4D6JI3mzwA0Aff/3I2hSJmPj7E8w55QYq9woGw/3AoGAWe4c\nWcigaHt2BXgUSq2x2nIwevNF2dh+TSM8R/p3bL1SZkEO8+Fu1OYTKXeXDszz0dzq\nmcybqlO1HHgt33cwEYwXhY1UlBAlhOM/i+3lo6QRVJCqQ679mzXXryfNr4gE5ivP\nrTxXeLxfUHYelEDqM0BtIy7pNuGZZXlvt6HcPaECgYEA7jlc3UCRiJTshPBpxrtQ\n6dk7cHzfldAdz0Whdgd7ZDjJe7DFbRB3GZ6hGqd/EnGoYFyYTB2sQOqe2/BVTEwg\nt7eEdAqLeEA8AHlR7WVMs4OjV8hiLJyQmEo7PAvCwYrueSxBrLqcrrrnn1XyICEq\nT32phmfKw0czS4F5GaOW8gI=\n-----END PRIVATE KEY-----\n",
+  "client_email": "synkris@synkris.iam.gserviceaccount.com",
+  "client_id": "111490951827461007676",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/synkris%40synkris.iam.gserviceaccount.com",
+  "universe_domain": "googleapis.com"
+}

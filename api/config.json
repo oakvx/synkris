@@ -1,0 +1,37 @@
+{
+  "services": {
+    "Massaggio Relax":      { "duration": 60,  "price": 60, "professionals": ["giulia.bianchi@example.com", "luca.neri@example.com"] },
+    "Pedicure Spa":         { "duration": 75,  "price": 60, "professionals": ["marco.verdi@example.com"] },
+    "Viso Anti-età":        { "duration": 90,  "price": 85, "professionals": ["anna.rossi@example.com"] },
+    "Microdermoabrasione":  { "duration": 45,  "price": 70, "professionals": ["marco.verdi@example.com", "anna.rossi@example.com"] },
+    "Scrub Corpo":          { "duration": 50,  "price": 65, "professionals": ["giulia.bianchi@example.com"] },
+    "Mani+Piedi":           { "duration": 120, "price": 80, "professionals": ["anna.rossi@example.com"] }
+  },
+  "businessHours": {
+    "1": ["09:00","13:00","14:00","18:00"],
+    "2": ["09:00","13:00","14:00","18:00"],
+    "3": ["09:00","13:00","14:00","18:00"],
+    "4": ["09:00","13:00","14:00","18:00"],
+    "5": ["09:00","13:00","14:00","18:00"],
+    "6": ["09:00","13:00"] 
+  },
+  "maxOverrun": 15,
+  "unavailability": {
+    "marco.verdi@example.com": [
+      { "type": "day",        "days": [3, 17, 25] },
+      { "type": "range",      "start": "2025-07-05", "end": "2025-07-07" },
+      { "type": "recurrence", "rule": "FREQ=WEEKLY;BYDAY=TU" }
+    ],
+    "anna.rossi@example.com": [
+      { "type": "day",        "days": [1, 15] },
+      { "type": "range",      "start": "2025-08-10", "end": "2025-08-12" },
+      { "type": "recurrence", "rule": "FREQ=MONTHLY;BYDAY=MO,WE,FR" }
+    ],
+    "luca.neri@example.com": [
+      { "type": "range",      "start": "2025-07-20", "end": "2025-07-22" }
+    ],
+    "giulia.bianchi@example.com": [
+      { "type": "recurrence", "rule": "FREQ=DAILY;BYHOUR=12;BYMINUTE=0" }
+    ]
+  }
+}

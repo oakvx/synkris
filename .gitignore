@@ -1,0 +1,7 @@
+dist/
+node18/
+node-18.5.0/
+*.exe
+*.blob
+*.cjs
+*.mjs

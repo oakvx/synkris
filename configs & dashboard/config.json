@@ -1,0 +1,318 @@
+{
+  "services": {
+    "Manicure Classica": {
+      "duration": 30,
+      "price": 25,
+      "professionals": [
+        "123Email@gmail.try",
+        "Dianaeninicu@gmail.com"
+      ],
+      "allergens": [],
+      "synonyms": [
+        "manicure tradizionale",
+        "pulizia delle cuticole",
+        "manicure"
+      ]
+    },
+    "Smalto Semipermanente Mani": {
+      "duration": 30,
+      "price": 30,
+      "professionals": [
+        "123Email@gmail.try",
+        "Dianaeninicu@gmail.com"
+      ],
+      "allergens": [],
+      "synonyms": [
+        "smalto semi",
+        "smalto gel",
+        "smalto shellac",
+        "manicure smalto a lunga durata",
+        "smalto rinforzato",
+        "smalto semi-rinforzato"
+      ]
+    },
+    "Refill Gel Unghie Corte": {
+      "duration": 45,
+      "price": 40,
+      "professionals": [
+        "123Email@gmail.try",
+        "Dianaeninicu@gmail.com"
+      ],
+      "allergens": [],
+      "synonyms": [
+        "ritocco gel",
+        "ritocco unghie",
+        "allungamento del mantenimento",
+        "correzione unghie",
+        "refill",
+        "reffill",
+        "colata"
+      ]
+    },
+    "Refill Gel Unghie Lunghe": {
+      "duration": 75,
+      "price": 55,
+      "professionals": [
+        "123Email@gmail.try",
+        "Dianaeninicu@gmail.com"
+      ],
+      "allergens": [],
+      "synonyms": [
+        "ritocco gel",
+        "ritocco unghie",
+        "allungamento del mantenimento",
+        "correzione unghie",
+        "refill",
+        "reffill",
+        "colata"
+      ]
+    },
+    "Ricostruzione Unghie": {
+      "duration": 60,
+      "price": 55,
+      "professionals": [
+        "123Email@gmail.try",
+        "Dianaeninicu@gmail.com"
+      ],
+      "allergens": [],
+      "synonyms": [
+        "allungamento unghie",
+        "allungamento gel",
+        "ricostruzione gel",
+        "allungamento unghie gel",
+        "allungamento unghie con cartina",
+        "unghie lunghe gel",
+        "gel allungamento",
+        "gel ricostruzione"
+      ]
+    },
+    "Ricostruzione Unghia Singola": {
+      "duration": 15,
+      "price": 10,
+      "professionals": [
+        "123Email@gmail.try",
+        "Dianaeninicu@gmail.com"
+      ],
+      "allergens": [],
+      "synonyms": [
+        "unghia rotta",
+        "unghie rotte",
+        "unghie scheggiata",
+        "unghia scheggiata",
+        "aggiustare unghia",
+        "sistemare unghia",
+        "ricostruzione unghia rotta",
+        "preparazione unghia"
+      ]
+    },
+    "Ricostruzione Extra Lunga con Gel": {
+      "duration": 75,
+      "price": 75,
+      "professionals": [
+        "123Email@gmail.try",
+        "Dianaeninicu@gmail.com"
+      ],
+      "allergens": [
+        "alcol etilico",
+        "metilico"
+      ],
+      "synonyms": [
+        "allungamento unghie",
+        "allungamento gel",
+        "ricostruzione gel",
+        "allungamento unghie gel",
+        "allungamento unghie con cartina",
+        "unghie lunghe gel",
+        "gel allungamento",
+        "gel ricostruzione"
+      ]
+    },
+    "2 Dita Micropittura Unghie": {
+      "duration": 15,
+      "price": 10,
+      "professionals": [
+        "123Email@gmail.try",
+        "Dianaeninicu@gmail.com"
+      ],
+      "allergens": [
+        "alcol etilico",
+        "Metilico"
+      ],
+      "synonyms": []
+    },
+    "Rimozione Gel Mani": {
+      "duration": 15,
+      "price": 10,
+      "professionals": [
+        "123Email@gmail.try",
+        "Dianaeninicu@gmail.com"
+      ],
+      "allergens": [],
+      "synonyms": [
+        "togliere gel",
+        "togliere semi",
+        "togliere smalto",
+        "levare gel",
+        "levare semi",
+        "togliere unghie",
+        "rimozione ricostruzione",
+        "rimozione unghie finte",
+        "limare unghie",
+        "rimozione soak off"
+      ]
+    },
+    "Correzione e Colorazione con Henné": {
+      "duration": 30,
+      "price": 30,
+      "professionals": [
+        "Dianaeninicu@gmail.com"
+      ],
+      "allergens": [],
+      "synonyms": [
+        "hennè sopraciglia",
+        "tinta sopraciglia hennè",
+        "colorazione sopraciglia"
+      ]
+    },
+    "Simulatore Sopracciglia": {
+      "duration": 30,
+      "price": 30,
+      "professionals": [
+        "Dianaeninicu@gmail.com"
+      ],
+      "allergens": [],
+      "synonyms": [
+        "la prova delle sopraciglia",
+        "disegno sopraciglia",
+        "progettazione sopraciglia",
+        "valutazione sopraciglia",
+        "disegno sopraciglia"
+      ]
+    },
+    "Ceretta Sopracciglia + Labbro Superiore": {
+      "duration": 15,
+      "price": 15,
+      "professionals": [
+        "Dianaeninicu@gmail.com"
+      ],
+      "allergens": [],
+      "synonyms": [
+        "ceretta bafetti+sopraciglia",
+        "cera viso",
+        "pulizia sopraciglia",
+        "ceretta viso"
+      ]
+    },
+    "Applicazione Smalto Semipermanente Piedi": {
+      "duration": 30,
+      "price": 30,
+      "professionals": [
+        "123Email@gmail.try",
+        "Dianaeninicu@gmail.com"
+      ],
+      "allergens": [],
+      "synonyms": [
+        "pedicure estetico semipermanente",
+        "semipermanente piedi"
+      ]
+    },
+    "Pedicure Curativo": {
+      "duration": 45,
+      "price": 35,
+      "professionals": [
+        "123Email@gmail.try",
+        "Dianaeninicu@gmail.com"
+      ],
+      "allergens": [],
+      "synonyms": [
+        "pedicure estetico",
+        "pedicure classico",
+        "pedicure semplice",
+        "pedicure profondo",
+        "pedicure calli",
+        "pedicure curativo"
+      ]
+    },
+    "Pedicure curativo + Semipermanente": {
+      "duration": 60,
+      "price": 55,
+      "professionals": [
+        "123Email@gmail.try",
+        "Dianaeninicu@gmail.com"
+      ],
+      "allergens": [],
+      "synonyms": [
+        "pedicure estetico",
+        "pedicure classico",
+        "pedicure semplice",
+        "pedicure profondo",
+        "pedicure calli",
+        "pedicure curativo"
+      ]
+    }
+  },
+  "professionals": {
+    "123Email@gmail.try": {
+      "name": "Melissa Grossi"
+    },
+    "Dianaeninicu@gmail.com": {
+      "name": "Diana Eni"
+    }
+  },
+  "unavailability": {
+    "123Email@gmail.try": [
+      {
+        "type": "day",
+        "days": [
+          "7"
+        ]
+      }
+    ],
+    "Dianaeninicu@gmail.com": [
+      {
+        "type": "day",
+        "days": [
+          "1"
+        ]
+      }
+    ]
+  },
+  "businessHours": {
+    "1": [
+      "09:00",
+      "19:00"
+    ],
+    "2": [
+      "09:00",
+      "19:00"
+    ],
+    "3": [
+      "09:00",
+      "19:00"
+    ],
+    "4": [
+      "09:00",
+      "19:00"
+    ],
+    "5": [
+      "09:00",
+      "19:00"
+    ],
+    "6": [
+      "09:00",
+      "14:00"
+    ]
+  },
+  "lunchBreaks": {},
+  "closedDays": {
+    "7": true
+  },
+  "daysOff": {},
+  
+  "dayparts": {
+  "morning":   ["09:00","12:59"],
+  "afternoon": ["13:00","17:59"],
+  "evening":   ["18:00","21:00"]
+}
+
+}
