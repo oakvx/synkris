@@ -426,14 +426,15 @@ export async function updateCalendarEvent({
     allergicWarning
   });
 
-  // UPDATE (mantiene lo stesso eventId); manda update a tutti
-  const res = await retry(() => calendar.events.update({
+    // UPDATE (mantiene lo stesso eventId); manda update a tutti
+  const res = await _retry(() => calendar.events.update({
     calendarId,
     eventId,
     sendUpdates: 'all',
     requestBody: body
   }));
   return res.data;
+
 }
 
 
@@ -886,7 +887,8 @@ export async function createCalendarEventFlow(client, chatId) {
 export async function listCalendars(client, chatId) {
     try {
         const cal = await getCalendarClient();
-        const res = await retry(() => cal.calendarList.list());
+                const res = await _retry(() => cal.calendarList.list());
+
         const items = res.data.items || [];
         if (!items.length) return await client.sendText(chatId, '📂 Nessun calendario');
         const msg = '📂 Tuoi calendari:\n' + items.map(c => `• ${c.summary}\n  ID: ${c.id}`).join('\n');

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Editor Configurazione JSON — Patch Materiali & Modifica</title>
+  <title>Editor Configurazione JSON – Professionisti & Durate</title>
   <style>
     body { font-family: Arial, sans-serif; padding: 20px; max-width: 980px; margin: auto; }
     h1 { text-align: center; margin-bottom: 12px; }
@@ -59,12 +59,14 @@
     <h2 id="labelServices">Servizi</h2>
     <input id="filterService" class="filter-input" type="text" placeholder="Cerca servizio...">
     <div id="servicesContainer"></div>
+
     <h3 id="labelAddService">Aggiungi Nuovo Servizio</h3>
     <label for="newServiceName" id="labelServiceName">Nome servizio</label>
     <input type="text" id="newServiceName" required>
+
     <div class="row">
       <div>
-        <label for="newServiceDuration" id="labelServiceDuration">Durata (min)</label>
+        <label for="newServiceDuration" id="labelServiceDuration">Durata base (min)</label>
         <input type="number" id="newServiceDuration" required>
       </div>
       <div>
@@ -72,6 +74,7 @@
         <input type="number" id="newServicePrice" step="0.01" required>
       </div>
     </div>
+
     <div class="row">
       <div>
         <label for="newServiceMaterialsCost" id="labelServiceMaterialsCost">Costo materiali (€)</label>
@@ -79,10 +82,12 @@
         <span class="muted">Usato nel calcolo margine: prezzo - costo materiali.</span>
       </div>
       <div>
-        <label id="labelServiceProfessionals">Professionisti</label>
+        <label id="labelServiceProfessionals">Professionisti e durate</label>
+        <span class="muted">Seleziona i professionisti e (opzionale) inserisci la loro durata. Se vuoto, usa la durata base.</span>
         <div id="newServiceProfessionals" class="checkbox-list"></div>
       </div>
     </div>
+
     <label for="newServiceAllergens" id="labelServiceAllergens">Allergeni (separati da virgola)</label>
     <input type="text" id="newServiceAllergens" pattern="^[A-Za-zÀ-ž, ]*$">
     <label for="newServiceSynonyms">Sinonimi (separati da virgola)</label>
@@ -92,6 +97,7 @@
     <h2 id="labelProfessionals">Professionisti</h2>
     <input id="filterProf" class="filter-input" type="text" placeholder="Cerca professionista...">
     <div id="professionalsContainer"></div>
+
     <h3 id="labelAddProfessional">Aggiungi Nuovo Professionista</h3>
     <label for="newProfessionalName" id="labelProfessionalName">Nome e Cognome</label>
     <input type="text" id="newProfessionalName" required>
@@ -130,10 +136,10 @@
       labelServices: "Servizi",
       labelAddService: "Aggiungi Nuovo Servizio",
       labelServiceName: "Nome servizio",
-      labelServiceDuration: "Durata (min)",
+      labelServiceDuration: "Durata base (min)",
       labelServicePrice: "Prezzo (€)",
       labelServiceMaterialsCost: "Costo materiali (€)",
-      labelServiceProfessionals: "Professionisti",
+      labelServiceProfessionals: "Professionisti e durate",
       labelServiceAllergens: "Allergeni (separati da virgola)",
       btnAddService: "Aggiungi Servizio",
       labelProfessionals: "Professionisti",
@@ -153,7 +159,6 @@
       errorJson: "Errore JSON: "
     };
 
-    // Inject labels (id-based). Keep HTML defaults as fallback.
     Object.keys(i18n).forEach(key => {
       const el = document.getElementById(key);
       if (!el) return;
@@ -168,14 +173,13 @@
     function showSpinner() { document.getElementById('spinnerOverlay').style.display = 'flex'; }
     function hideSpinner() { document.getElementById('spinnerOverlay').style.display = 'none'; }
 
-    // Robust back: try to reach dashboard.html; if not, fallback to history/back
     (function setupBack(){
       const back = document.getElementById('btnBack');
       if(!back) return;
       back.addEventListener('click', async (e) => {
         try {
           const res = await fetch('dashboard.html', { method: 'HEAD' });
-          if (res.ok) return; // allow native navigation
+          if (res.ok) return;
           e.preventDefault();
         } catch {
           e.preventDefault();
@@ -184,13 +188,16 @@
       });
     })();
 
-    // ====== STATE ======
     let config = { services: {}, professionals: {}, unavailability: {}, businessHours: {}, lunchBreaks: {}, closedDays: {}, daysOff: {} };
     const daysMap = {"1":"Lunedì","2":"Martedì","3":"Mercoledì","4":"Giovedì","5":"Venerdì","6":"Sabato","7":"Domenica"};
 
-    // ====== HELPERS ======
-    const toSlug = (name) => btoa(unescape(encodeURIComponent(name))).replace(/=+$/,'');
-    const fromSlug = (slug) => decodeURIComponent(escape(atob(slug)));
+    const toSlug = (str) => {
+      const bytes = new TextEncoder().encode(String(str || ""));
+      let bin = "";
+      bytes.forEach(b => (bin += String.fromCharCode(b)));
+      return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+    };
+    const decodeMaybe = (s) => { try { return decodeURIComponent(s); } catch { return s; } };
 
     function normalizeConfig() {
       if (Array.isArray(config.professionals)) {
@@ -207,47 +214,59 @@
             materialsCost: s.materialsCost != null ? s.materialsCost : 0,
             professionals: s.professionals || [],
             allergens: s.allergens || [],
-            synonyms: s.synonyms || []
+            synonyms: s.synonyms || [],
+            professionalDurations: s.professionalDurations || {}
           };
         });
         config.services = o;
       } else {
-        Object.values(config.services).forEach(s => {
+        Object.values(config.services || {}).forEach(s => {
           s.professionals = s.professionals || [];
           s.allergens = s.allergens || [];
           s.synonyms = s.synonyms || [];
+          s.professionalDurations = s.professionalDurations || {};
           if (s.materialsCost == null) s.materialsCost = 0;
+          if ((!Array.isArray(s.professionals) || !s.professionals.length) && s.professionalDurations && Object.keys(s.professionalDurations).length) {
+            s.professionals = Object.keys(s.professionalDurations);
+          }
         });
       }
     }
 
-    function updatePreview() {
-      document.getElementById('livePreview').value = JSON.stringify(config, null, 2);
-    }
+    function updatePreview() { document.getElementById('livePreview').value = JSON.stringify(config, null, 2); }
 
-    // ====== RENDER ======
     function renderServices() {
       const q = document.getElementById('filterService').value.toLowerCase();
       const cont = document.getElementById('servicesContainer'); cont.innerHTML = '';
-      Object.keys(config.services).sort().forEach(name => {
+
+      Object.keys(config.services || {}).sort().forEach(name => {
         if (!name.toLowerCase().includes(q)) return;
-        const S = config.services[name];
+        const S = config.services[name] || {};
         const slug = toSlug(name);
         const div = document.createElement('div'); div.className = 'item';
+
+        const proLines = (S.professionals || []).map(email => {
+          const profName = config.professionals[email]?.name || email;
+          const d = (S.professionalDurations && S.professionalDurations[email] != null)
+            ? Number(S.professionalDurations[email])
+            : Number(S.duration || 0);
+          return `${profName}: ${d} min`;
+        });
+
         div.innerHTML = `
           <strong>${name}</strong><br>
-          Durata: ${S.duration} min<br>
+          Durata base: ${Number(S.duration || 0)} min<br>
+          <strong>Professionisti & durate:</strong><br>
+          ${proLines.length ? proLines.join('<br>') : '<span class="muted">Nessuno</span>'}<br><br>
           Prezzo: €${Number(S.price || 0).toFixed(2)}<br>
           Costo materiali: €${Number(S.materialsCost || 0).toFixed(2)}<br>
           Margine stimato: €${(Number(S.price||0) - Number(S.materialsCost||0)).toFixed(2)}<br>
-          Prof: ${S.professionals.join(', ') || 'Nessuno'}<br>
           Allergeni: ${Array.isArray(S.allergens)? S.allergens.join(', ') : (S.allergens || 'Nessuno')}
         `;
 
-        // Edit & Remove buttons
         const editBtn = document.createElement('button');
         editBtn.className = 'icon-btn'; editBtn.textContent = i18n.btnEdit;
-        editBtn.onclick = () => toggleServiceEditor(name);
+        editBtn.onclick = () => toggleServiceEditorEnc(encodeURIComponent(name));
         div.appendChild(editBtn);
 
         const delBtn = document.createElement('button');
@@ -255,17 +274,41 @@
         delBtn.onclick = () => { delete config.services[name]; renderAll(); };
         div.appendChild(delBtn);
 
-        // Editor
         const ed = document.createElement('div');
         ed.className = 'editor';
         ed.id = `editor-${slug}`;
 
-        // Build professionals checkboxes for edit
+        ed.addEventListener('change', (e) => {
+          if (e.target.type === 'checkbox' && e.target.hasAttribute('data-email')) {
+            const email = e.target.getAttribute('data-email');
+            const durationInput = ed.querySelector(`input[data-prof-duration="${email}"]`);
+            if (durationInput) {
+              durationInput.disabled = !e.target.checked;
+              if (!e.target.checked) durationInput.value = '';
+            }
+          }
+        });
+
         let profBoxes = '';
-        Object.keys(config.professionals).forEach(email => {
-          const isChecked = S.professionals.includes(email) ? 'checked' : '';
+        Object.keys(config.professionals || {}).forEach(email => {
+          const isChecked = (S.professionals || []).includes(email) ? 'checked' : '';
           const nm = config.professionals[email]?.name || email;
-          profBoxes += `<label><input type="checkbox" data-email="${email}" ${isChecked}> ${nm}</label>`;
+          const override = (S.professionalDurations && S.professionalDurations[email] != null) ? S.professionalDurations[email] : '';
+          const base = Number(S.duration || 0);
+
+          profBoxes += `
+            <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
+              <label style="flex: 1; margin: 0;">
+                <input type="checkbox" data-email="${email}" ${isChecked}> ${nm}
+              </label>
+              <input type="number"
+                     data-prof-duration="${email}"
+                     value="${override}"
+                     placeholder="${base}"
+                     style="width: 80px; padding: 4px;"
+                     ${!isChecked ? 'disabled' : ''}>
+            </div>
+          `;
         });
 
         const allergTxt = Array.isArray(S.allergens) ? S.allergens.join(', ') : (S.allergens || '');
@@ -278,8 +321,9 @@
               <input type="text" data-field="name" value="${name}">
             </div>
             <div>
-              <label>Durata (min)</label>
+              <label>Durata base (min)</label>
               <input type="number" data-field="duration" value="${S.duration||0}">
+              <span class="muted">Usata come fallback se non specificato per professionista</span>
             </div>
           </div>
           <div class="row">
@@ -292,21 +336,24 @@
               <input type="number" step="0.01" data-field="materialsCost" value="${S.materialsCost||0}">
             </div>
           </div>
-          <label>Professionisti</label>
+
+          <label>Professionisti e durate personalizzate</label>
+          <span class="muted">Seleziona i professionisti e (opzionale) inserisci una durata diversa dalla base. Se vuoto, usa la durata base.</span>
           <div class="checkbox-list" data-field="professionals">
             ${profBoxes || '<span class="muted">Nessun professionista presente</span>'}
           </div>
+
           <label>Allergeni (separati da virgola)</label>
           <input type="text" data-field="allergens" value="${allergTxt}">
           <label>Sinonimi (separati da virgola)</label>
           <input type="text" data-field="synonyms" value="${synTxt}">
+
           <div style="margin-top:10px; display:flex; gap:8px;">
-            <button class="btn" onclick="saveServiceEdits('${encodeURIComponent(name)}')">${i18n.btnSave}</button>
-            <button class="btn secondary" type="button" onclick="toggleServiceEditor('${name}')">${i18n.btnCancel}</button>
+            <button class="btn" type="button" onclick="saveServiceEdits('${encodeURIComponent(name)}')">${i18n.btnSave}</button>
+            <button class="btn secondary" type="button" onclick="toggleServiceEditorEnc('${encodeURIComponent(name)}')">${i18n.btnCancel}</button>
           </div>
         `;
         div.appendChild(ed);
-
         cont.appendChild(div);
       });
     }
@@ -314,43 +361,55 @@
     function renderProfessionals() {
       const q = document.getElementById('filterProf').value.toLowerCase();
       const cont = document.getElementById('professionalsContainer'); cont.innerHTML = '';
-      Object.entries(config.professionals).sort((a, b) => a[1].name.localeCompare(b[1].name)).forEach(([email, p]) => {
-        if (!p.name.toLowerCase().includes(q)) return;
+      Object.entries(config.professionals || {}).sort((a, b) => (a[1]?.name || '').localeCompare(b[1]?.name || '')).forEach(([email, p]) => {
+        if (!(p?.name || '').toLowerCase().includes(q)) return;
         const div = document.createElement('div'); div.className = 'item';
         div.innerHTML = `<strong>${p.name}</strong><br>Email: ${email}`;
-        const btn = document.createElement('button'); btn.className = 'remove-btn'; btn.textContent = 'X'; btn.onclick = () => { delete config.professionals[email]; renderAll(); };
+        const btn = document.createElement('button'); btn.className = 'remove-btn'; btn.textContent = 'X';
+        btn.onclick = () => {
+          delete config.professionals[email];
+          if (config.unavailability) delete config.unavailability[email];
+          Object.values(config.services || {}).forEach(s => {
+            s.professionals = (s.professionals || []).filter(e => e !== email);
+            if (s.professionalDurations && s.professionalDurations[email] != null) delete s.professionalDurations[email];
+          });
+          renderAll();
+        };
         div.appendChild(btn); cont.appendChild(div);
       });
     }
 
     function renderProfessionalOptions() {
       const cont = document.getElementById('newServiceProfessionals'); cont.innerHTML = '';
-      Object.entries(config.professionals).forEach(([email, p]) => {
-        const lbl = document.createElement('label'); lbl.innerHTML = `<input type="checkbox" value="${email}"> ${p.name}`;
-        cont.appendChild(lbl);
+      Object.entries(config.professionals || {}).forEach(([email, p]) => {
+        const div = document.createElement('div');
+        div.style.cssText = 'display: flex; align-items: center; gap: 8px; margin-bottom: 6px;';
+        div.innerHTML = `
+          <label style="flex: 1; margin: 0;">
+            <input type="checkbox" value="${email}"> ${p.name}
+          </label>
+          <input type="number" data-new-prof-duration="${email}" placeholder="min" style="width: 80px; padding: 4px;" disabled>
+        `;
+        const checkbox = div.querySelector('input[type="checkbox"]');
+        const durationInput = div.querySelector('input[type="number"]');
+        checkbox.addEventListener('change', () => {
+          durationInput.disabled = !checkbox.checked;
+          if (!checkbox.checked) durationInput.value = '';
+        });
+        cont.appendChild(div);
       });
     }
 
     function renderUnavailability() {
       const cont = document.getElementById('unavailabilityContainer'); cont.innerHTML = '';
-      Object.entries(config.professionals).forEach(([email, p]) => {
+      Object.entries(config.professionals || {}).forEach(([email, p]) => {
         const div = document.createElement('div'); div.className = 'item'; div.innerHTML = `<strong>${p.name}</strong>`;
         const sub = document.createElement('div');
         Object.entries(daysMap).forEach(([d, dn]) => {
-          const checked = config.unavailability?.[email]?.some(u => u.type === 'day' && u.days.includes(d));
+          const checked = config.unavailability?.[email]?.some(u => u.type === 'day' && (u.days || []).includes(d));
           const lbl = document.createElement('label'); lbl.innerHTML = `<input type="checkbox"${checked ? ' checked' : ''} onchange="updateUnavailability('${email}','${d}',this.checked)"> ${dn}`;
           sub.appendChild(lbl);
         }); div.appendChild(sub);
-        const others = config.unavailability?.[email]?.filter(u => u.type !== 'day') || [];
-        if (others.length) {
-          const ul = document.createElement('ul');
-          others.forEach(u => {
-            const li = document.createElement('li');
-            if (u.type === 'range') li.textContent = `Ferie: dal ${u.start} al ${u.end}`;
-            if (u.type === 'recurrence') li.textContent = `Ricorrenza: ${u.rule}`;
-            ul.appendChild(li);
-          }); div.appendChild(ul);
-        }
         cont.appendChild(div);
       });
     }
@@ -361,11 +420,11 @@
         const bh = config.businessHours?.[d] || ['', ''];
         const lb = config.lunchBreaks?.[d] || ['', ''];
         const closed = config.closedDays?.[d];
-        const hasLunch = config.lunchBreaks?.hasOwnProperty(d);
+        const hasLunch = Object.prototype.hasOwnProperty.call((config.lunchBreaks||{}), d);
         const div = document.createElement('div'); div.className = 'item';
         div.innerHTML = `
           <strong>${dn}</strong><br>
-          Apertura: <input type="time" value="${bh[0]}" onchange="updateHour('${d}',0,this.value)"${closed ? ' disabled' : ''}> 
+          Apertura: <input type="time" value="${bh[0]}" onchange="updateHour('${d}',0,this.value)"${closed ? ' disabled' : ''}>
           Chiusura: <input type="time" value="${bh[1]}" onchange="updateHour('${d}',1,this.value)"${closed ? ' disabled' : ''}><br>
           <label><input type="checkbox" onchange="toggleLunch('${d}',this.checked)"${hasLunch ? ' checked' : ''}> Pausa Pranzo</label>
           <div id="lunchBlock-${d}" style="${hasLunch ? '' : 'display:none;'}; margin-top:8px;">
@@ -386,16 +445,23 @@
       });
     }
 
-    // ====== UPDATE HELPERS ======
-    function updateUnavailability(e, d, chk) { config.unavailability = config.unavailability || {}; config.unavailability[e] = config.unavailability[e] || []; let ent = config.unavailability[e].find(u => u.type === 'day'); if (!ent) { ent = { type: 'day', days: [] }; config.unavailability[e].push(ent); } if (chk) ent.days.push(d); else ent.days = ent.days.filter(x => x !== d); if (!ent.days.length) config.unavailability[e] = config.unavailability[e].filter(x => x !== ent); renderUnavailability(); updatePreview(); }
+    function updateUnavailability(e, d, chk) {
+      config.unavailability = config.unavailability || {};
+      config.unavailability[e] = config.unavailability[e] || [];
+      let ent = config.unavailability[e].find(u => u.type === 'day');
+      if (!ent) { ent = { type: 'day', days: [] }; config.unavailability[e].push(ent); }
+      if (chk) { if (!ent.days.includes(d)) ent.days.push(d); } else ent.days = ent.days.filter(x => x !== d);
+      if (!ent.days.length) config.unavailability[e] = config.unavailability[e].filter(x => x !== ent);
+      renderUnavailability(); updatePreview();
+    }
     function toggleLunch(d, chk) { if (chk) { config.lunchBreaks[d] = config.lunchBreaks[d] || ['', '']; document.getElementById(`lunchBlock-${d}`).style.display = ''; } else { delete config.lunchBreaks[d]; document.getElementById(`lunchBlock-${d}`).style.display = 'none'; } renderHours(); updatePreview(); }
     function updateHour(d, i, v) { config.businessHours[d] = config.businessHours[d] || ['', '']; config.businessHours[d][i] = v; renderHours(); updatePreview(); }
     function updateLunch(d, i, v) { config.lunchBreaks[d] = config.lunchBreaks[d] || ['', '']; config.lunchBreaks[d][i] = v; updatePreview(); }
     function updateClosed(d, chk) { if (chk) config.closedDays[d] = true; else delete config.closedDays[d]; renderHours(); updatePreview(); }
     function updateDayOff(d, chk) { if (chk) config.daysOff[d] = true; else delete config.daysOff[d]; renderDaysOff(); updatePreview(); }
 
-    // ====== EDITOR TOGGLE & SAVE ======
-    function toggleServiceEditor(name){
+    function toggleServiceEditorEnc(encName){
+      const name = decodeMaybe(encName);
       const id = `editor-${toSlug(name)}`;
       const box = document.getElementById(id);
       if (!box) return;
@@ -403,7 +469,7 @@
     }
 
     function saveServiceEdits(encOldName){
-      const oldName = decodeURIComponent(encOldName);
+      const oldName = decodeMaybe(encOldName);
       const slug = toSlug(oldName);
       const box = document.getElementById(`editor-${slug}`);
       if (!box) return;
@@ -422,6 +488,16 @@
       const newSyns = getVal('input[data-field="synonyms"]').split(',').map(s => s.trim()).filter(Boolean);
       const newPros = Array.from(box.querySelectorAll('[data-field="professionals"] input[type="checkbox"][data-email]:checked')).map(i => i.getAttribute('data-email'));
 
+      const profDurations = {};
+      newPros.forEach(email => {
+        const durInput = box.querySelector(`input[data-prof-duration="${email}"]`);
+        if (!durInput) return;
+        const raw = String(durInput.value || '').trim();
+        if (!raw) return;
+        const dur = parseInt(raw, 10);
+        if (!isNaN(dur) && dur > 0 && dur !== newDur) profDurations[email] = dur;
+      });
+
       if (!newName || !newDur || isNaN(newPrice)) { showToast(i18n.errorIncomplete); return; }
 
       const old = config.services[oldName] || {};
@@ -432,7 +508,8 @@
         materialsCost: newMC,
         allergens: newAlls,
         synonyms: newSyns,
-        professionals: newPros
+        professionals: newPros,
+        professionalDurations: profDurations
       };
 
       if (newName !== oldName){
@@ -441,14 +518,13 @@
       } else {
         config.services[oldName] = updated;
       }
+
       renderAll();
-      toggleServiceEditor(newName);
       showToast("Servizio aggiornato");
     }
 
     function renderAll() { renderServices(); renderProfessionals(); renderProfessionalOptions(); renderUnavailability(); renderHours(); renderDaysOff(); updatePreview(); }
 
-    // ====== EVENTS ======
     document.getElementById('filterService').addEventListener('input', renderServices);
     document.getElementById('filterProf').addEventListener('input', renderProfessionals);
 
@@ -488,13 +564,36 @@
       const dur = +document.getElementById('newServiceDuration').value;
       const pr = +document.getElementById('newServicePrice').value;
       const mc = parseFloat(document.getElementById('newServiceMaterialsCost').value || '0');
-      const profs = [...document.querySelectorAll('#newServiceProfessionals input:checked')].map(i => i.value);
+      const profs = [...document.querySelectorAll('#newServiceProfessionals input[type="checkbox"]:checked')].map(i => i.value);
       const alls = document.getElementById('newServiceAllergens').value.split(',').map(a => a.trim()).filter(a => a);
       const syns = document.getElementById('newServiceSynonyms').value.split(',').map(a => a.trim()).filter(a => a);
+
+      const profDurations = {};
+      profs.forEach(email => {
+        const durInput = document.querySelector(`input[data-new-prof-duration="${email}"]`);
+        if (!durInput) return;
+        const raw = String(durInput.value || '').trim();
+        if (!raw) return;
+        const profDur = parseInt(raw, 10);
+        if (!isNaN(profDur) && profDur > 0 && profDur !== dur) profDurations[email] = profDur;
+      });
+
       if (!name || !dur || isNaN(pr)) { showToast(i18n.errorIncomplete); return; }
-      config.services[name] = { duration: dur, price: pr, materialsCost: isNaN(mc) ? 0 : mc, professionals: profs, allergens: alls, synonyms: syns };
+
+      config.services[name] = {
+        duration: dur,
+        price: pr,
+        materialsCost: isNaN(mc) ? 0 : mc,
+        professionals: profs,
+        allergens: alls,
+        synonyms: syns,
+        professionalDurations: profDurations
+      };
+
       ['newServiceName','newServiceDuration','newServicePrice','newServiceMaterialsCost','newServiceAllergens','newServiceSynonyms'].forEach(id => document.getElementById(id).value = id==='newServiceMaterialsCost' ? '0' : '');
-      document.querySelectorAll('#newServiceProfessionals input:checked').forEach(i => i.checked = false);
+      document.querySelectorAll('#newServiceProfessionals input[type="checkbox"]:checked').forEach(i => i.checked = false);
+      document.querySelectorAll('#newServiceProfessionals input[type="number"]').forEach(i => { i.value = ''; i.disabled = true; });
+
       renderAll();
       showToast('Servizio aggiunto');
     });
@@ -522,7 +621,6 @@
       navigator.clipboard.writeText(JSON.stringify(config, null, 2)).then(() => showToast(i18n.toastCopied));
     });
 
-    // Inizializzazione automatica
     document.getElementById('btnNewConfig').click();
   </script>
 </body>

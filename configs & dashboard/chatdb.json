@@ -1,35 +1,98 @@
 {
   "393534043794@c.us": {
     "msgs": [
+      "modifica",
       "3",
-      "1",
-      "dopo domani",
-      "dopodomani",
-      "alle 9 e 45"
+      "2",
+      "evelin",
+      "evelin.com"
     ],
-    "lang": "it"
+    "lang": "it",
+    "lastActive": 1766530144013,
+    "lastGreet": 1766529987527
   },
   "393661331083@c.us": {
     "msgs": [
-      "12.00",
-      "ciaoo avresti posto questo venerdì tarda mattinata circa verso le 11/12 per fare un semipermanente?",
-      "Smalto semipermanente",
-      "0",
-      "Giulia"
-    ]
+      "1",
+      "Lunedì",
+      "18",
+      "18.00",
+      "Marianna luna"
+    ],
+    "lang": "it",
+    "lastActive": 1766523250586,
+    "lastGreet": 1766522953502
   },
   "4917680219309@c.us": {
     "msgs": [
-      "Cosa comprende la manicure classica",
-      "E pericolosa la manicure ?",
-      "Scusa capo tu laborare tanto oggi",
-      "Secondo me e meglio se gliela leviamo la cosa delle info nella prima versione e comunque accettabile credo piuttosto che starci altro tempo su dobbiamo fare cassa casso",
-      "Va bene dai allora lasciamola stare dormire per adesso"
-    ]
+      "60gg",
+      "4 mesi",
+      "Voglio PARLARE COL TECNICO COGLIONE",
+      "Si ho appena chiesto e mi ha detto che 4 mesi van più che bene anche per le spose",
+      "Yep"
+    ],
+    "lang": "it",
+    "lastActive": 1766524138359,
+    "lastGreet": 1766521622298
   },
   "393348329640@c.us": {
     "msgs": [
       "ah ok"
     ]
+  },
+  "393519898773@c.us": {
+    "msgs": [
+      "beatrix big cocksx",
+      "beatrix big cocksx"
+    ],
+    "lang": "it"
+  },
+  "393394993954@c.us": {
+    "msgs": [
+      "tuo",
+      "tuo",
+      "CHE CAZZO È STO MORENDO",
+      "CHE CAZZO È STO MORENDO"
+    ],
+    "lang": "it"
+  },
+  "2349168082321@c.us": {
+    "msgs": [
+      "Non capisco cosa stai facendo, non mi piace, ma chi sei esattamente?",
+      "Non capisco cosa stai facendo, non mi piace, ma chi sei esattamente?",
+      "Cosa stai facendo in questo momento",
+      "5",
+      "9"
+    ],
+    "lang": "it"
+  },
+  "393761865933@c.us": {
+    "msgs": [
+      "2",
+      "Per martedi c’è posto al pomeriggio",
+      "Ale 18",
+      "Silvia",
+      "Silvia ginelli"
+    ],
+    "lang": "it",
+    "lastActive": 1765129956883,
+    "lastGreet": 1765133653157
+  },
+  "393298295594@c.us": {
+    "msgs": [
+      "1",
+      "07/01/26",
+      "6",
+      "6",
+      "12,45"
+    ],
+    "lang": "it",
+    "lastActive": 1766427629648,
+    "lastGreet": 1766427393016
+  },
+  "393393314354@c.us": {
+    "lastActive": 1765226090426,
+    "lastGreet": 1765225839513,
+    "lang": "it"
   }
 }

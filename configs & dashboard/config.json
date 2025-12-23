@@ -1,97 +1,11 @@
 {
   "services": {
-    "Manicure Classica": {
-      "duration": 30,
-      "price": 25,
-      "professionals": [
-        "123Email@gmail.try",
-        "Dianaeninicu@gmail.com"
-      ],
-      "allergens": [],
-      "synonyms": [
-        "manicure tradizionale",
-        "pulizia delle cuticole",
-        "manicure"
-      ]
-    },
-    "Smalto Semipermanente Mani": {
-      "duration": 30,
-      "price": 30,
-      "professionals": [
-        "123Email@gmail.try",
-        "Dianaeninicu@gmail.com"
-      ],
-      "allergens": [],
-      "synonyms": [
-        "smalto semi",
-        "smalto gel",
-        "smalto shellac",
-        "manicure smalto a lunga durata",
-        "smalto rinforzato",
-        "smalto semi-rinforzato"
-      ]
-    },
-    "Refill Gel Unghie Corte": {
-      "duration": 45,
-      "price": 40,
-      "professionals": [
-        "123Email@gmail.try",
-        "Dianaeninicu@gmail.com"
-      ],
-      "allergens": [],
-      "synonyms": [
-        "ritocco gel",
-        "ritocco unghie",
-        "allungamento del mantenimento",
-        "correzione unghie",
-        "refill",
-        "reffill",
-        "colata"
-      ]
-    },
-    "Refill Gel Unghie Lunghe": {
-      "duration": 75,
-      "price": 55,
-      "professionals": [
-        "123Email@gmail.try",
-        "Dianaeninicu@gmail.com"
-      ],
-      "allergens": [],
-      "synonyms": [
-        "ritocco gel",
-        "ritocco unghie",
-        "allungamento del mantenimento",
-        "correzione unghie",
-        "refill",
-        "reffill",
-        "colata"
-      ]
-    },
-    "Ricostruzione Unghie": {
-      "duration": 60,
-      "price": 55,
-      "professionals": [
-        "123Email@gmail.try",
-        "Dianaeninicu@gmail.com"
-      ],
-      "allergens": [],
-      "synonyms": [
-        "allungamento unghie",
-        "allungamento gel",
-        "ricostruzione gel",
-        "allungamento unghie gel",
-        "allungamento unghie con cartina",
-        "unghie lunghe gel",
-        "gel allungamento",
-        "gel ricostruzione"
-      ]
-    },
     "Ricostruzione Unghia Singola": {
       "duration": 15,
       "price": 10,
       "professionals": [
-        "123Email@gmail.try",
-        "Dianaeninicu@gmail.com"
+        "Dianaeninicu@gmail.com",
+        "evelin.com"
       ],
       "allergens": [],
       "synonyms": [
@@ -102,50 +16,58 @@
         "aggiustare unghia",
         "sistemare unghia",
         "ricostruzione unghia rotta",
-        "preparazione unghia"
-      ]
-    },
-    "Ricostruzione Extra Lunga con Gel": {
-      "duration": 75,
-      "price": 75,
-      "professionals": [
-        "123Email@gmail.try",
-        "Dianaeninicu@gmail.com"
+        "preparazione unghia",
+        "ricostruzione unghia singola",
+        "ricostruzione 1 unghia",
+        "ricostruzione unghia rotta",
+        "ricostruzione unghia spezzata",
+        "riparazione unghia singola",
+        "riparazione 1 unghia",
+        "riparazione unghia rotta",
+        "riparazione unghia spezzata",
+        "refill 1 unghia",
+        "gel unghia singola",
+        "ricostruzione singola unghia",
+        "aggiustare unghia rotta",
+        "aggiustare unghia spezzata",
+        "ricostruzione unghia singola gel",
+        "ricostruzione unghia singola acrilico",
+        "riparazione unghia singola gel"
       ],
-      "allergens": [
-        "alcol etilico",
-        "metilico"
-      ],
-      "synonyms": [
-        "allungamento unghie",
-        "allungamento gel",
-        "ricostruzione gel",
-        "allungamento unghie gel",
-        "allungamento unghie con cartina",
-        "unghie lunghe gel",
-        "gel allungamento",
-        "gel ricostruzione"
-      ]
+      "materialsCost": 0
     },
     "2 Dita Micropittura Unghie": {
       "duration": 15,
       "price": 10,
       "professionals": [
-        "123Email@gmail.try",
-        "Dianaeninicu@gmail.com"
+        "Dianaeninicu@gmail.com",
+        "evelin.com"
       ],
-      "allergens": [
-        "alcol etilico",
-        "Metilico"
+      "allergens": [],
+      "synonyms": [
+        "2ditaMicropitturaUnghie",
+        "micropittura2dita",
+        "micropittura2ditaunghie",
+        "micropitturaunghie2dita",
+        "micropitturasu2dita",
+        "micropitturasuduedita",
+        "micropittura2unghie",
+        "micropitturadueunghie",
+        "micropitturasu2unghie",
+        "micropitturasudueunghie",
+        "decorazione2dita",
+        "decorazioneduedita",
+        "decorazionesu2dita",
+        "decorazionesuduedita"
       ],
-      "synonyms": []
+      "materialsCost": 0
     },
     "Rimozione Gel Mani": {
       "duration": 15,
       "price": 10,
       "professionals": [
-        "123Email@gmail.try",
-        "Dianaeninicu@gmail.com"
+        "Dianaeninicu@gmail.com",
+        "evelin.com"
       ],
       "allergens": [],
       "synonyms": [
@@ -158,8 +80,25 @@
         "rimozione ricostruzione",
         "rimozione unghie finte",
         "limare unghie",
-        "rimozione soak off"
-      ]
+        "rimozione gel mani",
+        "rimozione gel unghie",
+        "rimozione gel unghie mani",
+        "togliere gel mani",
+        "togliere gel unghie",
+        "rimozione semipermanente mani",
+        "togliere semipermanente mani",
+        "rimozione smalto semipermanente mani",
+        "soak off gel mani",
+        "rimozione gel soak off",
+        "rimozione gel con acetone",
+        "rimozione gel e pulizia",
+        "rimozione gel + manicure",
+        "rimozione gel mani completa",
+        "togliere gel dalle unghie",
+        "remove gel mani",
+        "rimozione gel mani e limatura"
+      ],
+      "materialsCost": 0
     },
     "Correzione e Colorazione con Henné": {
       "duration": 30,
@@ -171,8 +110,23 @@
       "synonyms": [
         "hennè sopraciglia",
         "tinta sopraciglia hennè",
-        "colorazione sopraciglia"
-      ]
+        "colorazione sopraciglia",
+        "hennè sopracciglia",
+        "tinta sopracciglia hennè",
+        "colorazione sopracciglia",
+        "henné sopracciglia",
+        "tinta hennè sopracciglia",
+        "colorazione hennè sopracciglia",
+        "henne sopracciglia",
+        "tinta sopracciglia henne",
+        "correzione sopracciglia hennè",
+        "correzione e colorazione sopracciglia",
+        "tinta sopracciglia naturale",
+        "hennè brows",
+        "brow hennè",
+        "brow tint hennè"
+      ],
+      "materialsCost": 0
     },
     "Simulatore Sopracciglia": {
       "duration": 30,
@@ -182,12 +136,13 @@
       ],
       "allergens": [],
       "synonyms": [
-        "la prova delle sopraciglia",
-        "disegno sopraciglia",
-        "progettazione sopraciglia",
-        "valutazione sopraciglia",
-        "disegno sopraciglia"
-      ]
+        "prova delle sopracciglia",
+        "disegno sopracciglia",
+        "progettazione sopracciglia",
+        "valutazione sopracciglia",
+        "disegno sopracciglia"
+      ],
+      "materialsCost": 0
     },
     "Ceretta Sopracciglia + Labbro Superiore": {
       "duration": 15,
@@ -200,27 +155,27 @@
         "ceretta bafetti+sopraciglia",
         "cera viso",
         "pulizia sopraciglia",
-        "ceretta viso"
-      ]
-    },
-    "Applicazione Smalto Semipermanente Piedi": {
-      "duration": 30,
-      "price": 30,
-      "professionals": [
-        "123Email@gmail.try",
-        "Dianaeninicu@gmail.com"
+        "ceretta viso",
+        "ceretta baffetti+sopracciglia",
+        "cera baffetti+sopracciglia",
+        "ceretta viso",
+        "cera viso",
+        "ceretta baffetti",
+        "ceretta baffetto",
+        "pulizia sopracciglia",
+        "pulizia sopracciglie",
+        "epilazione viso",
+        "ceretta labbro superiore",
+        "ceretta baffetti+sopracciglie",
+        "ceretta sopracciglia+labbro superiore",
+        "ceretta sopracciglia e baffetti"
       ],
-      "allergens": [],
-      "synonyms": [
-        "pedicure estetico semipermanente",
-        "semipermanente piedi"
-      ]
+      "materialsCost": 0
     },
     "Pedicure Curativo": {
       "duration": 45,
       "price": 35,
       "professionals": [
-        "123Email@gmail.try",
         "Dianaeninicu@gmail.com"
       ],
       "allergens": [],
@@ -230,33 +185,307 @@
         "pedicure semplice",
         "pedicure profondo",
         "pedicure calli",
-        "pedicure curativo"
-      ]
+        "pedicure curativopedicure curativo",
+        "pedicure curativa",
+        "pedicure curante",
+        "pedicure curante piedi",
+        "pedicure sanitario",
+        "pedicure trattamento",
+        "pedicure piedi",
+        "pedicure piedi curativo",
+        "curativo piedi",
+        "pedicure calli",
+        "pedicure duroni",
+        "pedicure talloni",
+        "pedicure unghie incarnite",
+        "pedicure professionale",
+        "pedicure completo piedi",
+        "pedicure medicale",
+        "pedicure estetico curativo",
+        "pedicure terapeutico"
+      ],
+      "materialsCost": 0
     },
-    "Pedicure curativo + Semipermanente": {
+    "Applicazione Smalto Semipermanente Piedi": {
+      "duration": 30,
+      "price": 30,
+      "professionals": [
+        "Dianaeninicu@gmail.com",
+        "evelin.com"
+      ],
+      "allergens": [],
+      "synonyms": [
+        "smalto semipermanente piedi",
+        "semipermanente piedi",
+        "semi permanente piedi",
+        "semi-permanente piedi",
+        "applicazione semipermanente piedi",
+        "stesura semipermanente piedi",
+        "smalto lunga durata piedi",
+        "shellac piedi",
+        "gel polish piedi",
+        "smalto semiper piedi",
+        "semiperm piedi",
+        "semipermanete piedi",
+        "semi perm piedi",
+        "smalto piedi a lunga durata",
+        "smalto uv piedi"
+      ],
+      "materialsCost": 0
+    },
+    "Manicure Classica": {
+      "duration": 30,
+      "price": 25,
+      "professionals": [
+        "Dianaeninicu@gmail.com",
+        "evelin.com"
+      ],
+      "allergens": [],
+      "synonyms": [
+        "manicure classica",
+        "manicure base",
+        "manicure tradizionale",
+        "manicure semplice",
+        "manicure naturale",
+        "manicure standard",
+        "manicure essenziale",
+        "manicure pulizia",
+        "manicure senza smalto",
+        "manicure normale",
+        "manicure classica",
+        "manicure base",
+        "manicure semplice",
+        "manicure tradizionale",
+        "manicure completa",
+        "manicure mani",
+        "manicure normale",
+        "manicure standard",
+        "manicure pulizia",
+        "manicure con limatura",
+        "manicure cuticole",
+        "solo manicure",
+        "manicure senza smalto",
+        "manicure naturale",
+        "manicure pulizia unghie",
+        "manicure estetica",
+        "manicure dry",
+        "manicure a secco"
+      ],
+      "materialsCost": 0
+    },
+    "Smalto Semipermanente Mani": {
+      "duration": 30,
+      "price": 30,
+      "professionals": [
+        "Dianaeninicu@gmail.com",
+        "evelin.com"
+      ],
+      "allergens": [],
+      "synonyms": [
+        "smaltosemipermanentemani",
+        "semipermanentemani",
+        "semipermanentemani",
+        "semi-permanentemani",
+        "applicazionesemipermanentemani",
+        "stesurasemipermanentemani",
+        "smaltolungaduratamani",
+        "shellacmani",
+        "gelpolishmani",
+        "smaltosemipermani",
+        "semipermmani",
+        "semipermanetemani",
+        "semipermmani",
+        "smaltomanialungadurata",
+        "smaltouvmani",
+        "smaltosemipermanentemani",
+        "semipermanentemani",
+        "semimani",
+        "smaltosemimani",
+        "gelpolishmani",
+        "semipermanenteunghiemani",
+        "smaltogelmani",
+        "applicazionesemipermanentemani",
+        "stenderesemipermanentemani",
+        "ricoperturasemipermanentemani",
+        "smaltosemipermanenteunghie",
+        "semipermanenteunghiemani",
+        "smaltogelsemipermanentemani",
+        "soakoffmani",
+        "semipermanentemanicure",
+        "manicuresemipermanente",
+        "semipermanentemani",
+        "semipermanentesullemanii......."
+      ],
+      "materialsCost": 0
+    },
+    "Ricostruzione Extra Lunga con Gel": {
+      "duration": 75,
+      "price": 75,
+      "professionals": [
+        "Dianaeninicu@gmail.com",
+        "evelin.com"
+      ],
+      "allergens": [],
+      "synonyms": [
+        "ricostruzione extra lunga gel",
+        "ricostruzione unghie extra lunghe gel",
+        "allungamento extra lungo gel",
+        "allungamento unghie extra lunghe gel",
+        "ricostruzione unghie con gel extra lunghe",
+        "ricostruzione unghie extreme gel",
+        "ricostruzione gel extra lunga",
+        "ricostruzione gel extreme",
+        "allungamento extreme gel",
+        "ricostruzione gel unghie extra lunghe"
+      ],
+      "materialsCost": 0
+    },
+    "Refill Gel Unghie Lunghe": {
+      "duration": 75,
+      "price": 55,
+      "professionals": [
+        "Dianaeninicu@gmail.com",
+        "evelin.com"
+      ],
+      "allergens": [],
+      "synonyms": [
+        "refill gel unghie lunghe",
+        "ritocco gel unghie lunghe",
+        "manutenzione gel unghie lunghe",
+        "refill unghie lunghe gel",
+        "refill unghie gel lunghe",
+        "refill unghie lunghe",
+        "ritocco unghie lunghe gel",
+        "refill gel lunghe",
+        "refill gel extra lunghe",
+        "refill gel unghie lunghe",
+        "refill gel lunghe",
+        "refill unghie lunghe",
+        "ritocco gel unghie lunghe",
+        "ritocco gel lunghe",
+        "refill ricostruzione unghie lunghe",
+        "manutenzione gel unghie lunghe",
+        "manutenzione gel lunghe",
+        "riempimento gel unghie lunghe",
+        "riempimento gel lunghe",
+        "refill gel long",
+        "refill gel unghie long",
+        "ritocco ricostruzione unghie lunghe",
+        "refill gel su unghie lunghe",
+        "refill gel lungo",
+        "ritocco gel lungo",
+        "refill gel unghie extra lunghe",
+        "refill gel allungamento",
+        "refill gel unghie ricostruite lunghe"
+      ],
+      "materialsCost": 0
+    },
+    "Refill Gel Unghie Corte": {
+      "duration": 45,
+      "price": 40,
+      "professionals": [
+        "Dianaeninicu@gmail.com",
+        "evelin.com"
+      ],
+      "allergens": [],
+      "synonyms": [
+        "refill gel unghie corte",
+        "refill gel corte",
+        "refill unghie corte",
+        "ritocco gel unghie corte",
+        "ritocco gel corte",
+        "refill ricostruzione unghie corte",
+        "manutenzione gel unghie corte",
+        "manutenzione gel corte",
+        "riempimento gel unghie corte",
+        "riempimento gel corte",
+        "refill gel short",
+        "refill gel unghie short",
+        "ritocco ricostruzione unghie corte",
+        "refill gel su unghie corte",
+        "refill gel corte naturali",
+        "refill gel corto",
+        "ritocco gel corto",
+        "refill gel unghie naturali corte",
+        "refill unghie gel corte",
+        "refill gel unghie corte",
+        "refill gel corte",
+        "refill unghie corte",
+        "ritocco gel unghie corte",
+        "ritocco gel corte",
+        "refill ricostruzione unghie corte",
+        "manutenzione gel unghie corte",
+        "manutenzione gel corte",
+        "riempimento gel unghie corte",
+        "riempimento gel corte",
+        "refill gel short",
+        "refill gel unghie short",
+        "ritocco ricostruzione unghie corte",
+        "refill gel su unghie corte",
+        "refill gel corte naturali",
+        "refill gel corto",
+        "ritocco gel corto",
+        "refill gel unghie naturali corte",
+        "refill unghie gel corte"
+      ],
+      "materialsCost": 0
+    },
+    "Ricostruzione Unghie corte": {
       "duration": 60,
       "price": 55,
       "professionals": [
-        "123Email@gmail.try",
+        "Dianaeninicu@gmail.com",
+        "evelin.com"
+      ],
+      "allergens": [],
+      "synonyms": [
+        "ricostruzione unghie",
+        "ricostruzione gel",
+        "ricostruzione unghie gel",
+        "allungamento unghie gel",
+        "ricostruzione unghie con gel",
+        "ricostruzione unghie artificiali",
+        "allungamento gel",
+        "ricostruzione completa unghie",
+        "ricostruzione unghie da zero",
+        "allungamento unghie con gel"
+      ],
+      "materialsCost": 0
+    },
+    "Pedicure curativo + Semipermanente piedi": {
+      "duration": 60,
+      "price": 55,
+      "professionals": [
         "Dianaeninicu@gmail.com"
       ],
       "allergens": [],
       "synonyms": [
-        "pedicure estetico",
-        "pedicure classico",
-        "pedicure semplice",
-        "pedicure profondo",
-        "pedicure calli",
-        "pedicure curativo"
-      ]
+        "pedicure curativo+semipermanente",
+        "pedicure curativo semipermanente",
+        "pedicure curativo con semipermanente",
+        "pedicure curante+semipermanente",
+        "pedicure sanitario+semipermanente",
+        "pedicure medicale+semipermanente",
+        "pedicure piedi+semipermanente",
+        "pedicure completo+semipermanente",
+        "pedicure curativo e semipermanente",
+        "pedicure curativo + semi",
+        "curativo+semipermanente piedi",
+        "pedicure curativo con semi",
+        "pedicure curativo smalto semipermanente",
+        "pedicure curante smalto semipermanente",
+        "pedicure trattamento+semipermanente piedi",
+        "pedicure curativo con gel piedi"
+      ],
+      "materialsCost": 0
     }
   },
   "professionals": {
-    "123Email@gmail.try": {
-      "name": "Melissa Grossi"
-    },
     "Dianaeninicu@gmail.com": {
-      "name": "Diana Eni"
+      "name": "Diana"
+    },
+    "evelin.com": {
+      "name": "Evelin"
     }
   },
   "unavailability": {
@@ -272,7 +501,15 @@
       {
         "type": "day",
         "days": [
-          "1"
+          "7"
+        ]
+      }
+    ],
+    "evelin.com": [
+      {
+        "type": "day",
+        "days": [
+          "7"
         ]
       }
     ]
@@ -300,19 +537,14 @@
     ],
     "6": [
       "09:00",
-      "14:00"
+      "14:29"
     ]
   },
   "lunchBreaks": {},
   "closedDays": {
     "7": true
   },
-  "daysOff": {},
-  
-  "dayparts": {
-  "morning":   ["09:00","12:59"],
-  "afternoon": ["13:00","17:59"],
-  "evening":   ["18:00","21:00"]
-}
-
+  "daysOff": {
+    "7": true
+  }
 }

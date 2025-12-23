@@ -1,0 +1,9462 @@
+// util.js — Gestione prenotazioni WhatsApp (ITA) — versione patchata
+import os from "node:os";
+import * as fsSync from "fs";
+import path from "path";
+
+import {
+  getFreeSlotsForDay as _getFreeSlotsForDay,
+  createCalendarEvent as _createCalendarEvent,
+} from "./gcal.js";
+import * as GCAL from "./gcal.js";
+let inactivityClient = null;
+// --- mini lock per chat ---
+const __busyChats = new Set();
+const __busySince = new Map();
+const BUSY_TTL_MS = Number(process.env.BUSY_TTL_MS || 45000);
+
+const __delay = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// in cima al file, sopra ogni uso di config/bookings/chatdb
+import {
+  readJSON,
+  writeJSON,
+  initJSON,
+  DATA_DIR,
+  debugDataDir,
+} from "./fs-json.js";
+initJSON("config.json", {});
+initJSON("bookings.json", []);
+initJSON("chatdb.json", {});
+// === SOFT-HOLD ===
+initJSON("holds.json", []);
+const HOLDS_PATH = path.join(DATA_DIR, "holds.json");
+const HOLD_MINUTES = Number(process.env.SOFT_HOLD_MIN || 5);
+
+const config = readJSON("config.json");
+console.log("[DATA_DIR]", debugDataDir());
+
+// Verifica file critici
+const _cfg = readJSON("config.json", null);
+if (!_cfg)
+  console.error("ATTENZIONE: config.json non trovato o invalido in", DATA_DIR);
+const _bk = readJSON("bookings.json", null);
+if (!_bk)
+  console.error(
+    "ATTENZIONE: bookings.json non trovato o invalido in",
+    DATA_DIR
+  );
+
+// ================= PATH & ChatDB =================
+const CHATDB_PATH = path.join(DATA_DIR, "chatdb.json");
+
+const BOOKINGS_PATH = path.join(DATA_DIR, "bookings.json");
+const CANCEL_POLICY_HOURS = 3;
+
+// ============== Logger ==============
+const LV = ["error", "warn", "info", "debug"];
+const CUR = (process.env.LOG_LEVEL || "info").toLowerCase();
+const okLevel = (l) => LV.indexOf(l) <= LV.indexOf(CUR);
+function safeJSON(o) {
+  try {
+    return JSON.stringify(o);
+  } catch {
+    return "[circular]";
+  }
+}
+function log(level, msg, payload = null) {
+  const lvl = String(level || "").toLowerCase();
+  if (!okLevel(lvl)) return;
+  const ts = new Date().toISOString();
+  const line = `[${ts}] [${lvl.toUpperCase()}] ${msg}${payload ? " " + safeJSON(payload) : ""
+    }`;
+  (lvl === "error"
+    ? console.error
+    : lvl === "warn"
+      ? console.warn
+      : console.log)(line);
+}
+// === NEW: re-entry scheduler to avoid lock recursion ===
+function scheduleReenter(client, chatId, text, tools = {}) {
+  try {
+    setTimeout(() => {
+      Promise.resolve(handleMessage(client, chatId, text, tools)).catch(
+        (err) => {
+          try {
+            log("error", "[REENTER] handleMessage failed", {
+              chatId,
+              error: String(err && err.stack ? err.stack : err),
+            });
+          } catch { }
+        }
+      );
+    }, 0);
+  } catch (e) {
+    log("warn", "[REENTER] schedule failed", { chatId, error: String(e) });
+  }
+}
+
+// === NEW === i18n minimale (IT/EN)
+const MESSAGES = {
+  it: {
+    CHOOSE_SLOT_FOR_DAY: (day, lines, n) =>
+      `📅 Disponibilità per ${day}:\n${lines}\n\nScrivi l'orario desiderato (es. "14:30").`,
+    INVALID_RANGE: (n) => `Scrivi un numero valido (1-${n}).`,
+    CHOOSE_PRO_FOR_TIME: (hhmm, list, n) =>
+      `Chi preferisci alle ${hhmm}?\n${list}\n(1-${n})`,
+    NO_FUTURE_BOOKINGS: "Non ho trovato prenotazioni future col tuo numero.",
+    PICK_BOOKING_TO_EDIT: (lines, n) =>
+      `Quale prenotazione vuoi gestire?\n${lines}\n(1-${n})`,
+  },
+  en: {
+    CHOOSE_SLOT_FOR_DAY: (day, lines, n) =>
+      `📅 Availability for ${day}:\n${lines}\n(1-${n})`,
+    INVALID_RANGE: (n) => `Please send a valid number (1-${n}).`,
+    CHOOSE_PRO_FOR_TIME: (hhmm, list, n) =>
+      `Who do you prefer at ${hhmm}?\n${list}\n(1-${n})`,
+    NO_FUTURE_BOOKINGS:
+      "I couldn't find any upcoming bookings for your number.",
+    PICK_BOOKING_TO_EDIT: (lines, n) =>
+      `Which booking do you want to manage?\n${lines}\n(1-${n})`,
+  },
+};
+
+
+function formatDateWithWeekdayIT(d) {
+  try {
+    const dt = d instanceof Date ? d : new Date(d);
+    if (Number.isNaN(dt.getTime())) return "";
+    // Formatta in italiano: "lunedì 21 dicembre"
+    return dt.toLocaleDateString('it-IT', {
+      weekday: 'long', day: 'numeric', month: 'long'
+    }).toLowerCase();
+  } catch (e) {
+    return "";
+  }
+}
+
+
+function validateDateInRange(d, maxDays = 30) {
+  try {
+    const dt = d instanceof Date ? d : new Date(d);
+    const now = new Date();
+    const diff = Math.ceil((dt - atNoon(now)) / (24 * 60 * 60 * 1000));
+    return diff >= 0 && diff <= maxDays;
+  } catch (e) {
+    return false;
+  }
+}
+
+
+// Helper robusto per scelte numeriche "1", "1)", "1.", ecc.
+// allowZero=true permette "0" (nessuna preferenza).
+function parseListIndex(raw, max, allowZero = false) {
+  const s = String(raw ?? "")
+    .replace(/[\u200e\u200f\u202a-\u202e\u00a0]/g, "")
+    .trim();
+
+  const m = s.match(/^(\d+)\s*[\)\.\-]?$/);
+  if (!m) return NaN;
+
+  const n = parseInt(m[1], 10);
+  if (Number.isNaN(n)) return NaN;
+
+  if (max == null) return n;
+
+  if (allowZero) {
+    return n >= 0 && n <= max ? n : NaN;
+  }
+
+  return n >= 1 && n <= max ? n : NaN;
+}
+
+function detectLangHeuristic(text) {
+  const t = String(text || "").toLowerCase();
+  if (
+    /(\bhi\b|\bhello\b|please|thanks|thank you|\btomorrow\b|\btoday\b)/.test(t)
+  )
+    return "en";
+  if (/(\bciao\b|grazie|per favore|\bdomani\b|\boggi\b|prenota)/.test(t))
+    return "it";
+  return process.env.DEFAULT_LANG || "it";
+}
+
+function getLang(chatId) {
+  const db = loadChatDB();
+  return (
+    (db && db[chatId] && db[chatId].lang) || process.env.DEFAULT_LANG || "it"
+  );
+}
+function setLang(chatId, lang) {
+  const db = loadChatDB();
+  db[chatId] = db[chatId] || { msgs: [] };
+  db[chatId].lang = lang === "en" ? "en" : "it";
+  saveChatDB(db);
+}
+function ensureLang(chatId, text) {
+  const db = loadChatDB();
+  const current = db && db[chatId] && db[chatId].lang;
+  if (!current) {
+    setLang(chatId, detectLangHeuristic(text));
+  }
+}
+function tr(chatId, key, ...args) {
+  const lang = getLang(chatId);
+  const pack = MESSAGES[lang] || MESSAGES.it;
+  const msg = pack[key] || MESSAGES.it[key];
+  return typeof msg === "function" ? msg(...args) : msg || key;
+}
+// === DATE HELPERS ROBUSTI (dd/mm, dd-mm, ISO, timestamp) ===
+const isValidDate = (d) => d instanceof Date && !isNaN(d);
+
+const toISODate = (d) => {
+  const x = d instanceof Date ? d : new Date(d);
+  if (!isValidDate(x)) return null;
+  const y = x.getFullYear();
+  const m = String(x.getMonth() + 1).padStart(2, "0");
+  const day = String(x.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+};
+
+// Guard contro parsing ricorsivo (evita loop infiniti)
+const __dateParsingLocks = new Set();
+
+
+// ================= Bookings.json helpers =================
+function loadBookings() {
+  try {
+    if (!fsSync.existsSync(BOOKINGS_PATH)) return [];
+    const raw = fsSync.readFileSync(BOOKINGS_PATH, "utf8");
+    if (!raw.trim()) return [];
+    let data;
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      return [];
+    }
+    if (Array.isArray(data)) return data;
+    if (Array.isArray(data?.bookings)) return data.bookings;
+    if (Array.isArray(data?.rows)) return data.rows;
+    return [];
+  } catch {
+    return [];
+  }
+}
+function saveBookings(arr) {
+  try {
+    const tmpPath = BOOKINGS_PATH + ".tmp";
+    fsSync.writeFileSync(tmpPath, JSON.stringify(arr, null, 2), "utf8");
+    fsSync.renameSync(tmpPath, BOOKINGS_PATH);
+  } catch (e) {
+    console.error("[bookings] save error:", e?.message || e);
+  }
+}
+function persistBooking(rec) {
+  const arr = loadBookings();
+  arr.push(rec);
+  saveBookings(arr);
+}
+function updateBookingByEventId(eventId, patch) {
+  if (!eventId) return;
+  const arr = loadBookings();
+  let changed = false;
+  for (const b of arr) {
+    if (b.eventId === eventId) {
+      Object.assign(b, patch);
+      changed = true;
+      break;
+    }
+  }
+  if (changed) saveBookings(arr);
+}
+
+function updateBookingByComposite(match, patch) {
+  try {
+    if (!match) return false;
+    const arr = loadBookings();
+    let changed = false;
+    const targetISO = new Date(match.startTime).toISOString();
+    for (const b of arr) {
+      const bISO = new Date(b.startTime).toISOString();
+      const phoneA = String(b.clientPhone || "").trim();
+      const phoneB = String(match.clientPhone || "").trim();
+      if (bISO === targetISO && phoneA === phoneB) {
+        Object.assign(b, patch);
+        changed = true;
+        break;
+      }
+    }
+    if (changed) saveBookings(arr);
+    return changed;
+  } catch {
+    return false;
+  }
+}
+
+export function getUpcomingBookingByPhone(phone) {
+  // === corpo di getUpcomingBookingByPhone ===
+  try {
+    const digits = (s) => String(s || "").replace(/\D/g, "");
+    const normPhone = (s) => {
+      let d = digits(s);
+      // normalizza +39 / 0039 / 039
+      d = d.replace(/^00?39/, "").replace(/^39/, "");
+      return d;
+    };
+    const phoneMatch = (a, b) => {
+      const A = normPhone(a);
+      const B = normPhone(b);
+      if (!A || !B) return false;
+      if (A === B) return true;
+      const min = 7;
+      return A.endsWith(B.slice(-min)) || B.endsWith(A.slice(-min));
+    };
+
+    const rows = loadBookings();
+    if (!Array.isArray(rows) || !rows.length) return null;
+
+    const now = Date.now();
+    const toTs = (b) =>
+      Date.parse(b.startTime || b.start || b.date || b.datetime || "");
+
+    const matches = rows
+      .filter((b) => {
+        if (!b) return false;
+        const ts = toTs(b);
+        if (!Number.isFinite(ts) || ts < now) return false; // solo future
+        const status = String(b.status || b.state || "").toLowerCase();
+        if (/(cancel|annull|deleted)/.test(status)) return false;
+        const p =
+          b.clientPhone ||
+          b.phone ||
+          b.customerPhone ||
+          b.whatsapp ||
+          b.contact ||
+          "";
+        return phoneMatch(p, phone);
+      })
+      .sort((a, b) => toTs(a) - toTs(b));
+
+    const first = matches[0] || null;
+    if (first && !first.service && first.serviceName)
+      first.service = first.serviceName;
+    return first;
+  } catch (e) {
+    log("warn", "getUpcomingBookingByPhone failed", e?.message || e);
+    return null;
+  }
+}
+
+export function getUserActiveBookingsAll(phone) {
+  try {
+    const raw = fsSync.readFileSync(BOOKINGS_PATH, "utf8");
+    const data = raw.trim() ? JSON.parse(raw) : [];
+    const rows = Array.isArray(data)
+      ? data
+      : Array.isArray(data.bookings)
+        ? data.bookings
+        : Array.isArray(data.rows)
+          ? data.rows
+          : [];
+
+    const now = Date.now();
+    const norm = (s) =>
+      String(s || "")
+        .replace(/\D/g, "")
+        .replace(/^00?39/, "")
+        .replace(/^39/, "");
+    const pA = norm(phone);
+
+    const out = rows
+      .filter((b) => {
+        const ts = Date.parse(b.startTime || b.start || "");
+        if (!Number.isFinite(ts) || ts < now) return false;
+        const st = String(b.status || "").toLowerCase();
+        if (/(cancel|annull|deleted)/.test(st)) return false;
+        const p = norm(b.clientPhone || b.phone || b.whatsapp || "");
+        return p && p === pA;
+      })
+      .sort((a, b) => Date.parse(a.startTime) - Date.parse(b.startTime));
+
+    for (const x of out)
+      if (!x.service && x.serviceName) x.service = x.serviceName;
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+function markBookingCancelled(eventId) {
+  updateBookingByEventId(eventId, {
+    status: "cancelled",
+    cancelledAt: new Date().toISOString(),
+  });
+}
+
+// ================= Soft-Hold helpers =================
+function loadHolds() {
+  try {
+    if (!fsSync.existsSync(HOLDS_PATH)) return [];
+    const raw = fsSync.readFileSync(HOLDS_PATH, "utf8");
+    const arr = raw.trim() ? JSON.parse(raw) : [];
+    return Array.isArray(arr) ? arr : [];
+  } catch {
+    return [];
+  }
+}
+function saveHolds(arr) {
+  try {
+    const tmp = HOLDS_PATH + ".tmp";
+    fsSync.writeFileSync(tmp, JSON.stringify(arr, null, 2), "utf8");
+    fsSync.renameSync(tmp, HOLDS_PATH);
+  } catch (e) {
+    console.warn("[holds] save error:", e?.message || e);
+  }
+}
+function cleanupHolds() {
+  const now = Date.now();
+  const arr = loadHolds();
+  const next = arr.filter((h) => Number(h.expiresAt) > now);
+  if (next.length !== arr.length) saveHolds(next);
+  return next;
+}
+function getHoldIntervalsForDay(day, email, { ignoreChatId = null } = {}) {
+  const D = day instanceof Date ? day : new Date(day);
+  const start = new Date(
+    D.getFullYear(),
+    D.getMonth(),
+    D.getDate(),
+    0,
+    0,
+    0,
+    0
+  ).getTime();
+  const end = start + 24 * 60 * 60 * 1000;
+  const arr = cleanupHolds();
+  const out = [];
+  for (const h of arr) {
+    if (ignoreChatId && h.chatId === ignoreChatId) continue;
+    if (
+      email &&
+      String(h.professionalEmail || "").toLowerCase() !==
+      String(email || "").toLowerCase()
+    )
+      continue;
+    const s = Number(h.startMs),
+      e = Number(h.endMs);
+    if (Number.isFinite(s) && Number.isFinite(e) && s < end && e > start)
+      out.push([s, e]);
+  }
+  out.sort((a, b) => a[0] - b[0]);
+  return out;
+}
+function slotOverlapsExistingBookings(proEmail, s, e) {
+  const day = new Date(s);
+  const booked = getBusyIntervalsForDay(day, proEmail) || []; // include anche hold altrui (vedi patch sotto)
+  for (const [bs, be] of booked) if (s < be && bs < e) return true;
+  return false;
+}
+function acquireSoftHold({
+  chatId,
+  professionalEmail,
+  startTime,
+  durationMin,
+}) {
+  try {
+    const s =
+      startTime instanceof Date
+        ? startTime.getTime()
+        : new Date(startTime).getTime();
+    const e = s + (Number(durationMin) || 30) * 60_000;
+    const now = Date.now();
+    let arr = cleanupHolds();
+
+    // già tenuto da questo chat? aggiorna deadline
+    for (const h of arr) {
+      if (
+        h.chatId === chatId &&
+        h.professionalEmail === professionalEmail &&
+        h.startMs === s
+      ) {
+        h.expiresAt = now + HOLD_MINUTES * 60_000;
+        saveHolds(arr);
+        return true;
+      }
+    }
+    // conflitti con altri hold / booking
+    for (const h of arr) {
+      if (h.professionalEmail === professionalEmail) {
+        if (s < h.endMs && h.startMs < e && h.chatId !== chatId) return false;
+      }
+    }
+    if (slotOverlapsExistingBookings(professionalEmail, s, e)) return false;
+
+    // crea hold
+    arr.push({
+      id: `${professionalEmail}|${s}|${chatId}|${now}`,
+      professionalEmail,
+      chatId,
+      startMs: s,
+      endMs: e,
+      createdAt: now,
+      expiresAt: now + HOLD_MINUTES * 60_000,
+    });
+    saveHolds(arr);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function releaseSoftHoldByChat(chatId) {
+  const arr = loadHolds();
+  const next = arr.filter((h) => h.chatId !== chatId);
+  if (next.length !== arr.length) saveHolds(next);
+}
+
+// ================= Review & Confirm followups =================
+export function buildReviewMessage(b) {
+  const name = b?.customerName ? ` ${b.customerName}` : "";
+  const svc = b?.service || b?.serviceName || "il trattamento";
+  const pro = b?.professionalName ? ` con ${b.professionalName}` : "";
+  const link =
+    (config?.reviews && config.reviews.googleLink) ||
+    process.env.REVIEWS_LINK ||
+    "";
+  const linkLine = link ? `\nLasciaci una recensione qui: ${link}` : "";
+  return `Ciao${name}! ✨ Com'è andata la ${svc}${pro}? Il tuo feedback ci aiuta a migliorare.${linkLine}`;
+}
+
+export async function reviewFollowupsTick(sendFn, opts = {}) {
+  const { windowMinutes = 60, batchLimit = 20 } = opts;
+  if (typeof sendFn !== "function")
+    throw new Error("reviewFollowupsTick: sendFn mancante");
+
+  const now = Date.now();
+  const from = now - windowMinutes * 60_000;
+  const arr = loadBookings();
+  let sent = 0;
+
+  if (!Array.isArray(arr)) return 0;
+
+  for (const b of arr) {
+    if (sent >= batchLimit) break;
+    if (!b || b.status === "cancelled") continue;
+    if (b.reviewAsked) continue;
+
+    const startMs = Date.parse(b.startTime);
+    const endMs = startMs + (Number(b.durationMin) || 0) * 60_000;
+    if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) continue;
+
+    if (endMs <= now && endMs >= from) {
+      try {
+        await sendFn(b.clientPhone, buildReviewMessage(b));
+        updateBookingByEventId(b.eventId, {
+          reviewAsked: true,
+          reviewAskedAt: new Date().toISOString(),
+        });
+        sent++;
+      } catch (e) {
+        console.warn("[reviewFollowupsTick] invio fallito:", e?.message || e);
+      }
+    }
+  }
+  return sent;
+}
+
+export function buildConfirmMessage(b) {
+  const name = b?.customerName ? ` ${b.customerName}` : "";
+  const svc = b?.service || "il trattamento";
+  const pro = b?.professionalName ? ` con ${b.professionalName}` : "";
+  const dt = b?.startTime ? new Date(b.startTime) : null;
+  const dd = dt
+    ? `${String(dt.getDate()).padStart(2, "0")}/${String(dt.getMonth() + 1).padStart(2, "0")}`
+    : "";
+  const tt = dt
+    ? `${String(dt.getHours()).padStart(2, "0")}:${String(dt.getMinutes()).padStart(2, "0")}`
+    : "";
+  // PATCH: sostituito messaggio di modifica con nota esplicativa
+  return `Ciao${name}! Promemoria: ${svc}${pro} il ${dd} alle ${tt}. Non vediamo l'ora di vederti ❤!\n\nNota: per modificare la prenotazione devi rifarla da capo.`;
+}
+
+/*
+ * Semplice tick di conferma: manda un promemoria qualche ora prima.
+ * Evita crash se il file non è un array.
+ */
+export async function confirmAppointmentsTick(sendFn, opts = {}) {
+  const { aheadMinutes = 180, batchLimit = 20 } = opts;
+  if (typeof sendFn !== "function")
+    throw new Error("confirmAppointmentsTick: sendFn mancante");
+
+  const now = Date.now();
+  const to = now + aheadMinutes * 60_000;
+  const arr = loadBookings();
+  let sent = 0;
+
+  if (!Array.isArray(arr)) return 0;
+
+  for (const b of arr) {
+    if (sent >= batchLimit) break;
+    if (!b || b.status === "cancelled") continue;
+
+    const startMs = Date.parse(b.startTime);
+    if (!Number.isFinite(startMs)) continue;
+    if (startMs >= now && startMs <= to && !b.confirmAsked) {
+      try {
+        await sendFn(b.clientPhone, buildConfirmMessage(b));
+        updateBookingByEventId(b.eventId, {
+          confirmAsked: true,
+          confirmAskedAt: new Date().toISOString(),
+        });
+        sent++;
+      } catch (e) {
+        console.warn(
+          "[confirmAppointmentsTick] invio fallito:",
+          e?.message || e
+        );
+      }
+    }
+  }
+  return sent;
+}
+
+// ============ PROFESSIONALI: catalogo, prompt, parsing ============
+
+// Normalizza stringhe brevi (riusa la tua simpleNorm/norm)
+const _n = (s) => simpleNorm(String(s || "")).trim();
+const _tok = (s) => _n(s).split(/\s+/).filter(Boolean);
+
+// Ritorna l'elenco dei pro validi per il servizio (se configurati), altrimenti tutti
+function proCatalog(service) {
+  const all = Object.entries(config.professionals || {}).map(([email, p]) => ({
+    email,
+    name: p.name,
+  }));
+  const allowed = config.services?.[service]?.professionals || [];
+  return allowed.length ? all.filter((p) => allowed.includes(p.email)) : all;
+}
+
+// Prompt numerato (0 = nessuna preferenza)
+function renderProPrompt(list) {
+  if (!list.length) {
+    return '⚠️ Non ho professionisti configurati per questo servizio: non posso completare la prenotazione. Scrivi "annulla".';
+  }
+  const lines = list.map((p, i) => `${i + 1}) ${p.name}`).join("\n");
+  return `Preferisci un professionista in particolare?\n0) Non mi interessa\n${lines}\n(0-${list.length})`;
+}
+
+// Parsing risposta utente -> { any:true } oppure {email,name} oppure null se invalida
+function resolveProReply(reply, list) {
+  const txt = (reply || "").trim();
+  const pureNumber = /^\s*\d+\s*[\).]?\s*$/; // accetta "3" "3)" "3."
+  // no-preference textual answers
+  if (/\b(no|non\s+mi\s+interessa|nessuno|no\s+grazie|non\s+importa)\b/i.test(txt)) { return { any: true, noPreference: true }; }
+  if (pureNumber.test(txt)) {
+    const n = parseInt(txt, 10);
+    if (n === 0) return { any: true };
+    if (n >= 1 && n <= list.length) return list[n - 1];
+    return null;
+  }
+
+  // input testuale: consenti solo nomi esistenti nel centro
+  const q = _n(txt);
+  let best = null,
+    scoreBest = 0;
+  for (const p of list) {
+    const y = _n(p.name);
+    // overlap token + ratio Levenshtein (se ce l'hai già importata)
+    const overlap = (() => {
+      const a = new Set(_tok(q)),
+        b = new Set(_tok(y));
+      let c = 0;
+      for (const t of a) if (b.has(t)) c++;
+      return a.size ? c / a.size : 0;
+    })();
+    let score = overlap;
+    if (y.includes(q) || q.includes(y)) score = Math.max(score, 0.95);
+    if (typeof levenshtein === "function") {
+      const dist = levenshtein(y, q);
+      const ratio = 1 - dist / Math.max(y.length, q.length, 1);
+      score = Math.max(score, ratio);
+    }
+    if (score > scoreBest) {
+      scoreBest = score;
+      best = p;
+    }
+  }
+  // Soglia severa: accetta solo se è praticamente un match certo
+  if (scoreBest >= 0.9) return best;
+  return null; // nome non valido -> obbligo scelta dalla lista
+}
+
+// Mostra la domanda (mai testo libero)
+function askProfessional(service) {
+  const list = proCatalog(service);
+  return renderProPrompt(list);
+}
+
+// ================= ChatDB helpers =================
+function loadChatDB() {
+  try {
+    if (!fsSync.existsSync(CHATDB_PATH)) return {};
+    const raw = fsSync.readFileSync(CHATDB_PATH, "utf8");
+    return raw.trim() ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+function saveChatDB(db) {
+  // === corpo di saveChatDB ===
+  try {
+    const tmp = CHATDB_PATH + ".tmp";
+    const json = JSON.stringify(db, null, 2);
+    fsSync.writeFileSync(tmp, json, "utf8");
+    fsSync.renameSync(tmp, CHATDB_PATH);
+  } catch (e) {
+    console.warn("[chatdb] save error:", e?.message || e);
+  }
+}
+function appendUserMessage(chatId, text) {
+  const db = loadChatDB();
+  db[chatId] = db[chatId] || { msgs: [] };
+  db[chatId].msgs.push(String(text || "").slice(0, 800));
+  if (db[chatId].msgs.length > 5) {
+    db[chatId].msgs = db[chatId].msgs.slice(-5);
+  }
+  // Aggiorna il timestamp di ultima attività dell'utente
+  db[chatId].lastActive = Date.now();
+  saveChatDB(db);
+}
+function getRecentMessages(chatId) {
+  const db = loadChatDB();
+  return db?.[chatId]?.msgs || [];
+}
+function getLastService(chatId) {
+  const arr = loadBookings()
+    .filter((b) => b.clientPhone === chatId && b.status === "confirmed")
+    .sort((a, b) => new Date(b.startTime) - new Date(a.startTime));
+  return arr[0]?.service || null;
+}
+function getLastInfoTopic(_) {
+  return null;
+}
+function rememberService(_) { }
+function rememberInfoTopic(_) { }
+
+// ============== Safe send & reply (+ booking footer) ==============
+export async function safeSend(client, chatId, text, opts = {}) {
+  const t = String(text ?? "");
+  if (!t.trim()) return "";
+
+  if (!chatId) {
+    log("warn", "safeSend called without chatId", { preview: t.slice(0, 120) });
+    return "";
+  }
+
+  if (!client || typeof client.sendText !== "function") {
+    log("warn", "safeSend: client.sendText not available", { chatId });
+    // Non proviamo postReplyHook che potrebbe ricadere in safeSend — esegui comunque postReplyHook in modo non ricorsivo
+    try {
+      if (typeof postReplyHook === "function") await postReplyHook(client, chatId, t, opts);
+    } catch (e) {
+      log("warn", "safeSend: postReplyHook failed", { chatId, err: e?.stack || e?.message || e });
+    }
+    return "";
+  }
+
+  try {
+    await client.sendText(chatId, t);
+  } catch (e) {
+    log("warn", "safeSend: client.sendText failed", { chatId, err: e?.stack || e?.message || e });
+    // non rilanciare
+  }
+
+  // Footer automatico per il flow di prenotazione (messaggio separato)
+  try {
+    if (typeof postReplyHook === "function") {
+      await postReplyHook(client, chatId, t, opts);
+    }
+  } catch (e) {
+    log("warn", "safeSend: postReplyHook threw", { chatId, err: e?.stack || e?.message || e });
+  }
+  return t;
+}
+
+
+// wrapper usato ovunque nel flow
+async function reply(client, chatId, text, opts = {}) {
+  return safeSend(client, chatId, text, opts);
+}
+// === Footer automatico per il flow booking ===
+async function postReplyHook(client, chatId, sentText, opts = {}) {
+  try {
+    if (!chatId) return;
+    if (opts?.noFooter) return;
+    if (!pending || typeof pending.get !== "function") return;
+
+    const st = pending.get(chatId);
+    if (!st) return;
+    const col = st.collected || {};
+    const active = (typeof isBookingFlowActive === "function" && isBookingFlowActive(st, col)) ||
+      (typeof isBookingLocked === "function" && isBookingLocked(st));
+    if (!active) return;
+
+    // evita loop: se il messaggio appena inviato È già il footer, non reinviare
+    const FOOTER = 'ℹ️Se vuoi *ricominciare* da capo, digita “ _annulla_ ”.\nℹ️ Se vuoi *modificare* un appuntamento, digita “ _modifica_ ”!';
+    if (String(sentText || "").includes('digita "annulla"') || String(sentText || "").includes('ricominciare')) return;
+
+    // ATTENZIONE: non chiamare safeSend qui (potenziale ricorsione footer->postReplyHook->safeSend->postReplyHook).
+    // Invia il footer direttamente con client.sendText e gestisci gli errori.
+    if (!client || typeof client.sendText !== "function") {
+      log("warn", "postReplyHook: client.sendText not available", { chatId });
+      return;
+    }
+    try {
+      await client.sendText(chatId, FOOTER);
+    } catch (e) {
+      log("warn", "postReplyHook: client.sendText failed", { chatId, err: e?.stack || e?.message || e });
+    }
+  } catch (e) {
+    log("warn", "postReplyHook", e?.stack || e?.message || e);
+  }
+}
+
+
+// ============== LLM Output Sanitization ==============
+const CHATML_STOPS = [
+  "<|im_start|>system",
+  "<|im_start|>user",
+  "<|im_start|>assistant",
+  "</s>",
+  "<think>",
+  "</think>",
+];
+
+function stripStopsAndTags(raw) {
+  if (!raw) return "";
+  let s = String(raw);
+  // rimuovi codefence esterno (se presente)
+  s = s.replace(/^```[a-zA-Z0-9]*\n?/, "").replace(/```$/, "");
+  for (const tok of CHATML_STOPS) s = s.split(tok).join("");
+  s = s.replace(/<\|im_end\|>/g, "");
+  return s.trim();
+}
+
+function stripThinkBlocks(s) {
+  s = String(s || "");
+  // tutte le varianti note di "pensiero"
+  s = s
+    .replace(/<think>[\s\S]*?<\/think>/gi, "")
+    .replace(/```think[\s\S]*?```/gi, "")
+    .replace(/\[think\][\s\S]*?\[\/think\]/gi, "")
+    // extra robustness per altri tag usati da alcuni modelli
+    .replace(
+      /<(analysis|reasoning|scratchpad|chain_of_thought)>[\s\S]*?<\/\1>/gi,
+      ""
+    );
+  return s;
+}
+
+function extractJSONObject(text) {
+  // >>> fondamentale: ignoriamo QUALSIASI JSON dentro i blocchi di pensiero
+  const s = stripStopsAndTags(stripThinkBlocks(text));
+  let start = -1,
+    depth = 0,
+    inStr = false,
+    esc = false;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (inStr) {
+      if (esc) {
+        esc = false;
+        continue;
+      }
+      if (ch === "\\") {
+        esc = true;
+        continue;
+      }
+      if (ch === '"') {
+        inStr = false;
+        continue;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inStr = true;
+      continue;
+    }
+    if (ch === "{") {
+      if (depth === 0) start = i;
+      depth++;
+      continue;
+    }
+    if (ch === "}") {
+      depth--;
+      if (depth === 0 && start !== -1) return s.slice(start, i + 1);
+    }
+  }
+  return "";
+}
+
+function parseJsonMessage(raw) {
+  const json = extractJSONObject(raw);
+  if (!json) return "";
+  try {
+    const o = JSON.parse(json);
+    // supporta chiavi comuni
+    const msg =
+      o?.message ??
+      o?.response ??
+      o?.answer ??
+      o?.content ??
+      o?.text ??
+      o?.output;
+    return (msg || "").toString().trim();
+  } catch {
+    return "";
+  }
+}
+
+function sanitizeLLM(raw) {
+  const s = stripStopsAndTags(stripThinkBlocks(raw || ""));
+  const parsed = parseJsonMessage(s); // se il modello ha messo un JSON con "message"/"response"
+  return (parsed || s).trim();
+}
+
+// ============== QA Adapter (Ollama/injection) ==============
+let QA_ASK = null;
+let GREET_COOLDOWN_MS = 180000;
+export function configure({ qaAsk, greetCooldownMs } = {}) {
+  if (qaAsk) QA_ASK = qaAsk;
+  if (greetCooldownMs) GREET_COOLDOWN_MS = greetCooldownMs;
+}
+async function fetchWithTimeout(url, opts = {}, timeoutMs = 6000) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { ...opts, signal: ctrl.signal });
+    clearTimeout(t);
+    return res;
+  } catch (e) {
+    clearTimeout(t);
+    throw e;
+  }
+}
+// === MISSING HELPERS (drop-in) ===============================================
+
+// ISO locale senza "Z" (coerente con Google Calendar wrappers)
+function toISOStringLocal(dateLike) {
+  const d = dateLike instanceof Date ? dateLike : new Date(dateLike);
+  const tz = d.getTimezoneOffset();
+  const local = new Date(d.getTime() - tz * 60_000);
+  // yyyy-mm-ddThh:mm:ss
+  return local.toISOString().slice(0, 19);
+}
+
+// Giorni del mese (year = intero, monthIdx = 0..11)
+function daysInMonth(year, monthIdx) {
+  return new Date(year, monthIdx + 1, 0).getDate();
+}
+
+// Etichetta mese in italiano
+function monthLabelIT(idx) {
+  const m = [
+    "gennaio",
+    "febbraio",
+    "marzo",
+    "aprile",
+    "maggio",
+    "giugno",
+    "luglio",
+    "agosto",
+    "settembre",
+    "ottobre",
+    "novembre",
+    "dicembre",
+  ];
+  return m[idx] ?? "";
+}
+
+// Nome giorno settimana in italiano
+function itaWeekdayName(dateLike) {
+  const d = dateLike instanceof Date ? dateLike : new Date(dateLike);
+  const names = ["domenica", "lunedì", "martedì", "mercoledì",
+    "giovedì", "venerdì", "sabato"];
+  return names[d.getDay()] || "";
+}
+
+// Lunedì..Domenica della *prossima* settimana (a mezzogiorno per neutralizzare i fusi)
+function listNextWeekDays() {
+  const now = new Date();
+  const isoToday = now.getDay() === 0 ? 7 : now.getDay(); // 1..7
+  const deltaToNextMon = (8 - isoToday) % 7 || 7; // giorni fino al prossimo lunedì
+  const mon = new Date(now);
+  mon.setDate(now.getDate() + deltaToNextMon);
+  mon.setHours(12, 0, 0, 0);
+  return Array.from(
+    { length: 7 },
+    (_, i) =>
+      new Date(
+        mon.getFullYear(),
+        mon.getMonth(),
+        mon.getDate() + i,
+        12,
+        0,
+        0,
+        0
+      )
+  );
+}
+
+// Prompt testuale quando chiedi “che giorno di <mese>?”
+function buildAskDayOfMonthPrompt(year, monthIdx) {
+  const max = daysInMonth(year, monthIdx);
+  return `Quale giorno di ${monthLabelIT(monthIdx)} ${year}? (1-${max})`;
+}
+
+// Vuole aprire il menu "modifica appuntamento"?
+function wantsEditMenu(text) {
+  const s = norm(text || "");
+  return (
+    /^\/?modifica\b/.test(s) ||
+    (/\b(modific(a|are|o)|gestis(ci|ce|co)|cambi(a|are|o)|spost(a|are|o)|annull(a|are|o))\b/.test(s) &&
+      /\b(appunt|prenot)\w*/.test(s)) ||
+    (/\b(appunt|prenot)\w*/.test(s) &&
+      /\b(modific(a|are|o)|gestis(ci|ce|co)|cambi(a|are|o)|spost(a|are|o)|annull(a|are|o))\b/.test(s))
+  );
+}
+// Estrai “topic” informativo minimale dalla frase (per guidare il prompt QA)
+function extractInfoTopic(text) {
+  const s = norm(text || "");
+  if (/\bhenne|henn[eè]\b/.test(s)) return "henné";
+  if (/\bprezz|costo|tariff\w*/.test(s)) return "prezzo";
+  if (/\bdurat|quanto\s+dura\b/.test(s)) return "durata";
+  if (/\bcontroindic|effetti\b/.test(s)) return "controindicazioni";
+  return null; // “generico”
+}
+
+// Costruisci un prompt pulito per askQA (Ollama)
+function composeInfoPrompt(service = null, topic = null) {
+  const head = `Sei l'assistente di un salone. Rispondi in italiano, chiaro e utile per i clienti.`;
+  const ctxS = service ? `Servizio: ${service}.` : "";
+  const ctxT = topic ? `Topic: ${topic}.` : "";
+  const rules = [
+    "Max 5 frasi, niente gergo tecnico inutile.",
+    "Se ci sono precauzioni o allergeni tipici, menzionali.",
+    "Niente link, niente “pensa ad alta voce”.",
+  ].join(" ");
+  return `${head}\n${ctxS} ${ctxT}\n${rules}`;
+}
+
+function baseCandidates() {
+  const url = (process.env.OLLAMA_URL || "").trim();
+  return url ? [url] : ["http://127.0.0.1:11434", "http://localhost:11434"];
+}
+
+// ============== QA Adapter (Ollama/injection) ==============
+/**
+ * The function `askQA` is an asynchronous function that interacts with an AI model to generate
+ * responses based on a given prompt and context.
+ * @param prompt - The `prompt` parameter in the `askQA` function represents the question or prompt
+ * that you want to ask the AI model. This prompt is used to generate a response from the AI model
+ * based on the context provided. You can pass a string containing the question or prompt that you want
+ * the AI model
+ * @param context - The `context` parameter in the `askQA` function represents the context or
+ * background information that you want to provide to the AI model when asking a question. It can
+ * include any relevant details, previous conversation history, or additional information that might
+ * help the model generate a more accurate response. This context helps
+ * @param client - The `client` parameter in the `askQA` function is typically used to interact with a
+ * messaging client or service. It allows the function to send messages, receive responses, and perform
+ * other actions related to communication with users. The specific implementation of the `client`
+ * parameter will depend on the messaging platform
+ * @returns The function `askQA` is returning the response from the Ollama AI model after processing
+ * the provided prompt and context. The response is obtained by making a POST request to the Ollama API
+ * endpoint (`/api/chat` or `/api/generate`) with the necessary parameters such as model, messages,
+ * prompt, keep_alive, and options. The function then parses the output JSON response and returns
+ */
+export async function askQA(prompt, context, client) {
+  log(
+    "info",
+    "[AI MODEL IN USE]",
+    (process.env.OLLAMA_MODEL || "llama3whatsapp").trim()
+  );
+  // ---- helpers locali (snelli) ----
+  const _log = (lvl, msg, payload) => {
+    if (typeof log === "function") return log(lvl, msg, payload);
+    (lvl === "error"
+      ? console.error
+      : lvl === "warn"
+        ? console.warn
+        : console.log)(msg, payload || "");
+  };
+
+  const parseKeepAlive = () => {
+    const raw = String(
+      process.env.OLLAMA_KEEP_ALIVE ?? process.env.OLLAMA_KEEP_ALIVE_MS ?? ""
+    ).trim();
+    if (!raw) return "10m";
+    if (/^\d+$/.test(raw)) return `${raw}ms`; // numeri nudi -> ms
+    if (/^\d+\s*(ns|us|µs|ms|s|m|h)$/i.test(raw)) return raw; // già con unità
+    _log("warn", "[OLLAMA] keep_alive non valido, uso 10m", { raw });
+    return "10m";
+  };
+
+  const chooseBase = () => {
+    const url = (process.env.OLLAMA_URL || "http://127.0.0.1:11434").trim();
+    if (
+      !process.env.OLLAMA_ALLOW_REMOTE &&
+      !/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(url)
+    ) {
+      _log(
+        "warn",
+        "[OLLAMA] host non-loopback bloccato senza OLLAMA_ALLOW_REMOTE, fallback 127.0.0.1",
+        { url }
+      );
+      return "http://127.0.0.1:11434";
+    }
+    return url;
+  };
+  async function startEditDate(client, chatId) {
+    const phone = phoneFromChatId(chatId);
+    const bookings = getUserActiveBookingsAll(phone);
+
+    if (!bookings.length) {
+      return reply(
+        client,
+        chatId,
+        "Non ho trovato prenotazioni future col tuo numero."
+      );
+    }
+
+    async function openDateForBooking(booking) {
+      const s = pending.get(chatId) || getState(chatId);
+      _editSnapshotStateFromBooking(s, booking);
+      s.step = "edit_reschedule_date";
+      s.edit = { target: booking };
+      s.collected = s.collected || {};
+      pending.set(chatId, s);
+
+      const line = _fmtBookingLine
+        ? _fmtBookingLine(booking)
+        : `${fmtDate(booking.startTime || booking.day || new Date())} — ${booking.service || ""}`;
+
+      await reply(
+        client,
+        chatId,
+        `Vuoi cambiare la data di:\n${line}\n\nDimmi la nuova data (GG/MM, "oggi" o "domani").`
+      );
+
+    };
+
+    if (bookings.length === 1) {
+      return openDateForBooking(bookings[0]);
+    }
+
+    // Più prenotazioni: scelgo quale, poi passo a edit_reschedule_date
+    return startEditChooseBooking(
+      client,
+      chatId,
+      bookings,
+      "edit_reschedule_date"
+    );
+  }
+
+  const normalizePrompt = (built) => {
+    if (Array.isArray(built)) return { type: "chat", messages: built };
+    if (built && typeof built === "object" && Array.isArray(built.messages))
+      return { type: "chat", messages: built.messages };
+    if (built && typeof built === "object" && (built.text || built.prompt))
+      return { type: "text", text: String(built.text || built.prompt) };
+    if (typeof built === "string") return { type: "text", text: built };
+    return { type: "text", text: JSON.stringify(built ?? "") };
+  };
+
+  const makeStringPrompt = (q, ctx) => {
+    const qq = String(q ?? "").trim();
+    const cc = String(ctx ?? "").trim();
+    return `${cc ? cc + "\n\n" : ""
+      }DOMANDA: ${qq}\n\nRISPOSTA breve, chiara, amichevole:`;
+  };
+
+  // sostituisci la tua postJSON con questa (retry + timeout più lunghi)
+  const postJSON = async (
+    url,
+    body,
+    timeouts = [
+      Number(process.env.OLLAMA_HTTP_TIMEOUT_MS || 15000), // 1° tentativo (normale)
+      Number(process.env.OLLAMA_HTTP_TIMEOUT_COLD_MS || 60000), // 2° tentativo (cold start)
+    ]
+  ) => {
+    for (let i = 0; i < timeouts.length; i++) {
+      const timeoutMs = timeouts[i] > 0 ? timeouts[i] : 15000;
+      const ctrl = new AbortController();
+      const to = setTimeout(() => ctrl.abort(), timeoutMs);
+      try {
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          redirect: "error",
+          cache: "no-store",
+          body: JSON.stringify(body),
+          signal: ctrl.signal,
+        });
+        const txt = await res.text();
+        if (!res.ok) {
+          log?.("warn", "ollama qa not ok", {
+            base: url.replace(/\/api\/.+$/, ""),
+            status: res.status,
+            body: txt,
+          });
+          // su 5xx, 408, 429 riprovo se ho ancora tentativi
+          if (
+            i < timeouts.length - 1 &&
+            /^(5|408|429)/.test(String(res.status))
+          )
+            continue;
+          return null;
+        }
+        return txt ? JSON.parse(txt) : {};
+      } catch (e) {
+        // aborted / ECONNRESET / ecc.: riprova se ho ancora un tentativo
+        log?.("warn", "ollama qa not ok", {
+          base: url.replace(/\/api\/.+$/, ""),
+          status: "fetch_error",
+          body: String(e?.message || e),
+        });
+
+        if (i < timeouts.length - 1) continue;
+        return null;
+      } finally {
+        clearTimeout(to);
+      }
+    }
+    return null;
+  };
+
+  // ---- setup modello ----
+  const base = chooseBase();
+  const keep_alive = parseKeepAlive();
+  const model = (process.env.OLLAMA_MODEL || "llama3whatsapp").trim();
+  const options = {
+    num_ctx: Number(process.env.OLLAMA_NUM_CTX || 4096),
+    num_thread: Number(process.env.OLLAMA_NUM_THREAD || 0) || undefined,
+    temperature: Number(process.env.OLLAMA_TEMP || 0.2),
+  };
+
+  const built = makeStringPrompt(prompt, context);
+  const norm = normalizePrompt(built);
+
+  // ---- chiamata Ollama ----
+  if (norm.type === "chat") {
+    // /api/chat con messages[]
+    const body = {
+      model,
+      messages: norm.messages,
+      stream: false,
+      keep_alive,
+      options,
+    };
+    const out = await postJSON(`${base}/api/chat`, body);
+    return (
+      out &&
+      (out.message?.content || out.content || out.response || "")
+    ).trim();
+  } else {
+    // /api/generate con prompt stringa
+    const body = {
+      model,
+      prompt: norm.text || makeStringPrompt(prompt, context),
+      stream: false,
+      keep_alive,
+      options,
+    };
+    const out = await postJSON(`${base}/api/generate`, body);
+    return (out && (out.response || out.content || "")).trim();
+  }
+}
+
+export async function warmOllama() {
+  const bases =
+    typeof baseCandidates === "function"
+      ? baseCandidates()
+      : [(process.env.OLLAMA_URL || "http://127.0.0.1:11434").trim()];
+
+  const model = (process.env.OLLAMA_MODEL || "llama3whatsapp").trim();
+  const keepAlive =
+    typeof parseDurationEnv === "function"
+      ? parseDurationEnv({ def: "72h" })
+      : "72h";
+
+  const options = {
+    num_ctx: Number(process.env.OLLAMA_NUM_CTX || 4096),
+    num_thread: Number(process.env.OLLAMA_NUM_THREAD || 0) || undefined,
+    temperature: Number(process.env.OLLAMA_TEMP || 0.2),
+  };
+
+  // payload corretti per i due endpoint
+  const bodyGenerate = {
+    model,
+    prompt: "ok", // <<< stringa, NON oggetto
+    stream: false,
+    keep_alive: keepAlive,
+    options,
+  };
+  const bodyChat = {
+    model,
+    messages: [{ role: "user", content: "ok" }],
+    stream: false,
+    keep_alive: keepAlive,
+    options,
+  };
+
+  for (const base of bases) {
+    // 1) prova /api/generate (carica modello e lo tiene vivo)
+    try {
+      const res = await fetchWithTimeout?.(
+        `${base}/api/generate`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          redirect: "error",
+          cache: "no-store",
+          body: JSON.stringify(bodyGenerate),
+        },
+        Number(process.env.OLLAMA_WARM_TIMEOUT_MS || 15000)
+      );
+      if (res?.ok || typeof res === "object") {
+        log?.("info", `Ollama warm (generate) @ ${base}`, { model });
+        return;
+      }
+    } catch { }
+
+    // 2) fallback /api/chat (scalda anche il percorso chat)
+    try {
+      const res = await fetchWithTimeout?.(
+        `${base}/api/chat`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          redirect: "error",
+          cache: "no-store",
+          body: JSON.stringify(bodyChat),
+        },
+        Number(process.env.OLLAMA_WARM_TIMEOUT_COLD_MS || 60000) // più lungo per cold start
+      );
+      if (res?.ok || typeof res === "object") {
+        log?.("info", `Ollama warm (chat) @ ${base}`, { model });
+        return;
+      }
+    } catch { }
+  }
+
+  // se nessuna base è andata, logga ma non bloccare l’avvio
+  log?.("warn", "Ollama warm fallito su tutte le basi", { model, bases });
+}
+
+// ============== Intent Classifier (Ollama) ==============
+const INTENT_LABELS = new Set([
+  "appointment",
+  "info",
+  "price",
+  "greeting",
+  "other",
+]);
+async function classifyIntent(userText) {
+  const bases = baseCandidates();
+  const model = (process.env.OLLAMA_INTENT_MODEL || "intent-it:latest").trim();
+  const keepAlive = parseDurationEnv({ def: "72h" });
+  const tFirst = Math.max(+process.env.OLLAMA_INTENT_TIMEOUT_MS || 8000, 4000);
+  const timeouts = [tFirst, Math.max(tFirst * 2, 12000)];
+  const sysIT = `Sei un classificatore di intent per un assistente WhatsApp di un salone.
+Rispondi con UNA sola etichetta (minuscola): appointment | info | price | greeting | other
+Regole:
+- Solo la label, senza spiegazioni, niente <think>, niente punteggiatura.
+- Se chiede info e vuole anche prenotare -> appointment.
+- Prezzi/listino/tariffe/sconti -> price.
+- Solo saluti/small talk senza richiesta concreta -> greeting.
+- Dubbi o fuori tema -> other.`;
+  const promptIT = `Messaggio: """${String(userText || "").trim()}"""
+Rispondi solo con una delle etichette: appointment | info | price | greeting | other`;
+  const build = (msg) => ({
+    model,
+    prompt: `<|system|>\n${sysIT}\n<|end|>\n<|user|>\n${msg}\n<|end|>\n<|assistant|>\n`,
+    stream: false,
+    options: {
+      temperature: 0,
+      num_ctx: 1024,
+      repeat_penalty: 1.1,
+      keep_alive: keepAlive,
+      stop: ["\n"],
+
+    },
+  });
+  for (const base of bases) {
+    for (const to of timeouts) {
+      try {
+        const res = await fetchWithTimeout(
+          `${base}/api/generate`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(build(promptIT)),
+          },
+          to
+        );
+        if (!res.ok) {
+          let body = "";
+          try {
+            body = await res.text();
+          } catch { }
+          log("warn", "ollama qa not ok", { base, status: res.status, body });
+          continue;
+        }
+        const data = await res.json();
+        let out = sanitizeLLM(data?.response || "").toLowerCase();
+        out = out.split(/[^\p{L}]+/u).find((w) => INTENT_LABELS.has(w)) || out;
+        if (!INTENT_LABELS.has(out)) out = "other";
+        return out;
+      } catch (e) {
+        log("warn", "intent classify error", e?.message || e);
+      }
+    }
+  }
+  return "other";
+}
+
+// ============== Stato conversazione ==============
+const pending = new Map();
+const greetMemory = new Map(); // chatId -> ts ultimo saluto
+
+const BOOKING_LOCK_MS = 10 * 60 * 1000; // 10 minuti
+function now() {
+  return Date.now();
+}
+
+function lockBooking(state) {
+  if (!state) return;
+  ensureContext(state);
+  const now = Date.now();
+  state.context.lock = {
+    active: true,
+    ts: now,
+    ttl: BOOKING_LOCK_MS,
+    type: "appointment"
+  };
+}
+// === Controllo compatibilità tra professionista e servizio ===
+function validateProfessionalForService(serviceName, professionalEmail) {
+  try {
+    if (!serviceName) return { ok: false, reason: "Servizio non specificato." };
+    const svc = (config && config.services && config.services[serviceName]) || null;
+    if (!svc) return { ok: false, reason: "Servizio non configurato." };
+
+    const allowed = Array.isArray(svc.professionals) ? svc.professionals : [];
+    if (!allowed.length) return { ok: true }; // servizio aperto a tutti i pro
+
+    if (!professionalEmail) {
+      // se non è stato scelto un pro specifico, permetti la scelta (verifica più tardi)
+      return { ok: true };
+    }
+
+    if (!allowed.includes(professionalEmail)) {
+      const proName =
+        (config && config.professionals && config.professionals[professionalEmail] && config.professionals[professionalEmail].name) ||
+        professionalEmail ||
+        "professionista";
+      const allowedNames = allowed
+        .map((em) => (config && config.professionals && config.professionals[em] && config.professionals[em].name) || em)
+        .filter(Boolean)
+        .join(", ");
+      return {
+        ok: false,
+        reason: `❌ ${proName} non esegue “${serviceName}”.\nDisponibili: ${allowedNames || "nessuno"}.`,
+      };
+    }
+    return { ok: true };
+  } catch (e) {
+    log("error", "validateProfessionalForService failed", e?.stack || e?.message || e);
+    return { ok: false, reason: "Errore di validazione. Riprova." };
+  }
+}
+
+
+
+function ensureContext(st) {
+  if (!st) return;
+  st.context = st.context || {};
+  st.context.lock = st.context.lock || { active: false, ts: 0, ttl: null };
+  if (!st.context.lock.ttl) {
+    const envTtl = Number(process.env.BOOKING_LOCK_TTL_MS || 300000); // 5 min
+    st.context.lock.ttl = Number.isFinite(envTtl) ? envTtl : 300000;
+  }
+}
+
+/**
+ * Ritorna true se la prenotazione è attualmente lockata e il lock è ancora valido.
+ * Se il lock è corrotto o scaduto lo resetta in automatico e ritorna false.
+ */
+function isBookingLocked(st, nowTs) {
+  if (!st || !st.context || !st.context.lock) return false;
+  let lock = st.context.lock;
+  // Se il lock è nel vecchio formato {type, until}, lo converto
+  if (lock.type && typeof lock.until === "number") {
+    const nowConv = typeof nowTs === "number" ? nowTs : Date.now();
+    if (nowConv < lock.until) {
+      // Lock ancora valido: imposto un nuovo lock con campo active/ts/ttl
+      const remaining = lock.until - nowConv;
+      st.context.lock = { active: true, ts: nowConv, ttl: remaining, type: lock.type };
+      lock = st.context.lock;
+    } else {
+      // Lock scaduto: resetto lo stato
+      st.context.lock = { active: false, ts: 0, ttl: 0 };
+      return false;
+    }
+  }
+  if (!lock.active) return false;
+  const now = typeof nowTs === "number" ? nowTs : Date.now();
+  // (resto del codice invariato...)
+}
+
+/**
+ * Aggiorna/crea il lock sulla prenotazione.
+ * Puoi passare opzionalmente un oggetto meta (es. { owner: chatId, reason: 'booking' }).
+ */
+function bumpBookingLock(st, ttlMs = 2 * 60 * 1000, meta) {
+  if (!st) return;
+  ensureContext(st);
+
+  const rawTtl = Number(ttlMs);
+  const ttl = Number.isFinite(rawTtl) && rawTtl > 0 ? rawTtl : 2 * 60 * 1000;
+  const now = Date.now();
+
+  const prev = st.context.lock || {};
+  // Filtra dal meta eventuali chiavi riservate (active, ts, ttl)
+  const { active: _, ts: __, ttl: ___, ...metaFiltered } = meta || {};
+  st.context.lock = {
+    ...prev,          // mantengo vecchi metadati
+    active: true,
+    ts: now,
+    ttl: ttl,
+    ...metaFiltered   // aggiungo nuovi metadati filtrati
+  };
+
+}
+
+/**
+ * Sblocca esplicitamente la prenotazione.
+ * Puoi passare un motivo per debugging (reason).
+ */
+function unlockBooking(st, reason) {
+  if (!st || !st.context) return;
+
+  const now = Date.now();
+  const prev = st.context.lock || {};
+  const { active: _, ts: __, ttl: ___, ...prevFiltered } = prev;
+  st.context.lock = {
+    ...prevFiltered,  // mantengo vecchi metadati (owner, reason, ecc.)
+    active: false,
+    ts: 0,
+    ttl: 0,
+    releasedAt: now,
+    releaseReason: reason || "manual",
+  };
+
+}
+
+
+function isBookingFlowActive(state, col) {
+  return !!(state && state.step && state.step !== "collect");
+}
+
+// ============== Utility: parsing e vari ==============
+function escapeReg(s) {
+  return (s || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+function listToOptions(arr) {
+  return arr.map((v, i) => `${i + 1}) ${v}`).join("\n");
+}
+function fmtDate(d) {
+  const D = new Date(d);
+  return `${String(D.getDate()).padStart(2, "0")}/${String(
+    D.getMonth() + 1
+  ).padStart(2, "0")}/${D.getFullYear()}`;
+}
+
+function timeToMinutes(hhmm) {
+  const parts = String(hhmm || "").split(":");
+  const h = Number(parts[0] || 0);
+  const m = Number(parts[1] || 0);
+  return h * 60 + (m || 0);
+}
+// Ritorna true se il professionista è OFF per tutta la giornata (da config.unavailability)
+function isProfessionalOffFullDay({ professionalEmail, day }) {
+  if (!professionalEmail || !day) return false;
+
+  const D = day instanceof Date ? day : new Date(day);
+  if (!(D instanceof Date) || isNaN(D)) return false;
+
+  const toYMD = (d) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
+      d.getDate()
+    ).padStart(2, "0")}`;
+
+  const dayKey = isoWeekday(D);
+  const dayStart = new Date(D);
+  dayStart.setHours(0, 0, 0, 0);
+  const dayEnd = new Date(D);
+  dayEnd.setHours(23, 59, 59, 999);
+
+  const unav = config.unavailability || {};
+  const rules = Array.isArray(unav[professionalEmail])
+    ? unav[professionalEmail]
+    : [];
+  if (!rules.length) return false;
+
+  const IT2NUM = {
+    lun: "1",
+    lunedi: "1",
+    lunedì: "1",
+    mar: "2",
+    martedi: "2",
+    martedì: "2",
+    mer: "3",
+    mercoledi: "3",
+    mercoledì: "3",
+    gio: "4",
+    giovedi: "4",
+    giovedì: "4",
+    ven: "5",
+    venerdi: "5",
+    venerdì: "5",
+    sab: "6",
+    sabato: "6",
+    dom: "7",
+    domenica: "7",
+  };
+  const EN2NUM = {
+    mon: "1",
+    monday: "1",
+    tue: "2",
+    tuesday: "2",
+    wed: "3",
+    wednesday: "3",
+    thu: "4",
+    thursday: "4",
+    fri: "5",
+    friday: "5",
+    sat: "6",
+    saturday: "6",
+    sun: "7",
+    sunday: "7",
+  };
+
+  const normDayKey = (v) => {
+    if (v == null) return null;
+    const s = String(v).trim().toLowerCase();
+    if (/^[1-7]$/.test(s)) return s;
+    if (IT2NUM[s]) return IT2NUM[s];
+    if (EN2NUM[s]) return EN2NUM[s];
+    if (s.startsWith("lun")) return "1";
+    if (s.startsWith("mar")) return "2";
+    if (s.startsWith("mer") || s.startsWith("wed")) return "3";
+    if (s.startsWith("gio") || s.startsWith("thu")) return "4";
+    if (s.startsWith("ven") || s.startsWith("fri")) return "5";
+    if (s.startsWith("sab") || s.startsWith("sat")) return "6";
+    if (s.startsWith("dom") || s.startsWith("sun")) return "7";
+    return null;
+  };
+
+  const daysMatch = (ruleDays) => {
+    if (!Array.isArray(ruleDays) || ruleDays.length === 0) return true;
+    const set = new Set(ruleDays.map(normDayKey).filter(Boolean));
+    return set.has(String(dayKey));
+  };
+
+  const inRange = (from, to) => {
+    const s = from ? new Date(from).getTime() : -Infinity;
+    const e = to ? new Date(to).getTime() : Infinity;
+    return dayStart <= e && dayEnd > s;
+  };
+
+  for (const r of rules) {
+    if (!r || typeof r !== "object") continue;
+    const type = String(r.type || "").toLowerCase();
+
+    // Giorno fisso della settimana
+    if (type === "day" && Array.isArray(r.days)) {
+      if (daysMatch(r.days) && (!r.hours || r.fullDay === true)) {
+        return true;
+      }
+      continue;
+    }
+
+    // Data/e specifiche: date / dates
+    if (type === "date" || type === "dates") {
+      const dates = Array.isArray(r.dates) ? r.dates : r.date ? [r.date] : [];
+      if (dates.includes(toYMD(D)) && (!r.hours || r.fullDay === true)) {
+        return true;
+      }
+      continue;
+    }
+
+    // Range di date (from/to)
+    if (type === "range") {
+      if (inRange(r.from, r.to) && daysMatch(r.days)) {
+        if (!r.hours || r.fullDay === true) return true;
+      }
+      continue;
+    }
+
+    // Ricorrenze (tipo: tutti i lun, mer, ecc.)
+    if (type === "recurrence") {
+      if (daysMatch(r.days) && (!r.hours || r.fullDay === true)) {
+        return true;
+      }
+      continue;
+    }
+  }
+
+  return false;
+}
+
+function minutesToHHMM(min) {
+  const H = Math.floor(min / 60);
+  const M = min % 60;
+  const pad2 = (n) => (n < 10 ? "0" + n : "" + n);
+  return `${pad2(H)}:${pad2(M)}`;
+}
+function compareHHMM(a, b) {
+  return timeToMinutes(a) - timeToMinutes(b);
+}
+function parseNaturalTime(s = "") {
+  const t = norm(s);
+
+  // "9 e 30" / "alle 9 e 30"
+  {
+    const m = t.match(
+      /\b(?:alle?\s+|ore\s+|h\s*)?([01]?\d|2[0-3])\s*e\s*([0-5]?\d)\b/
+    );
+    if (m)
+      return `${String(+m[1]).padStart(2, "0")}:${String(+m[2]).padStart(
+        2,
+        "0"
+      )}`;
+  }
+
+  // "e mezza" / "e un quarto" / "e venti" / "e dieci" / "e cinque"
+  {
+    const wordMin = {
+      mezza: 30,
+      mezzo: 30,
+      trenta: 30,
+      "un quarto": 15,
+      quarto: 15,
+      quindici: 15,
+      venti: 20,
+      dieci: 10,
+      cinque: 5,
+    };
+    const m = t.match(
+      /\b(?:alle?\s+|ore\s+|h\s*)?([01]?\d|2[0-3])\s*e\s+([a-z\s]+)\b/
+    );
+    if (m) {
+      const h = +m[1],
+        w = m[2].trim();
+      const key = Object.keys(wordMin).find((k) =>
+        new RegExp(`\\b${k}\\b`).test(w)
+      );
+      if (key)
+        return `${String(h).padStart(2, "0")}:${String(wordMin[key]).padStart(
+          2,
+          "0"
+        )}`;
+    }
+  }
+
+  // "10 meno 20" / "10 meno un quarto"
+  {
+    const wordMin = {
+      "un quarto": 15,
+      quarto: 15,
+      venti: 20,
+      dieci: 10,
+      cinque: 5,
+    };
+    const mNum = t.match(
+      /\b(?:alle?\s+|ore\s+|h\s*)?([01]?\d|2[0-3])\s*meno\s*([0-5]?\d)\b/
+    );
+    if (mNum) {
+      const h = (+mNum[1] - 1 + 24) % 24;
+      const min = 60 - +mNum[2];
+      return `${String(h).padStart(2, "0")}:${String(min).padStart(2, "0")}`;
+    }
+    const mWord = t.match(
+      /\b(?:alle?\s+|ore\s+|h\s*)?([01]?\d|2[0-3])\s*meno\s+([a-z\s]+)\b/
+    );
+    if (mWord) {
+      const h = (+mWord[1] - 1 + 24) % 24,
+        w = mWord[2].trim();
+      const key = Object.keys(wordMin).find((k) =>
+        new RegExp(`\\b${k}\\b`).test(w)
+      );
+      if (key)
+        return `${String(h).padStart(2, "0")}:${String(
+          60 - wordMin[key]
+        ).padStart(2, "0")}`;
+    }
+  }
+
+  // "ore 9", "h9", "alle 9" -> 09:00
+  {
+    const m = t.match(/\b(?:alle?\s+|ore\s+|h\s*)?([01]?\d|2[0-3])\b/);
+    if (m) return `${String(+m[1]).padStart(2, "0")}:00`;
+  }
+
+  // "mezzogiorno" / "mezzanotte"
+  if (/\bmezzogiorn/i.test(t)) return "12:00";
+  if (/\bmezzanott/i.test(t)) return "00:00";
+
+  // "9.30" / "9,30" / "9 30" / "09 30"
+  {
+    const m = t.match(/\b([01]?\d|2[0-3])[\.\,\s:]([0-5]\d)\b/);
+    if (m)
+      return `${String(+m[1]).padStart(2, "0")}:${String(+m[2]).padStart(
+        2,
+        "0"
+      )}`;
+  }
+
+  // "930" -> 09:30 (euristico)
+  {
+    const m = t.match(/\b(\d{3,4})\b/);
+    if (m) {
+      const n = m[1];
+      if (n.length === 3) return `0${n[0]}:${n.slice(1)}`;
+      if (n.length === 4) return `${n.slice(0, 2)}:${n.slice(2)}`;
+    }
+  }
+
+  return null;
+}
+// ---- NEW: interpreta "11/12", "11-12" come intervallo orario se il contesto sembra tempo ----
+function parseTimeRangeFallback(s = "") {
+  if (!s) return null;
+  // attiva fallback solo se ci sono indizi di tempo (evita di sovrascrivere date reali)
+  if (!/\b(verso|intorn(o|a)|circa|intorno|ore|alle|mattin|pomerigg|sera|tarda)\b/i.test(s))
+    return null;
+
+  // cerca pattern tipo "11/12" oppure "11-12" oppure "11 / 12"
+  const m = String(s).match(/\b([01]?\d|2[0-3])\s*[\/\-\–]\s*([01]?\d|2[0-3])\b/);
+  if (!m) return null;
+
+  const a = Number(m[1]), b = Number(m[2]);
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
+
+  // se sono due ore adiacenti (11 e 12) scegli la mezz'ora; altrimenti scegli la minore
+  const hh = Math.min(a, b);
+  const mm = Math.abs(a - b) === 1 ? 30 : 0;
+  return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
+}
+
+// modifica parseTimeSmart per provare anche il fallback degli intervalli
+function parseTimeSmart(s = "") {
+  return parseHHMM(s) || parseNaturalTime(s) || parseTimeRangeFallback(s);
+}
+
+
+
+function parseHHMM(s) {
+  const t = (s || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, " ");
+  let m = t.match(/\b([01]?\d|2[0-3])[:.,]?\s?([0-5]\d)\b/);
+  if (m)
+    return `${String(+m[1]).padStart(2, "0")}:${String(+m[2]).padStart(
+      2,
+      "0"
+    )}`;
+  m = t.match(/\b([01]?\d|2[0-3])\b/);
+  if (m) return `${String(+m[1]).padStart(2, "0")}:00`;
+  return null;
+}
+function atNoon(date) {
+  const d = new Date(date);
+  d.setHours(12, 0, 0, 0);
+  return d;
+}
+function isoWeekday(d) {
+  const D = d instanceof Date ? d : new Date(d);
+  const day = D.getDay();
+  return String(day === 0 ? 7 : day);
+}
+function nextWeekday(dayIndex) {
+  const d = new Date();
+  const today = d.getDay();
+  const delta = (dayIndex + 7 - (today === 0 ? 7 : today)) % 7 || 7;
+  d.setDate(d.getDate() + delta);
+  return d;
+}
+function itaMonthToIndex(m) {
+  const months = [
+    "gennaio",
+    "febbraio",
+    "marzo",
+    "aprile",
+    "maggio",
+    "giugno",
+    "luglio",
+    "agosto",
+    "settembre",
+    "ottobre",
+    "novembre",
+    "dicembre",
+  ];
+  const short = [
+    "gen",
+    "feb",
+    "mar",
+    "apr",
+    "mag",
+    "giu",
+    "lug",
+    "ago",
+    "set",
+    "ott",
+    "nov",
+    "dic",
+  ];
+  const s = String(m || "").toLowerCase();
+  let idx = short.indexOf(s);
+  if (idx >= 0) return idx;
+  idx = months.indexOf(s);
+  return idx >= 0 ? idx : null;
+}
+function nextOpenDay(fromDate) {
+  const d = new Date(fromDate);
+  for (let i = 0; i < 14; i++) {
+    if (!cfgClosedDay(d)) return atNoon(d);
+    d.setDate(d.getDate() + 1);
+  }
+  return atNoon(fromDate);
+}
+function simpleNorm(s) {
+  return (s || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .replace(/[^a-z0-9 ]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function setTime(date, hhmm) {
+  const parts = String(hhmm || "00:00").split(":");
+  const H = Number(parts[0] || 0);
+  const M = Number(parts[1] || 0);
+  const d = new Date(date);
+  d.setHours(H, M || 0, 0, 0);
+  return d;
+}
+function isPast(date) {
+  return date.getTime() < Date.now();
+}
+
+// ===== Helpers giorno IT estesi (lunedi prossimo, tra X settimane, ecc.) =====
+const DOW_IT = {
+  domenica: 0,
+  dom: 0,
+  lunedi: 1,
+  lunedì: 1,
+  lun: 1,
+  martedi: 2,
+  martedì: 2,
+  mar: 2,
+  mercoledi: 3,
+  mercoledì: 3,
+  mer: 3,
+  giovedi: 4,
+  giovedì: 4,
+  gio: 4,
+  venerdi: 5,
+  venerdì: 5,
+  ven: 5,
+  sabato: 6,
+  sab: 6,
+};
+
+const INT_IT = {
+  uno: 1,
+  una: 1,
+  un: 1,
+  due: 2,
+  tre: 3,
+  quattro: 4,
+  cinque: 5,
+  sei: 6,
+  sette: 7,
+  otto: 8,
+  nove: 9,
+  dieci: 10,
+  undici: 11,
+  dodici: 12,
+};
+
+function _norm(s) {
+  return String(s || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "");
+}
+function _startOfISOWeek(d) {
+  const x = new Date(d);
+  x.setHours(12, 0, 0, 0);
+  const day = x.getDay();
+  const delta = (day + 6) % 7;
+  x.setDate(x.getDate() - delta);
+  return x;
+}
+function _dateForDow(baseDate, dow, weeksOffset = 0) {
+  const baseMon = _startOfISOWeek(baseDate);
+  const d = new Date(baseMon);
+  d.setDate(baseMon.getDate() + weeksOffset * 7 + ((dow + 6) % 7));
+  d.setHours(12, 0, 0, 0);
+  return d;
+}
+function _toInt(tok) {
+  if (!tok) return null;
+  const n = Number(tok);
+  if (!Number.isNaN(n) && n >= 0) return n;
+  return INT_IT[_norm(tok)] ?? null;
+}
+
+
+function norm(text) {
+  return String(text || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+}
+
+// ============== Riconoscimento servizio ==============
+function cfgServices() {
+  return Object.keys(config.services || {});
+}
+function cfgServiceItem(name) {
+  return config.services?.[name] || null;
+}
+function cfgServiceSynonyms(service) {
+  const it = cfgServiceItem(service) || {};
+  const syns = Array.isArray(it.synonyms) ? it.synonyms : [];
+  return syns;
+}
+function cfgServiceDuration(name) {
+  const it = cfgServiceItem(name) || {};
+  return Number(it.durationMin || it.duration || 0) || 30;
+}
+function cfgServiceProfessionals(service) {
+  const it = cfgServiceItem(service) || {};
+  const list = Array.isArray(it.professionals) ? it.professionals : [];
+  return list
+    .map((v) =>
+      v.includes("@")
+        ? { name: config.professionals?.[v]?.name || v, email: v }
+        : { name: v, email: proEmailByName(v) || null }
+    )
+    .filter((x) => x.name);
+}
+function cfgServicePriceText(name) {
+  const it = cfgServiceItem(name) || {};
+  return typeof it.price === "number"
+    ? `${it.price}€`
+    : it.price || "prezzo su richiesta";
+}
+function cfgAllergensForService(service) {
+  const it = cfgServiceItem(service) || {};
+  let arr = it.allergens || it.allergenes || [];
+  if (typeof arr === "string") {
+    arr = arr
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+  return Array.isArray(arr) ? arr : [];
+}
+function getAllergens(service) {
+  const set = new Set(
+    cfgAllergensForService(service).map((a) => a.toLowerCase())
+  );
+  return Array.from(set);
+}
+function fuzzyService(text) {
+  const input = norm(text);
+  let best = { service: null, dist: Infinity };
+  for (const service of cfgServices()) {
+    const dist = levenshtein(norm(service), input);
+    if (dist < best.dist) best = { service, dist };
+    for (const syn of cfgServiceSynonyms(service)) {
+      const dsyn = levenshtein(norm(syn), input);
+      if (dsyn < best.dist) best = { service, dist: dsyn };
+    }
+  }
+  return best.dist <= 2 ? best.service : null;
+}
+function levenshtein(a, b) {
+  const al = a.length,
+    bl = b.length;
+  if (!al) return bl;
+  if (!bl) return al;
+  const dp = Array.from({ length: al + 1 }, (_, i) => Array(bl + 1).fill(0));
+  for (let i = 0; i <= al; i++) dp[i][0] = i;
+  for (let j = 0; j <= bl; j++) dp[0][j] = j;
+  for (let i = 1; i <= al; i++) {
+    for (let j = 1; j <= bl; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      dp[i][j] = Math.min(
+        dp[i - 1][j] + 1,
+        dp[i][j - 1] + 1,
+        dp[i - 1][j - 1] + cost
+      );
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1])
+        dp[i][j] = Math.min(dp[i][j], dp[i - 2][j - 2] + 1);
+    }
+  }
+  return dp[al][bl];
+}
+function resolveServiceFromText(t) {
+  const q = norm(t);
+  const svcs = cfgServices();
+  const cands = [];
+
+  for (const service of svcs) {
+    const sName = norm(service);
+    if (q.includes(sName)) {
+      cands.push({
+        service,
+        kind: "name",
+        len: sName.length,
+        allergens: getAllergens(service).length,
+        idx: svcs.indexOf(service),
+      });
+    }
+    for (const syn of cfgServiceSynonyms(service)) {
+      const sSyn = norm(syn);
+      if (q.includes(sSyn)) {
+        cands.push({
+          service,
+          kind: "syn",
+          len: sSyn.length,
+          allergens: getAllergens(service).length,
+          idx: svcs.indexOf(service),
+        });
+      }
+    }
+  }
+  if (!cands.length) return null;
+
+  // Ordina per: sinonimo>nome, match più lungo, più allergeni, poi ordine stabile
+  cands.sort((a, b) => {
+    if (a.kind !== b.kind) return a.kind === "syn" ? -1 : 1;
+    if (a.len !== b.len) return b.len - a.len;
+    if (a.allergens !== b.allergens) return b.allergens - a.allergens;
+    return a.idx - b.idx;
+  });
+  return cands[0].service;
+}
+
+// ===== Booking intent detectors =====
+
+function looksLikeBooking(t) {
+  return hasBookingVerb(t) || hasDateOrTime(t) || !!fuzzyService(t);
+}
+
+// ============== Orari: calcolo slot con pro per slot ==============
+function intervalsFromSpec(spec, day) {
+  if (!spec) return [];
+  const D = day instanceof Date ? day : new Date(day);
+  const toMs = (hhmm) => {
+    const [H, M] = String(hhmm || "")
+      .split(":")
+      .map(Number);
+    return new Date(
+      D.getFullYear(),
+      D.getMonth(),
+      D.getDate(),
+      H || 0,
+      M || 0,
+      0,
+      0
+    ).getTime();
+  };
+  const out = [];
+  if (Array.isArray(spec) && spec.every((x) => typeof x === "string")) {
+    const arr = spec;
+    if (arr.length === 2) {
+      const s = toMs(arr[0]),
+        e = toMs(arr[1]);
+      if (e > s) out.push([s, e]);
+      return out;
+    }
+    if (arr.length >= 4 && arr.length % 2 === 0) {
+      for (let i = 0; i < arr.length; i += 2) {
+        const s = toMs(arr[i]),
+          e = toMs(arr[i + 1]);
+        if (e > s) out.push([s, e]);
+      }
+      return out;
+    }
+  }
+  const arr = Array.isArray(spec) ? spec : [spec];
+  for (const item of arr) {
+    if (!item) continue;
+    if (Array.isArray(item) && item.length === 2) {
+      const s = toMs(item[0]);
+      const e = toMs(item[1]);
+      if (e > s) out.push([s, e]);
+    } else if (typeof item === "string" && item.includes("-")) {
+      const [a, b] = item.split("-");
+      const s = toMs(a);
+      const e = toMs(b);
+      if (e > s) out.push([s, e]);
+    } else if (typeof item === "object" && item.start && item.end) {
+      const s = toMs(item.start);
+      const e = toMs(item.end);
+      if (e > s) out.push([s, e]);
+    }
+  }
+  return out;
+}
+function getBusyIntervalsForDay(day, email) {
+  const D = day instanceof Date ? day : new Date(day);
+  const start = new Date(
+    D.getFullYear(),
+    D.getMonth(),
+    D.getDate(),
+    0,
+    0,
+    0,
+    0
+  ).getTime();
+  const end = start + 24 * 60 * 60 * 1000;
+  const arr = loadBookings();
+  const out = [];
+  for (const b of arr) {
+    if (!b || b.status === "cancelled") continue;
+    if (email && b.professionalEmail && b.professionalEmail !== email) continue;
+    const s = Date.parse(b.startTime);
+    const e = s + (Number(b.durationMin) || 0) * 60_000;
+    if (Number.isFinite(s) && Number.isFinite(e) && s < end && e > start)
+      out.push([s, e]);
+  }
+  // ⬇️ aggiungi gli hold attivi per il giorno/pro
+  const held = getHoldIntervalsForDay(D, email) || [];
+  out.push(...held);
+
+  out.sort((a, b) => a[0] - b[0]);
+  return out;
+}
+
+// === NEW === Slot SOLO per un professionista (rispetta orari, pause, indisponibilità e booking del pro)
+export async function fetchSlotsForProfessional({
+  service = null,
+  day,
+  duration = null,
+  professional,
+}) {
+  const D = day instanceof Date ? day : new Date(day);
+  if (!(D instanceof Date) || isNaN(D)) return [];
+
+  // Risolvi email dal nome, se serve
+  const email =
+    professional && professional.includes("@")
+      ? professional
+      : proEmailByName(professional);
+  if (!email) return [];
+
+  // Durata (servizio -> durataMin) o fallback 30'
+  let durMin = Number(duration);
+  if (!Number.isFinite(durMin) || durMin <= 0) {
+    if (service && professional) {
+      durMin = getServiceDurationForPro(service, professional);
+    } else if (service) {
+      const svc0 = config.services?.[service] || null;
+      durMin = Number(svc0?.durationMin || svc0?.duration || 0) || 30;
+    } else {
+      durMin = 30;
+    }
+  }
+
+  const durMs = durMin * 60_000;
+  const stepMs = durMs;
+
+  const toYMD = (d) => {
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const dd = String(d.getDate()).padStart(2, "0");
+    return `${yyyy}-${mm}-${dd}`;
+  };
+
+  const dayKey = isoWeekday(D);
+  const dayStart = new Date(
+    D.getFullYear(),
+    D.getMonth(),
+    D.getDate(),
+    0,
+    0,
+    0,
+    0
+  ).getTime();
+  const dayEnd = dayStart + 24 * 60 * 60 * 1000;
+
+  // Giorno chiuso?
+  const closedDates = Array.isArray(config.holidays)
+    ? config.holidays
+    : Array.isArray(config.closedDates)
+      ? config.closedDates
+      : [];
+  if (closedDates.includes(toYMD(D))) return [];
+  const hours =
+    config.businessHours && config.businessHours[dayKey]
+      ? config.businessHours[dayKey]
+      : null;
+  if (!hours) return [];
+  let openIntervals = intervalsFromSpec(hours, D);
+
+  // Pause (es. pranzo)
+  const lb =
+    config.lunchBreaks && config.lunchBreaks[dayKey]
+      ? config.lunchBreaks[dayKey]
+      : null;
+  if (lb) {
+    const breaks = intervalsFromSpec(lb, D);
+    if (breaks.length) {
+      const next = [];
+      for (const [s, e] of openIntervals) {
+        let segs = [[s, e]];
+        for (const [bs, be] of breaks) {
+          const tmp = [];
+          for (const [x, y] of segs) {
+            if (be <= x || y <= bs) {
+              tmp.push([x, y]);
+            } else {
+              if (x < bs) tmp.push([x, Math.max(x, bs)]);
+              if (be < y) tmp.push([Math.min(be, y), y]);
+            }
+          }
+          segs = tmp;
+        }
+        next.push(...segs);
+      }
+      openIntervals = next.filter(([a, b]) => b > a);
+    }
+  }
+
+  // Indisponibilità del professionista
+  const unav = config.unavailability || {};
+  const rules = Array.isArray(unav[email]) ? unav[email] : [];
+
+  const IT2NUM = {
+    lun: "1",
+    mar: "2",
+    mer: "3",
+    gio: "4",
+    ven: "5",
+    sab: "6",
+    dom: "7",
+  };
+  const EN2NUM = {
+    mon: "1",
+    tue: "2",
+    wed: "3",
+    thu: "4",
+    fri: "5",
+    sat: "6",
+    sun: "7",
+  };
+  const normDayKey = (v) => {
+    if (v == null) return null;
+    const s = String(v).trim().toLowerCase();
+    if (/^[1-7]$/.test(s)) return s;
+    if (IT2NUM[s]) return IT2NUM[s];
+    if (EN2NUM[s]) return EN2NUM[s];
+    if (s.startsWith("lun")) return "1";
+    if (s.startsWith("mar")) return "2";
+    if (s.startsWith("mer") || s.startsWith("wed")) return "3";
+    if (s.startsWith("gio") || s.startsWith("thu")) return "4";
+    if (s.startsWith("ven") || s.startsWith("fri")) return "5";
+    if (s.startsWith("sab") || s.startsWith("sat")) return "6";
+    if (s.startsWith("dom") || s.startsWith("sun")) return "7";
+    return null;
+  };
+  const daysMatch = (ruleDays) => {
+    if (!Array.isArray(ruleDays) || !ruleDays.length) return true;
+    const set = new Set(ruleDays.map(normDayKey).filter(Boolean));
+    return set.has(String(dayKey));
+  };
+  const inRange = (from, to) => {
+    const s = from ? new Date(from).getTime() : -Infinity;
+    const e = to ? new Date(to).getTime() : Infinity;
+    return dayStart <= e && dayEnd > s;
+  };
+  const mergeIntervals = (arr) => {
+    if (!arr?.length) return [];
+    const sorted = arr.slice().sort((a, b) => a[0] - b[0]);
+    const out = [sorted[0]];
+    for (let i = 1; i < sorted.length; i++) {
+      const [s, e] = sorted[i];
+      const last = out[out.length - 1];
+      if (s <= last[1]) {
+        if (e > last[1]) last[1] = e;
+      } else out.push([s, e]);
+    }
+    return out;
+  };
+
+  let partialBusy = [];
+  for (const r of rules) {
+    if (!r || typeof r !== "object") continue;
+    const type = String(r.type || "").toLowerCase();
+    const applies =
+      (type === "day" && daysMatch(r.days)) ||
+      (type === "recurrence" && daysMatch(r.days)) ||
+      (type === "date" &&
+        (Array.isArray(r.dates) ? r.dates : [r.date]).includes(toYMD(D))) ||
+      (type === "range" && inRange(r.from, r.to) && daysMatch(r.days));
+    if (!applies) continue;
+    if (!r.hours || r.fullDay === true) return []; // giorno off intero per il pro
+    partialBusy.push(...intervalsFromSpec(r.hours, D));
+  }
+  partialBusy = mergeIntervals(partialBusy);
+
+  // Busy = booking esistenti del pro + indisponibilità parziale
+  const booked = getBusyIntervalsForDay(D, email) || [];
+  const busy = mergeIntervals([...booked, ...partialBusy]);
+
+  // Genera slot
+  const nowTs = Date.now();
+  const times = [];
+  const overlaps = (a0, a1, b0, b1) => a0 < b1 && b0 < a1;
+
+  for (const [winS, winE] of openIntervals) {
+    let cursor = winS;
+    const mod = (cursor - dayStart) % stepMs;
+    if (mod !== 0) cursor += stepMs - mod;
+
+    while (cursor + durMs <= winE) {
+      if (cursor < nowTs) {
+        cursor += stepMs;
+        continue;
+      }
+      let clash = false;
+      for (const [bs, be] of busy) {
+        if (overlaps(cursor, cursor + durMs, bs, be)) {
+          clash = true;
+          break;
+        }
+        if (bs >= cursor + durMs) break;
+      }
+      if (!clash) {
+        const d = new Date(cursor);
+        times.push(
+          `${String(d.getHours()).padStart(2, "0")}:${String(
+            d.getMinutes()
+          ).padStart(2, "0")}`
+        );
+      }
+      cursor += stepMs;
+    }
+  }
+
+  return Array.from(new Set(times)).sort();
+}
+
+async function fetchSlots({
+  service = null,
+  day,
+  duration = null,
+  professional = null,
+  wantDetail = false,
+}) {
+  const D = day instanceof Date ? day : new Date(day);
+  if (!(D instanceof Date) || isNaN(D)) return wantDetail ? [] : [];
+
+  const toYMD = (d) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
+      d.getDate()
+    ).padStart(2, "0")}`;
+  const dayKey = isoWeekday(D);
+  const dayStart = new Date(
+    D.getFullYear(),
+    D.getMonth(),
+    D.getDate()
+  ).getTime();
+  const dayEnd = dayStart + 24 * 60 * 60 * 1000;
+
+  const IT2NUM = {
+    lun: "1",
+    mar: "2",
+    mer: "3",
+    gio: "4",
+    ven: "5",
+    sab: "6",
+    dom: "7",
+  };
+  const EN2NUM = {
+    mon: "1",
+    tue: "2",
+    wed: "3",
+    thu: "4",
+    fri: "5",
+    sat: "6",
+    sun: "7",
+  };
+  const normDayKey = (v) => {
+    if (v == null) return null;
+    const s = String(v).trim().toLowerCase();
+    if (/^[1-7]$/.test(s)) return s;
+    if (IT2NUM[s]) return IT2NUM[s];
+    if (EN2NUM[s]) return EN2NUM[s];
+    if (s.startsWith("lun")) return "1";
+    if (s.startsWith("mar")) return "2";
+    if (s.startsWith("mer") || s.startsWith("wed")) return "3";
+    if (s.startsWith("gio") || s.startsWith("thu")) return "4";
+    if (s.startsWith("ven") || s.startsWith("fri")) return "5";
+    if (s.startsWith("sab") || s.startsWith("sat")) return "6";
+    if (s.startsWith("dom") || s.startsWith("sun")) return "7";
+    return null;
+  };
+  const daysMatch = (ruleDays) => {
+    if (!Array.isArray(ruleDays) || ruleDays.length === 0) return true;
+    const set = new Set(ruleDays.map(normDayKey).filter(Boolean));
+    return set.has(String(dayKey));
+  };
+  const inRange = (from, to) => {
+    const s = from ? new Date(from).getTime() : -Infinity;
+    const e = to ? new Date(to).getTime() : Infinity;
+    return dayStart <= e && dayEnd > s;
+  };
+  const mergeIntervals = (arr) => {
+    if (!arr?.length) return [];
+    const sorted = arr.slice().sort((a, b) => a[0] - b[0]);
+    const out = [sorted[0]];
+    for (let i = 1; i < sorted.length; i++) {
+      const [s, e] = sorted[i];
+      const last = out[out.length - 1];
+      if (s <= last[1]) {
+        if (e > last[1]) last[1] = e;
+      } else out.push([s, e]);
+    }
+    return out;
+  };
+
+  let durMin = Number(duration);
+  if (!Number.isFinite(durMin) || durMin <= 0) {
+    if (service && professional) {
+      // Usa durata specifica per questo professionista
+      durMin = getServiceDurationForPro(service, professional);
+    } else if (service) {
+      // Fallback: durata generica del servizio
+      const svc0 = config.services?.[service] || null;
+      durMin = Number(svc0?.durationMin || svc0?.duration || 0) || 30;
+    } else {
+      durMin = 30; // fallback assoluto
+    }
+  }
+
+  const durMs = durMin * 60_000;
+  const stepMs = durMs;
+
+  // Giorno chiuso?
+  const closedDates = Array.isArray(config.holidays)
+    ? config.holidays
+    : Array.isArray(config.closedDates)
+      ? config.closedDates
+      : [];
+  const isClosedDate = closedDates.includes(toYMD(D));
+  const closedDays = config.closedDays || config.daysOff || {};
+  const closedDayKeys = Array.isArray(closedDays)
+    ? closedDays.map(String)
+    : Object.keys(closedDays);
+  const isClosedWeekday = closedDayKeys.includes(String(dayKey));
+  if (isClosedDate || isClosedWeekday) return wantDetail ? [] : [];
+
+  // Intervalli di apertura
+  const hours =
+    config.businessHours && config.businessHours[dayKey]
+      ? config.businessHours[dayKey]
+      : null;
+  if (!hours) return wantDetail ? [] : [];
+  let openIntervals = intervalsFromSpec(hours, D);
+
+  // Pausa pranzo o altre chiusure temporanee
+  const lb =
+    config.lunchBreaks && config.lunchBreaks[dayKey]
+      ? config.lunchBreaks[dayKey]
+      : null;
+  if (lb) {
+    const breaks = intervalsFromSpec(lb, D);
+    if (breaks.length) {
+      const next = [];
+      for (const [s, e] of openIntervals) {
+        let segs = [[s, e]];
+        for (const [bs, be] of breaks) {
+          const tmp = [];
+          for (const [x, y] of segs) {
+            if (be <= x || y <= bs) {
+              tmp.push([x, y]);
+            } else {
+              if (x < bs) tmp.push([x, Math.max(x, bs)]);
+              if (be < y) tmp.push([Math.min(be, y), y]);
+            }
+          }
+          segs = tmp;
+        }
+        next.push(...segs);
+      }
+      openIntervals = next.filter(([a, b]) => b > a);
+    }
+  }
+
+  // Seleziona professionisti
+  const svc = service && (config.services?.[service] || null);
+  const proCfg = Array.isArray(svc?.professionals) ? svc.professionals : null;
+  const prosBase =
+    proCfg && proCfg.length ? proCfg : Object.keys(config.professionals || {});
+  const proEmail =
+    professional && professional.includes("@")
+      ? professional
+      : professional
+        ? proEmailByName(professional)
+        : null;
+  const candidatePros = proEmail ? [proEmail] : prosBase;
+
+  // ===== UNAVAILABILITY =====
+  const unav = config.unavailability || {};
+  const filteredPros = [];
+  const partialBusyByPro = new Map();
+
+  const toEmail = (key) =>
+    key.includes("@") ? key : proEmailByName(key) || key;
+
+  for (let key of candidatePros) {
+    const email = toEmail(key);
+    const rules = Array.isArray(unav[email]) ? unav[email] : [];
+    let skip = false;
+    let partialBusy = [];
+
+    for (const r of rules) {
+      if (!r || typeof r !== "object") continue;
+      const type = String(r.type || "").toLowerCase();
+      if (type === "day" && Array.isArray(r.days)) {
+        const days = r.days;
+        const hasHours = !!r.hours;
+        if (daysMatch(days)) {
+          if (!hasHours || r.fullDay === true) {
+            skip = true;
+            break;
+          } else {
+            partialBusy.push(...intervalsFromSpec(r.hours, D));
+          }
+        }
+        continue;
+      }
+      if (type === "date" || type === "dates") {
+        const dates = Array.isArray(r.dates) ? r.dates : r.date ? [r.date] : [];
+        if (dates.includes(toYMD(D))) {
+          if (!r.hours || r.fullDay === true) {
+            skip = true;
+            break;
+          } else {
+            partialBusy.push(...intervalsFromSpec(r.hours, D));
+          }
+        }
+        continue;
+      }
+      if (type === "range") {
+        if (inRange(r.from, r.to) && daysMatch(r.days)) {
+          if (!r.hours || r.fullDay === true) {
+            skip = true;
+            break;
+          } else {
+            partialBusy.push(...intervalsFromSpec(r.hours, D));
+          }
+        }
+        continue;
+      }
+      if (type === "recurrence") {
+        if (daysMatch(r.days)) {
+          if (!r.hours || r.fullDay === true) {
+            skip = true;
+            break;
+          } else {
+            partialBusy.push(...intervalsFromSpec(r.hours, D));
+          }
+        }
+        continue;
+      }
+    }
+
+    if (!skip) {
+      filteredPros.push(email);
+      if (partialBusy.length)
+        partialBusyByPro.set(email, mergeIntervals(partialBusy));
+    }
+  }
+  if (filteredPros.length === 0) {
+    return wantDetail ? [] : [];
+  }
+
+  const pros = filteredPros.length ? filteredPros : candidatePros;
+
+  // Calcola intervalli occupati per ciascun pro
+  const busyByPro = new Map();
+  for (const email of pros) {
+    const booked = getBusyIntervalsForDay(D, email) || [];
+    const extra = partialBusyByPro.get(email) || [];
+    busyByPro.set(email, mergeIntervals([...booked, ...extra]));
+  }
+
+  // Genera slot con lista pro liberi
+  const nowTs = Date.now();
+  const detailed = new Map(); // time -> [{email,name}]
+  const overlaps = (a0, a1, b0, b1) => a0 < b1 && b0 < a1;
+
+  for (const [winS, winE] of openIntervals) {
+    let cursor = winS;
+    const mod = (cursor - dayStart) % stepMs;
+    if (mod !== 0) cursor += stepMs - mod;
+
+    while (cursor + durMs <= winE) {
+      if (cursor < nowTs) {
+        cursor += stepMs;
+        continue;
+      }
+
+      const freePros = [];
+      for (const email of pros) {
+        const busy = busyByPro.get(email) || [];
+        let clash = false;
+        for (const [bs, be] of busy) {
+          if (overlaps(cursor, cursor + durMs, bs, be)) {
+            clash = true;
+            break;
+          }
+          if (bs >= cursor + durMs) break;
+        }
+        if (!clash) {
+          const name = proNameByEmail(email) || email;
+          freePros.push({ email, name });
+        }
+      }
+
+      if (freePros.length) {
+        const d = new Date(cursor);
+        const key = `${String(d.getHours()).padStart(2, "0")}:${String(
+          d.getMinutes()
+        ).padStart(2, "0")}`;
+        detailed.set(key, freePros);
+      }
+      cursor += stepMs;
+    }
+  }
+
+  if (wantDetail)
+    return Array.from(detailed.entries())
+      .map(([time, pros]) => ({ time, pros }))
+      .sort((a, b) => compareHHMM(a.time, b.time));
+  return Array.from(detailed.keys()).sort(compareHHMM);
+}
+
+export async function fetchSlotsWithPros({
+  service = null,
+  day,
+  duration = null,
+  professional = null,
+}) {
+  const D = day instanceof Date ? day : new Date(day);
+  if (!(D instanceof Date) || isNaN(D)) return { times: [], map: {} };
+
+  let durMin = Number(duration);
+  if (!Number.isFinite(durMin) || durMin <= 0) {
+    const svc0 = service && (config.services?.[service] || null);
+    durMin = Number(svc0?.durationMin || svc0?.duration || 0) || 30;
+  }
+  const durMs = durMin * 60_000;
+  const stepMs = durMs;
+
+  const toYMD = (d) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
+      d.getDate()
+    ).padStart(2, "0")}`;
+  const dayKey = isoWeekday(D);
+  const dayStart = new Date(
+    D.getFullYear(),
+    D.getMonth(),
+    D.getDate(),
+    0,
+    0,
+    0,
+    0
+  ).getTime();
+  const dayEnd = dayStart + 24 * 60 * 60 * 1000;
+
+  const closedDates = Array.isArray(config.holidays)
+    ? config.holidays
+    : Array.isArray(config.closedDates)
+      ? config.closedDates
+      : [];
+  if (closedDates.includes(toYMD(D))) return { times: [], map: {} };
+
+  const closedDays = config.closedDays || config.daysOff || {};
+  const closedDayKeys = Array.isArray(closedDays)
+    ? closedDays.map(String)
+    : Object.keys(closedDays);
+  if (closedDayKeys.includes(String(dayKey))) return { times: [], map: {} };
+
+  const hours =
+    config.businessHours && config.businessHours[dayKey]
+      ? config.businessHours[dayKey]
+      : null;
+  if (!hours) return { times: [], map: {} };
+  let openIntervals = intervalsFromSpec(hours, D);
+
+  const lb =
+    config.lunchBreaks && config.lunchBreaks[dayKey]
+      ? config.lunchBreaks[dayKey]
+      : null;
+  if (lb) {
+    const breaks = intervalsFromSpec(lb, D);
+    if (breaks.length) {
+      const next = [];
+      for (const [s, e] of openIntervals) {
+        let segs = [[s, e]];
+        for (const [bs, be] of breaks) {
+          const tmp = [];
+          for (const [x, y] of segs) {
+            if (be <= x || y <= bs) {
+              tmp.push([x, y]);
+            } else {
+              if (x < bs) tmp.push([x, Math.max(x, bs)]);
+              if (be < y) tmp.push([Math.min(be, y), y]);
+            }
+          }
+          segs = tmp;
+        }
+        next.push(...segs);
+      }
+      openIntervals = next.filter(([a, b]) => b > a);
+    }
+  }
+
+  const svc = service && (config.services?.[service] || null);
+  const proCfg = Array.isArray(svc?.professionals) ? svc.professionals : null;
+  const prosBase =
+    proCfg && proCfg.length ? proCfg : Object.keys(config.professionals || {});
+  const proEmail =
+    professional && professional.includes("@")
+      ? professional
+      : professional
+        ? proEmailByName(professional)
+        : null;
+  const candidatePros = proEmail ? [proEmail] : prosBase;
+
+  const unav = config.unavailability || {};
+  const partialBusyByPro = new Map();
+  const filteredPros = [];
+
+  const IT2NUM = {
+    lun: "1",
+    mar: "2",
+    mer: "3",
+    gio: "4",
+    ven: "5",
+    sab: "6",
+    dom: "7",
+  };
+  const EN2NUM = {
+    mon: "1",
+    tue: "2",
+    wed: "3",
+    thu: "4",
+    fri: "5",
+    sat: "6",
+    sun: "7",
+  };
+  const normDayKey = (v) => {
+    if (v == null) return null;
+    const s = String(v).trim().toLowerCase();
+    if (/^[1-7]$/.test(s)) return s;
+    if (IT2NUM[s]) return IT2NUM[s];
+    if (EN2NUM[s]) return EN2NUM[s];
+    if (s.startsWith("lun")) return "1";
+    if (s.startsWith("mar")) return "2";
+    if (s.startsWith("mer") || s.startsWith("wed")) return "3";
+    if (s.startsWith("gio") || s.startsWith("thu")) return "4";
+    if (s.startsWith("ven") || s.startsWith("fri")) return "5";
+    if (s.startsWith("sab") || s.startsWith("sat")) return "6";
+    if (s.startsWith("dom") || s.startsWith("sun")) return "7";
+    return null;
+  };
+  const dayKeySetHas = (ruleDays) => {
+    if (!Array.isArray(ruleDays) || ruleDays.length === 0) return true;
+    const set = new Set(ruleDays.map(normDayKey).filter(Boolean));
+    return set.has(String(dayKey));
+  };
+  const inRange = (from, to) => {
+    const s = from ? new Date(from).getTime() : -Infinity;
+    const e = to ? new Date(to).getTime() : Infinity;
+    return dayStart <= e && dayEnd > s;
+  };
+
+  const mergeIntervals = (arr) => {
+    if (!arr?.length) return [];
+    const sorted = arr.slice().sort((a, b) => a[0] - b[0]);
+    const out = [sorted[0]];
+    for (let i = 1; i < sorted.length; i++) {
+      const [s, e] = sorted[i];
+      const last = out[out.length - 1];
+      if (s <= last[1]) {
+        if (e > last[1]) last[1] = e;
+      } else out.push([s, e]);
+    }
+    return out;
+  };
+
+  for (const email of candidatePros) {
+    const rules = Array.isArray(unav[email]) ? unav[email] : [];
+    let skip = false;
+    let partialBusy = [];
+
+    for (const r of rules) {
+      if (!r || typeof r !== "object") continue;
+      const type = String(r.type || "").toLowerCase();
+
+      const applies =
+        (type === "day" && Array.isArray(r.days) && dayKeySetHas(r.days)) ||
+        (type === "recurrence" && dayKeySetHas(r.days)) ||
+        (type === "date" &&
+          (Array.isArray(r.dates) ? r.dates : [r.date]).includes(toYMD(D))) ||
+        (type === "range" && inRange(r.from, r.to) && dayKeySetHas(r.days));
+
+      if (applies) {
+        if (!r.hours || r.fullDay === true) {
+          skip = true;
+          break;
+        }
+        partialBusy.push(...intervalsFromSpec(r.hours, D));
+      }
+    }
+
+    if (!skip) {
+      filteredPros.push(email);
+      if (partialBusy.length)
+        partialBusyByPro.set(email, mergeIntervals(partialBusy));
+    }
+  }
+  if (filteredPros.length === 0) {
+    return { times: [], map: {} };
+  }
+
+  const pros = filteredPros.length ? filteredPros : candidatePros;
+  const slotsByPro = new Map();
+  const busyByPro = new Map();
+  for (const email of pros) {
+    // Durata specifica per questo professionista
+    const durMin = service
+      ? getServiceDurationForPro(service, email)
+      : Number(duration) || 30;
+    const durMs = durMin * 60_000;
+    const stepMs = durMs;
+
+    const busy = busyByPro.get(email) || [];
+    const freeTimes = new Set();
+
+    for (const [winS, winE] of openIntervals) {
+      let cursor = winS;
+      const mod = (cursor - dayStart) % stepMs;
+      if (mod !== 0) cursor += stepMs - mod;
+
+      while (cursor + durMs <= winE) {
+        if (cursor < nowTs) {
+          cursor += stepMs;
+          continue;
+        }
+
+        let clash = false;
+        for (const [bs, be] of busy) {
+          if (cursor < be && bs < cursor + durMs) {
+            clash = true;
+            break;
+          }
+          if (bs >= cursor + durMs) break;
+        }
+
+        if (!clash) {
+          const d = new Date(cursor);
+          const key = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+          freeTimes.add(key);
+        }
+
+        cursor += stepMs;
+      }
+    }
+
+    slotsByPro.set(email, freeTimes);
+  }
+
+  // Costruisci mappa finale: time -> lista professionisti liberi
+  const map = {};
+  const allTimes = new Set();
+
+  for (const [email, times] of slotsByPro) {
+    for (const t of times) {
+      allTimes.add(t);
+      if (!map[t]) map[t] = [];
+      map[t].push(email);
+    }
+  }
+
+  const times = Array.from(allTimes).sort((a, b) => a.localeCompare(b));
+  return { times, map };
+}
+// ============== Allergie ==============
+function extractAllergensFromText(text, list) {
+  const hits = new Set();
+  for (const a of list)
+    if (new RegExp(`\\b${escapeReg(a)}\\b`, "i").test(text))
+      hits.add(a.toLowerCase());
+  return Array.from(hits);
+}
+function parseAllergyInfo(text, service) {
+  const list = getAllergens(service);
+  if (!list.length) return null;
+  const raw = String(text || "").trim();
+
+  if (/^\s*0\s*$/.test(raw) || /\b(nessun[aeo]?|no)\b/i.test(raw))
+    return { has: false, list: [] };
+  if (/^\s*s[iì]\s*$/i.test(raw)) return { has: true, list: [] };
+
+  const nums = raw
+    .split(/[,\s]+/)
+    .map((x) => parseInt(x, 10))
+    .filter(Number.isInteger);
+  if (nums.length) {
+    const hits = nums
+      .filter((n) => n >= 1 && n <= list.length)
+      .map((n) => list[n - 1]);
+    return { has: hits.length > 0, list: hits };
+  }
+
+  const hits = new Set();
+  for (const a of list)
+    if (new RegExp(`\\b${escapeReg(a)}\\b`, "i").test(raw)) hits.add(a);
+  return hits.size ? { has: true, list: Array.from(hits) } : null;
+}
+
+
+// ============== Saluti & affini ==============
+function wantsAffectionReply(t) {
+  return /\b(amore|tesoro|tesorino|tesorina|cara|carissima|caro|carissimo)\b/i.test(
+    norm(t)
+  );
+}
+function greetCTA() {
+  const exampleSvc = cfgServices()[0] || "manicure";
+  return `Ciao tesoro! 😊 Puoi prenotare un trattamento o farmi domande sui nostri servizi.\nPer prenotare, ad esempio: scrivi "${exampleSvc} domani alle 10:30".`;
+}
+
+// ============== Helpers vari ==============
+function filterSlotsByWindow(slots, windowPair) {
+  const list = Array.isArray(slots) ? slots : [];
+  const w =
+    Array.isArray(windowPair) && windowPair.length === 2 ? windowPair : null;
+  if (!w) return list.slice();
+  const from = timeToMinutes(w[0]);
+  const to = timeToMinutes(w[1]);
+  if (!Number.isFinite(from) || !Number.isFinite(to)) return list.slice();
+  return list
+    .filter((h) => {
+      const m = timeToMinutes(h);
+      return Number.isFinite(m) && m >= from && m <= to;
+    })
+    .sort(compareHHMM);
+}
+function getDaypartBoundaries() {
+  const def = {
+    mattina: ["09:00", "12:30"],
+    pomeriggio: ["14:00", "17:30"],
+    sera: ["17:30", "20:30"],
+  };
+  try {
+    if (config && config.dayparts) {
+      const d = config.dayparts;
+      const pick2 = (keys, fb) => {
+        for (const k of keys) {
+          if (Array.isArray(d[k]) && d[k].length === 2) return d[k];
+        }
+        return fb;
+      };
+      return {
+        mattina: pick2(["mattina", "morning"], def.mattina),
+        pomeriggio: pick2(["pomeriggio", "afternoon"], def.pomeriggio),
+        sera: pick2(["sera", "evening"], def.sera),
+      };
+    }
+  } catch (_) { }
+  return def;
+}
+function groupSlotsByDaypart(slots) {
+  const list = Array.isArray(slots) ? slots.slice().sort(compareHHMM) : [];
+  const dp = getDaypartBoundaries();
+  return {
+    mattina: filterSlotsByWindow(list, dp.mattina),
+    pomeriggio: filterSlotsByWindow(list, dp.pomeriggio),
+    sera: filterSlotsByWindow(list, dp.sera),
+  };
+}
+
+function phoneFromChatId(chatId) {
+  const s = String(chatId || "");
+  const num = s.split("@")[0];
+  return num.replace(/\D/g, "");
+}
+export function proNameByEmail(email, professionalsOrConfig) {
+  if (!email) return "";
+  let pros;
+  if (professionalsOrConfig)
+    pros = Array.isArray(professionalsOrConfig)
+      ? professionalsOrConfig
+      : professionalsOrConfig?.professionals;
+  else if (typeof config !== "undefined") pros = config?.professionals;
+  const key = String(email).toLowerCase();
+  if (pros && !Array.isArray(pros) && typeof pros === "object") {
+    const o = pros[email] || pros[key] || pros[key?.trim?.()];
+    if (o && typeof o === "object") return o.name || o.displayName || email;
+  }
+  if (Array.isArray(pros)) {
+    const found = pros.find(
+      (p) => String(p?.email || "").toLowerCase() === key
+    );
+    if (found) return found.name || found.displayName || email;
+  }
+  return email;
+}
+function findProfessionalCandidatesByText(inputText, serviceCtx = null) {
+  const normTxt = simpleNorm(inputText);
+  const specific = ((serviceCtx && cfgServiceProfessionals(serviceCtx)) || [])
+    .map((p) => p.name)
+    .filter(Boolean);
+  const candidates = specific.length
+    ? specific
+    : Object.values(config.professionals || {}).map((p) => p.name);
+  const hits = [];
+  for (const name of candidates) {
+    const nname = simpleNorm(name);
+    let score = 0;
+    if (nname && normTxt.includes(nname)) score += 3;
+    for (const tok of nname.split(" ").filter(Boolean)) {
+      if (tok.length >= 3 && normTxt.includes(tok)) score += 1;
+    }
+    if (score > 0) hits.push({ name, score });
+  }
+  if (!hits.length) return null;
+  hits.sort((a, b) => b.score - a.score);
+  const topScore = hits[0].score;
+  const bestCandidates = hits
+    .filter((h) => h.score === topScore)
+    .map((h) => h.name);
+  if (bestCandidates.length === 1) return { resolved: bestCandidates[0] };
+  return { ambiguous: bestCandidates.slice(0, 6) };
+}
+function proEmailByName(name) {
+  const pros = config.professionals || {};
+  for (const [email, o] of Object.entries(pros)) {
+    const n = o?.name || email;
+    if (norm(n) === norm(name)) return email;
+  }
+  return null;
+}
+function extractCustomerName(input, returnFallback = false) {
+  const FALLBACK = "Nome non fornito";
+
+  // Validazione input
+  if (!input || typeof input !== 'string' && typeof input !== 'number') {
+    return returnFallback ? FALLBACK : null;
+  }
+
+  let s = String(input).trim();
+
+  // Rimuovi saluti comuni (case insensitive, più completo)
+  s = s.replace(/^(ciao|buongiorno|buonasera|buona\s+sera|buon\s+giorno|hey|ehi|salve|salut|ciao\s+a\s+tutti)[,!\s]+/i, '');
+  // ✅ PATCH: Rimuovi "per una mia amica/amico/collega/mamma/papà" ecc.
+  s = s.replace(/\b(?:per|a\s+nome\s+di)\s+(?:un(?:a)?\s+)?(?:mi(?:a|o)?\s+)?(?:amica?|collega|sorella|fratello|mamma|papà|fidanzat[ao]|partner|moglie|marito|ragazza|ragazzo)\b/gi, '');
+
+  // Rimuovi frasi introduttive per il nome (più pattern) - con word boundary
+  s = s.replace(
+    /^(mi\s+chiamo|io\s+mi\s+chiamo|io\s+sono|sono\s+|il\s+mio\s+nome\s+è|il\s+mio\s+nome\s+e|mi\s+presento|nome\s*[:=]\s*|nome\s+e\s+cognome\s*[:=]\s*|cognome\s*[:=]\s*|mi\s+chiamano)\s*/i,
+    ''
+  );
+
+  // Rimuovi emoji e caratteri non validi per nomi
+  s = s
+    .replace(/[\p{Emoji_Presentation}\p{Extended_Pictographic}]/gu, '')
+    .replace(/[^\p{L}\s'-]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!s) return returnFallback ? FALLBACK : null;
+
+  // Tokenizza e filtra
+  const tokens = s.split(/\s+/).filter(Boolean);
+
+  // Validazione lunghezza minima
+  const letters = s.replace(/[^A-Za-zÀ-ÖØ-öø-ÿ]/g, '');
+  if (letters.length < 2) return returnFallback ? FALLBACK : null;
+
+  // Valida che non ci siano troppi token (evita frasi intere)
+  if (tokens.length > 4) return returnFallback ? FALLBACK : null;
+
+  // Filtra token troppo corti o troppo lunghi
+  const validTokens = tokens.filter(t => {
+    const letterCount = t.replace(/[^A-Za-zÀ-ÖØ-öø-ÿ]/g, '').length;
+    return letterCount >= 1 && letterCount <= 25;
+  });
+
+  if (validTokens.length === 0) return returnFallback ? FALLBACK : null;
+
+  // Capitalizza correttamente (gestisce apostrofi e trattini)
+  const capitalize = (word) => {
+    // Gestisce casi come "D'Angelo" o "O'Brien"
+    if (word.includes("'")) {
+      return word.split("'").map((part, i) => {
+        if (i === 0 && part.length === 1) {
+          return part.toUpperCase();
+        }
+        return part ? part[0].toUpperCase() + part.slice(1).toLowerCase() : part;
+      }).join("'");
+    }
+    // Gestisce casi come "Marie-Claire"
+    if (word.includes('-')) {
+      return word.split('-').map(part =>
+        part ? part[0].toUpperCase() + part.slice(1).toLowerCase() : part
+      ).join('-');
+    }
+    return word[0].toUpperCase() + word.slice(1).toLowerCase();
+  };
+
+  const name = validTokens.map(capitalize).join(' ');
+
+  return name || null;
+}
+
+// ============== Build QA prompt (placeholder) ==============
+function buildQAPromptWithMemory(chatId, basePrompt) {
+  const recent = getRecentMessages(chatId).slice(-5).join("\n");
+  return `${basePrompt}\n\n[Contesto chat]\n L'utente ha scritto questi 5 messaggi:${recent} usali come contesto per la tua risposta!`;
+}
+
+// ============== Google Calendar wrappers ==============
+function _digitsPhone(s) {
+  return String(s || "").replace(/\D+/g, "");
+}
+
+/*
+ * Wrapper compatibile con gcal.js:createCalendarEvent
+ * - Normalizza telefono
+ * - Mappa notes -> serviceDetails
+ * - Passa professionalName, clientName, allergies/allergic
+ */
+async function makeEvent({
+  serviceName,
+  professionalEmail,
+  professionalName = null,
+  clientPhone,
+  customerName = null, // <— arriva dal flow come "customerName"
+  startTime,
+  durationMin,
+  notes = null, // <— verrà rimappato a serviceDetails
+  price = null,
+  reminders = [{ method: "popup", minutes: 1440 }],
+}) {
+  let allergies = null;
+  const payload = {
+    serviceName,
+    professionalEmail,
+    professionalName, // opzionale ma utile per il titolo in gcal
+    clientPhone: _digitsPhone(clientPhone),
+    clientName: customerName, // <— mapping richiesto da gcal.js
+    startTime, // Date o ISO, gcal fa new Date(...)
+    durationMin,
+    price,
+    serviceDetails: notes,
+    allergies,
+    reminders,
+  };
+  try {
+    return await _createCalendarEvent(payload);
+  } catch (e) {
+    log("error", "createCalendarEvent", e?.message || e);
+    throw e;
+  }
+}
+
+// === definizione di updateEventSafe (nuova) ===
+async function updateEventSafe(args) {
+  try {
+    if (typeof GCAL.updateCalendarEvent === "function") {
+      await GCAL.updateCalendarEvent(args);
+      return true;
+    }
+    if (typeof GCAL.updateEvent === "function") {
+      await GCAL.updateEvent(args);
+      return true;
+    }
+  } catch (e) {
+    log("warn", "updateEventSafe", e?.message || e);
+  }
+  return false;
+}
+
+async function cancelEventSafe(eventId) {
+  try {
+    if (!eventId) return false;
+
+    // nuova API "pulita"
+    if (typeof GCAL.cancelCalendarEvent === "function") {
+      await GCAL.cancelCalendarEvent(eventId); // <— QUI: passa la stringa, NON l’oggetto
+      return true;
+    }
+
+    // compat vecchie API object-based
+    if (typeof GCAL.deleteEvent === "function") {
+      await GCAL.deleteEvent({ eventId });
+      return true;
+    }
+    if (typeof GCAL.cancelEvent === "function") {
+      await GCAL.cancelEvent({ eventId });
+      return true;
+    }
+  } catch (e) {
+    log("warn", "cancelEventSafe", e?.message || e);
+  }
+  return false;
+}
+
+// ========================= EDIT HELPERS (incolla SOPRA a handleMessage) =========================
+function _editParseNewDate(raw) {
+  const original = String(raw ?? "");
+  const base = new Date();
+  base.setHours(0, 0, 0, 0);
+
+  const stripDiacritics = (s) =>
+    s.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+
+  const normalize = (s) => {
+    let t = stripDiacritics(String(s ?? "").toLowerCase().trim());
+    t = t.replace(/[“”"']/g, "");
+    t = t.replace(/\s+/g, " ").trim();
+    // toglie punteggiatura ai bordi (così "domani?" funziona)
+    t = t.replace(/^[?!.,;:()\[\]{}<>]+/g, "").replace(/[?!.,;:()\[\]{}<>]+$/g, "").trim();
+    return t;
+  };
+
+  const txt = normalize(original);
+
+  const isValidDate = (d, y, m, day) =>
+    d instanceof Date &&
+    !Number.isNaN(d.getTime()) &&
+    d.getFullYear() === y &&
+    d.getMonth() === m &&
+    d.getDate() === day;
+
+  const makeDate = (y, m, day) => {
+    const d = new Date(y, m, day, 0, 0, 0, 0);
+    return isValidDate(d, y, m, day) ? d : null;
+  };
+
+  const normalizeYear = (yy) => {
+    if (yy == null) return null;
+    const n = parseInt(String(yy), 10);
+    if (Number.isNaN(n)) return null;
+    if (n < 100) return 2000 + n; // 25 -> 2025
+    return n;
+  };
+
+  const rollFutureIfMissingYear = (d) => {
+    if (d && d < base) d.setFullYear(d.getFullYear() + 1);
+    return d;
+  };
+
+  const addDays = (n) => {
+    const d = new Date(base);
+    d.setDate(d.getDate() + n);
+    d.setHours(0, 0, 0, 0);
+    return d;
+  };
+
+  const wordToNumber = (w) => {
+    const map = {
+      un: 1, uno: 1, una: 1,
+      due: 2, tre: 3, quattro: 4, cinque: 5, sei: 6, sette: 7, otto: 8, nove: 9, dieci: 10,
+      undici: 11, dodici: 12, tredici: 13, quattordici: 14, quindici: 15, sedici: 16,
+      diciassette: 17, diciotto: 18, diciannove: 19, venti: 20,
+      ventuno: 21, ventidue: 22, ventitre: 23, ventiquattro: 24, venticinque: 25,
+      ventisei: 26, ventisette: 27, ventotto: 28, ventinove: 29, trenta: 30, trentuno: 31
+    };
+    if (w == null) return null;
+    const s = String(w).toLowerCase().trim();
+    if (/^\d+$/.test(s)) return parseInt(s, 10);
+    return map[s] ?? null;
+  };
+
+  const monthMap = {
+    gennaio: 0, gen: 0,
+    febbraio: 1, feb: 1,
+    marzo: 2, mar: 2,
+    aprile: 3, apr: 3,
+    maggio: 4, mag: 4,
+    giugno: 5, giu: 5,
+    luglio: 6, lug: 6,
+    agosto: 7, ago: 7,
+    settembre: 8, set: 8, sett: 8,
+    ottobre: 9, ott: 9,
+    novembre: 10, nov: 10,
+    dicembre: 11, dic: 11
+  };
+
+  const weekdayMap = {
+    lunedi: 1, lun: 1,
+    martedi: 2, mar: 2,
+    mercoledi: 3, mer: 3,
+    giovedi: 4, gio: 4,
+    venerdi: 5, ven: 5,
+    sabato: 6, sab: 6,
+    domenica: 0, dom: 0
+  };
+
+  const nextWeekday = (targetDow, forceNextWeek) => {
+    const d = new Date(base);
+    const current = d.getDay();
+    let diff = (targetDow - current + 7) % 7;
+    if (diff === 0 && forceNextWeek) diff = 7;
+    d.setDate(d.getDate() + diff);
+    d.setHours(0, 0, 0, 0);
+    return d;
+  };
+
+  // --- Relativi (anche dentro frasi tipo "domani?" / "domani pomeriggio") ---
+  if (/\boggi\b/.test(txt)) return new Date(base);
+
+  if (/\bdopodomani\b/.test(txt)) return addDays(2);
+
+  if (/\bdomani\b/.test(txt)) return addDays(1);
+
+  // "tra/fra X giorni|settimane|mesi|anni" (X numero o parola)
+  {
+    const rel = txt.match(/\b(tra|fra)\s+([a-z0-9]+)\s*(giorno|giorni|g|gg|settimana|settimane|sett|mese|mesi|anno|anni)\b/);
+    if (rel) {
+      const n = wordToNumber(rel[2]);
+      const unit = rel[3];
+      if (n != null && n >= 0) {
+        const d = new Date(base);
+        if (unit === "giorno" || unit === "giorni" || unit === "g" || unit === "gg") {
+          d.setDate(d.getDate() + n);
+          d.setHours(0, 0, 0, 0);
+          return d;
+        }
+        if (unit === "settimana" || unit === "settimane" || unit === "sett") {
+          d.setDate(d.getDate() + n * 7);
+          d.setHours(0, 0, 0, 0);
+          return d;
+        }
+        if (unit === "mese" || unit === "mesi") {
+          d.setMonth(d.getMonth() + n);
+          d.setHours(0, 0, 0, 0);
+          return d;
+        }
+        if (unit === "anno" || unit === "anni") {
+          d.setFullYear(d.getFullYear() + n);
+          d.setHours(0, 0, 0, 0);
+          return d;
+        }
+      }
+    }
+  }
+
+  // --- Giorni della settimana: "lunedi", "lunedi prossimo", "venerdi settimana prossima" ---
+  {
+    const w = txt.match(/\b(lunedi|lun|martedi|mar|mercoledi|mer|giovedi|gio|venerdi|ven|sabato|sab|domenica|dom)\b/);
+    if (w) {
+      const key = w[1];
+      const forceNextWeek =
+        /\bprossim[oa]\b/.test(txt) || /\bsettimana prossima\b/.test(txt) || /\bprox\b/.test(txt);
+
+      return nextWeekday(weekdayMap[key], forceNextWeek);
+    }
+    if (/\bsettimana prossima\b/.test(txt)) return addDays(7);
+  }
+
+  // --- Date numeriche: ISO (YYYY-MM-DD / YYYY/MM/DD / YYYY.MM.DD) dentro la frase ---
+  {
+    const iso = txt.match(/\b(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})\b/);
+    if (iso) {
+      const y = parseInt(iso[1], 10);
+      const m = parseInt(iso[2], 10) - 1;
+      const day = parseInt(iso[3], 10);
+      const d = makeDate(y, m, day);
+      if (d) return d;
+    }
+  }
+
+  // --- Date numeriche: D/M(/Y) con / - . anche dentro la frase (gestisce swap se mese>12) ---
+  {
+    const dmy = txt.match(/\b(\d{1,2})[\/\-.](\d{1,2})(?:[\/\-.](\d{2,4}))?\b/);
+    if (dmy) {
+      let a = parseInt(dmy[1], 10);
+      let b = parseInt(dmy[2], 10);
+      const yOpt = normalizeYear(dmy[3]) ?? base.getFullYear();
+
+      // Italia: preferenza D/M. Se mese invalido ma l'altro senso è valido, swappa.
+      let dd = a, mm = b - 1;
+      let d = makeDate(yOpt, mm, dd);
+
+      if (!d) {
+        // prova swap (M/D) se sembra plausibile
+        dd = b; mm = a - 1;
+        d = makeDate(yOpt, mm, dd);
+      }
+
+      if (d) {
+        if (dmy[3] == null) d = rollFutureIfMissingYear(d);
+        return d;
+      }
+    }
+  }
+
+  // --- Date con spazi: "15 12 2025" / "15 12" ---
+  {
+    const spaced = txt.match(/\b(\d{1,2})\s+(\d{1,2})(?:\s+(\d{2,4}))?\b/);
+    if (spaced) {
+      const a = parseInt(spaced[1], 10);
+      const b = parseInt(spaced[2], 10);
+      const yOpt = normalizeYear(spaced[3]) ?? base.getFullYear();
+
+      // evita collisioni con orari tipo "alle 15 30" (non perfetto ma riduce falsi positivi)
+      if (!/\balle\b|\bdalle\b|\bore\b/.test(txt)) {
+        let d = makeDate(yOpt, b - 1, a);
+        if (!d) d = makeDate(yOpt, a - 1, b); // swap se necessario
+        if (d) {
+          if (spaced[3] == null) d = rollFutureIfMissingYear(d);
+          return d;
+        }
+      }
+    }
+  }
+
+  // --- "15 dicembre" / "15 dic 2025" / "dicembre 15" ---
+  {
+    const monthKeys = Object.keys(monthMap).sort((a, b) => b.length - a.length).join("|");
+
+    // giorno + mese (+ anno)
+    const dm = txt.match(new RegExp(`\\b(\\d{1,2})(?:\\s*(?:°|º))?\\s*(?:di\\s*)?(${monthKeys})\\b(?:\\s+(\\d{2,4}))?`, "i"));
+    if (dm) {
+      const day = parseInt(dm[1], 10);
+      const mKey = dm[2].toLowerCase();
+      const mm = monthMap[mKey];
+      const yOpt = normalizeYear(dm[3]) ?? base.getFullYear();
+      let d = makeDate(yOpt, mm, day);
+      if (d) {
+        if (dm[3] == null) d = rollFutureIfMissingYear(d);
+        return d;
+      }
+    }
+
+    // mese + giorno (+ anno)
+    const md = txt.match(new RegExp(`\\b(${monthKeys})\\s+(\\d{1,2})(?:\\s*(?:°|º))?\\b(?:\\s+(\\d{2,4}))?`, "i"));
+    if (md) {
+      const mKey = md[1].toLowerCase();
+      const day = parseInt(md[2], 10);
+      const mm = monthMap[mKey];
+      const yOpt = normalizeYear(md[3]) ?? base.getFullYear();
+      let d = makeDate(yOpt, mm, day);
+      if (d) {
+        if (md[3] == null) d = rollFutureIfMissingYear(d);
+        return d;
+      }
+    }
+  }
+
+  // --- Solo giorno: "15" / "il 15" (mese corrente se futuro, altrimenti mese prossimo) ---
+  {
+    const onlyDay = txt.match(/^(?:il\s+)?(\d{1,2})(?:\s*(?:°|º))?$/);
+    if (onlyDay) {
+      const day = parseInt(onlyDay[1], 10);
+      let y = base.getFullYear();
+      let m = base.getMonth();
+
+      let d = makeDate(y, m, day);
+      if (!d) return null;
+
+      if (d < base) {
+        m += 1;
+        if (m > 11) {
+          m = 0;
+          y += 1;
+        }
+        d = makeDate(y, m, day);
+        if (!d) return null;
+      }
+      return d;
+    }
+  }
+
+  // --- Fallback: parser esterno se presente ---
+  if (typeof parseDaySmart === "function") {
+    const d = parseDaySmart(original, { baseDate: base });
+    if (d && !Number.isNaN(d.getTime())) {
+      d.setHours(0, 0, 0, 0);
+      return d;
+    }
+  }
+
+  return null;
+}
+
+async function startEditDate(client, chatId) {
+  const phone = phoneFromChatId(chatId);
+  const bookings = getUserActiveBookingsAll(phone);
+
+  if (!bookings.length) {
+    return reply(
+      client,
+      chatId,
+      "Non ho trovato prenotazioni future col tuo numero."
+    );
+  }
+
+  const openDateForBooking = async (booking) => {
+    const s = pending.get(chatId) || getState(chatId);
+    _editSnapshotStateFromBooking(s, booking);
+    s.step = "edit_reschedule_date";
+    s.edit = { target: booking };
+    s.collected = s.collected || {};
+    pending.set(chatId, s);
+
+    const line = _fmtBookingLine
+      ? _fmtBookingLine(booking)
+      : `${fmtDate(booking.startTime || booking.day || new Date())} — ${booking.service || ""
+      }`;
+
+    return reply(
+      client,
+      chatId,
+      `Vuoi cambiare la data di:\n${line}\n\nDimmi la nuova data (GG/MM, "oggi" o "domani").`
+    );
+  };
+
+  if (bookings.length === 1) {
+    return openDateForBooking(bookings[0]);
+  }
+
+  // Più prenotazioni: scelgo quale, poi passo a edit_reschedule_date
+  return startEditChooseBooking(
+    client,
+    chatId,
+    bookings,
+    "edit_reschedule_date"
+  );
+}
+
+// Durata del servizio con fallback a 30'
+function _editDuration(booking) {
+  if (!booking) return 30;
+
+  const svc = booking.service || booking.serviceName;
+  const proEmail = booking.professionalEmail;
+
+  // ✅ Se abbiamo servizio e professionista, usa durata specifica
+  if (svc && proEmail) {
+    return getServiceDurationForPro(svc, proEmail);
+  }
+
+  // Fallback: durata dal booking o da config
+  return (
+    Number(booking.durationMin) ||
+    cfgServiceDuration(svc) ||
+    30
+  );
+}
+
+// Elenco nomi professionisti per un servizio (prima quelli del servizio, poi fallback a tutti)
+function _editListProNamesForService(serviceName) {
+  const prosSpec = cfgServiceProfessionals(serviceName) || [];
+  const names = prosSpec.map((p) => p.name).filter(Boolean);
+  if (names.length) return names;
+  return Object.values(config.professionals || {})
+    .map((p) => p.name)
+    .filter(Boolean);
+}
+
+// Estrarre il "giorno" dall'appuntamento (ora a mezzogiorno per neutralizzare i fusi)
+function _editDayFromBooking(booking) {
+  const d = new Date(booking.startTime);
+  d.setHours(12, 0, 0, 0);
+  return d;
+}
+
+// Copia i dati base della prenotazione dentro state.collected
+function _editSnapshotStateFromBooking(state, booking) {
+  if (!state || !booking) return;
+  const col = state.collected || (state.collected = {});
+
+  // servizio
+  if (!col.service) {
+    col.service = booking.service || col.service || null;
+  }
+
+  // nome cliente
+  if (booking.customerName && !col.customerName) {
+    col.customerName = booking.customerName;
+  }
+
+  // professionista
+  const proEmail = booking.professionalEmail || null;
+  const proName =
+    booking.professionalName ||
+    (proEmail && typeof proNameByEmail === "function"
+      ? proNameByEmail(proEmail)
+      : null);
+
+  if (proEmail) col.professionalEmail = proEmail;
+  if (proName) col.professionalName = proName;
+
+  if (!proEmail && !proName) {
+    // nessuna preferenza esplicita: se non è già impostato, considero "qualunque"
+    if (typeof col.professionalAny !== "boolean") {
+      col.professionalAny = true;
+    }
+  } else {
+    col.professionalAny = false;
+  }
+
+  // data + orario
+  if (booking.startTime && !col.when) {
+    const d = new Date(booking.startTime);
+    if (!Number.isNaN(d.getTime())) {
+      const day = new Date(d);
+      day.setHours(12, 0, 0, 0);
+      col.when = day;
+      const hh = String(d.getHours()).padStart(2, "0");
+      const mm = String(d.getMinutes()).padStart(2, "0");
+      col.time = `${hh}:${mm}`;
+    }
+  }
+}
+
+// Formattare lista orari numerata
+function _editFormatTimeList(times) {
+  return (times || []).map((t, i) => `${i + 1}) ${t}`).join("\n");
+}
+
+// Render slot list numerata (supporta oggetti {time, pros:[{name}]} oppure stringhe 'HH:MM')
+function renderSlotsList(slots = []) {
+  return (slots || [])
+    .map((slot, i) => {
+      if (typeof slot === "string") return `${i + 1}) ${slot}`;
+      const time = slot?.time || slot?.hhmm || "";
+      const prosNames =
+        slot?.pros && slot.pros.length
+          ? ` (${slot.pros.map((p) => p.name).join(", ")})`
+          : slot?.professionalName
+            ? ` (${slot.professionalName})`
+            : "";
+      return `${i + 1}) ${time}${prosNames}`.trim();
+    })
+    .join("\n");
+}
+
+// ISO helper: usa toISOStringLocal se presente, altrimenti ISO standard
+function _toISO(dateLike) {
+  const d = dateLike instanceof Date ? dateLike : new Date(dateLike);
+  return typeof toISOStringLocal === "function"
+    ? toISOStringLocal(d)
+    : d.toISOString();
+}
+
+// Slot disponibili per (servizio, giorno, durata, professionista)
+// Ritorna array di stringhe 'HH:MM' ordinate
+async function _editFetchTimes({ service, day, duration, professionalEmail }) {
+  const list = await fetchSlots({
+    service,
+    day,
+    duration,
+    professional: professionalEmail || null,
+  });
+  const arr = Array.isArray(list) ? list.slice() : [];
+  return arr.sort(compareHHMM);
+}
+
+// Aggiorna "Nome: ..." nelle note dell'evento (sostituisce o aggiunge la riga)
+function _editComputeNewNotes(oldNotes, newName) {
+  const base = String(oldNotes || "").trim();
+  if (!newName) return base || "";
+  const line = `Nome: ${newName}`;
+  if (!base) return line;
+  if (/^Nome:\s*.*$/im.test(base)) {
+    return base.replace(/^Nome:\s*.*$/im, line).trim();
+  }
+  return (base + "\n" + line).trim();
+}
+
+/*
+ * Applica un aggiornamento all'evento (Calendar) e al bookings.json.
+ * - newStartISO: ISO string nuova data/ora (se null -> non cambia)
+ * - newProEmail: email nuovo professionista (se null -> non cambia)
+ * - newName: nuovo nome cliente (se null -> non cambia)
+ */
+async function _editApplyUpdate({
+  booking,
+  newStartISO = null,
+  newProEmail = null,
+  newName = null,
+  forceRecreate = false, // true = cancella vecchio evento e ne crea uno nuovo
+}) {
+  if (!booking?.eventId) return false;
+
+  const prev = {
+    startTime: booking.startTime,
+    professionalEmail: booking.professionalEmail || null,
+    professionalName: booking.professionalName || null,
+    customerName: booking.customerName || null,
+  };
+
+  const nextStartISO = newStartISO || booking.startTime;
+  const nextProEmail = newProEmail ?? booking.professionalEmail;
+
+  const nextNotes =
+    typeof booking.notes !== "undefined" || newName
+      ? _editComputeNewNotes(booking.notes, newName)
+      : booking.notes;
+
+  const nextDuration = _editDuration(booking);
+  const nextProName =
+    (nextProEmail &&
+      typeof proNameByEmail === "function" &&
+      proNameByEmail(nextProEmail)) ||
+    booking.professionalName ||
+    null;
+  const nextClientName = newName || booking.customerName || null;
+
+  const patch = {};
+  if (newStartISO) patch.startTime = nextStartISO;
+  if (newProEmail) {
+    patch.professionalEmail = newProEmail;
+    patch.professionalName = nextProName;
+  }
+  if (newName) patch.customerName = newName;
+  if (typeof nextNotes !== "undefined") patch.notes = nextNotes;
+
+  const shouldRecreate = !!(forceRecreate && newStartISO);
+
+  // ——— CASO 1: cambio data/ora con ricreazione evento (no duplicati) ———
+  if (shouldRecreate) {
+    let newEventId = booking.eventId;
+
+    // Cancella l'evento vecchio (se esiste ancora)
+    try {
+      await cancelEventSafe(booking.eventId);
+    } catch (e) {
+      try {
+        log("warn", "[EDIT] cancelEventSafe failed", e?.message || e);
+      } catch { }
+      // anche se fallisce la cancellazione, provo comunque a creare il nuovo evento
+    }
+
+    try {
+      const ev = await makeEvent({
+        serviceName: booking.service,
+        professionalEmail: nextProEmail,
+        professionalName: nextProName,
+        clientPhone: booking.clientPhone,
+        customerName: nextClientName,
+        startTime: nextStartISO,
+        durationMin: nextDuration,
+        notes: nextNotes,
+        price:
+          typeof cfgServicePriceText === "function"
+            ? cfgServicePriceText(booking.service)
+            : booking.price || null,
+        allergic: booking.allergic ?? null,
+        reminders: booking.reminders || [{ method: "popup", minutes: 1440 }],
+      });
+
+      newEventId = (ev && (ev.id || ev.eventId)) || booking.eventId;
+    } catch (e) {
+      try {
+        log("warn", "[EDIT] makeEvent failed", e?.message || e);
+      } catch { }
+      return false;
+    }
+
+    if (newEventId && newEventId !== booking.eventId) {
+      patch.eventId = newEventId;
+    }
+
+    updateBookingByEventId(booking.eventId, patch);
+
+    try {
+      const after = {
+        startTime: patch.startTime || prev.startTime,
+        professionalEmail: patch.professionalEmail || prev.professionalEmail,
+        professionalName: patch.professionalName || prev.professionalName,
+        customerName: patch.customerName || prev.customerName,
+      };
+      log("info", "[EDIT] booking updated (recreate)", {
+        oldEventId: booking.eventId,
+        newEventId,
+        before: prev,
+        after,
+      });
+    } catch { }
+
+    return true;
+  }
+
+  // ——— CASO 2: cambio solo pro/nome -> patch sullo stesso eventId ———
+  const ok = await updateEventSafe({
+    eventId: booking.eventId,
+    serviceName: booking.service,
+    professionalEmail: nextProEmail,
+    professionalName: nextProName,
+    clientPhone: booking.clientPhone,
+    clientName: nextClientName,
+    startTime: nextStartISO,
+    durationMin: nextDuration,
+    price: booking.price || null,
+    serviceDetails: nextNotes,
+    allergic: booking.allergic ?? null,
+    reminders: booking.reminders || [{ method: "popup", minutes: 1440 }],
+  });
+
+  if (!ok) {
+    try {
+      log("warn", "[EDIT] updateEventSafe failed", {
+        eventId: booking.eventId,
+        startTime: nextStartISO,
+        professionalEmail: nextProEmail || booking.professionalEmail,
+      });
+    } catch { }
+    return false;
+  }
+
+  updateBookingByEventId(booking.eventId, patch);
+
+  try {
+    const after = {
+      startTime: patch.startTime || prev.startTime,
+      professionalEmail: patch.professionalEmail || prev.professionalEmail,
+      professionalName: patch.professionalName || prev.professionalName,
+      customerName: patch.customerName || prev.customerName,
+    };
+    log("info", "[EDIT] booking updated", {
+      eventId: booking.eventId,
+      before: prev,
+      after,
+    });
+  } catch { }
+
+  return true;
+}
+
+// Riconosce domande informative (robusto anche senza "?")
+function looksLikeInfoQuestion(s) {
+  const q = norm(s || ""); // <— prima era toLowerCase(); ora normalizziamo accenti/apostrofi
+
+  // Domande informative (non contiene 'posto/disponibilità' per non rubare i casi slot)
+  const infoPat =
+    /\b(?:cos[’'` ]?e|cos[’'` ]?è|che\s+cosa|che\s+cos[’'` ]?e|come\s+funzion\w*|info(?:\s+su)?|informazioni?|spieg\w*|dettagl\w*|prezz\w*|costo\w*|tariff\w*|quanto\s+(?:dura|costa)|durata|cosa\s+serve|in\s+cosa\s+consist\w*|controindic\w*|effetti|benefici)\b/u;
+
+  const isQuestionish =
+    /[?？]\s*$/.test(q) ||
+    /\b(?:perch[eé]|come|cosa|che|quale|quando)\b/.test(q);
+
+  return infoPat.test(q) && isQuestionish;
+}
+
+// Ci sono step “critici” in cui NON interrompiamo con l’info (es. l’utente sta selezionando un numero)
+function isInCriticalStep(step) {
+  return [
+    "choose_service",
+    "choose_day", // <--- AGGIUNTO
+    "pick_time",
+    "pick_professional",
+    "ask_name",
+    "confirm_booking",
+    "price_select_service",
+    "info_select_service",
+  ].includes(step);
+}
+
+async function startEditTime(client, chatId) {
+  const phone = phoneFromChatId(chatId);
+  const bookings = getUserActiveBookingsAll(phone);
+  if (!bookings.length) {
+    return reply(
+      client,
+      chatId,
+      "Non ho trovato prenotazioni future col tuo numero."
+    );
+  }
+
+  const openTimeForBooking = async (booking) => {
+    const s = pending.get(chatId) || getState(chatId);
+    _editSnapshotStateFromBooking(s, booking); // << mente locale
+    const day = _editDayFromBooking(booking);
+    const duration = _editDuration(booking);
+    const pro = booking.professionalEmail || null;
+
+    try {
+      releaseSoftHoldByChat(chatId);
+    } catch { }
+
+    const slots = normalizeSlotsDetail(
+      await fetchSlots({
+        service: booking.service,
+        day,
+        duration,
+        professional: pro,
+        wantDetail: true,
+      })
+    );
+
+    if (!slots.length) {
+      const dateStr = typeof formatDateWithWeekdayIT === "function"
+        ? formatDateWithWeekdayIT(day)
+        : (typeof fmtDate === "function" ? fmtDate(day) : day.toLocaleDateString());
+      return reply(
+        client,
+        chatId,
+        `Non vedo orari liberi per ${dateStr} con il professionista attuale. Puoi cambiare data o professionista dal menu di modifica.`
+      );
+    }
+
+
+    s.step = "edit_reschedule_time";
+    s.edit = { target: booking, day };
+    s.collected = s.collected || {};
+    s.collected.options = slots;
+    pending.set(chatId, s);
+
+    // PATCH: rimosso elenco numerato degli orari, l'utente sceglie l'orario direttamente
+    const dateStr = typeof formatDateWithWeekdayIT === "function"
+      ? formatDateWithWeekdayIT(day)
+      : (typeof fmtDate === "function" ? fmtDate(day) : day.toLocaleDateString());
+    const lines = renderSlotsList(slots);
+    return reply(
+      client,
+      chatId,
+      `Orari disponibili per ${dateStr} (tengo il professionista attuale):\n${lines}\n\nScrivi l'orario desiderato (es. "14:30") o tocca l'orario mostrato.`
+    );
+  };
+
+  if (bookings.length === 1) {
+    return openTimeForBooking(bookings[0]);
+  }
+
+  // Più prenotazioni: scelgo quale, poi passo a edit_reschedule_time con quel booking
+  return startEditChooseBooking(
+    client,
+    chatId,
+    bookings,
+    "edit_reschedule_time"
+  );
+}
+
+async function startEditProfessional(client, chatId) {
+  const phone = phoneFromChatId(chatId);
+  const bookings = getUserActiveBookingsAll(phone);
+  if (!bookings.length)
+    return reply(
+      client,
+      chatId,
+      "Non ho trovato prenotazioni future col tuo numero."
+    );
+
+  if (bookings.length === 1) {
+    const booking = bookings[0];
+    const pros = cfgServiceProfessionals(booking.service)
+      .map((x) => x.name)
+      .filter(Boolean);
+    if (!pros.length)
+      return reply(
+        client,
+        chatId,
+        "Non ho professionisti associati a questo servizio."
+      );
+    const s = pending.get(chatId) || getState(chatId);
+    _editSnapshotStateFromBooking(s, booking); // << mente locale
+    s.step = "edit_pick_professional";
+    s.edit = { target: booking, proOptions: pros };
+    pending.set(chatId, s);
+
+    const list =
+      "0) Non mi interessa\n" + pros.map((p, i) => `${i + 1}) ${p}`).join("\n");
+    return reply(
+      client,
+      chatId,
+      `Scegli il professionista:\n${list}\n(0-${pros.length})`
+    );
+  }
+
+  return startEditChooseBooking(
+    client,
+    chatId,
+    bookings,
+    "edit_pick_professional"
+  );
+}
+
+async function startEditName(client, chatId) {
+  const phone = phoneFromChatId(chatId);
+  const bookings = getUserActiveBookingsAll(phone);
+  if (!bookings.length)
+    return reply(
+      client,
+      chatId,
+      "Non ho trovato prenotazioni future col tuo numero."
+    );
+
+  if (bookings.length === 1) {
+    const booking = bookings[0];
+    const s = pending.get(chatId) || getState(chatId);
+    _editSnapshotStateFromBooking(s, booking); // << mente locale
+    s.step = "edit_change_name";
+    s.edit = { target: booking };
+    pending.set(chatId, s);
+
+    return reply(
+      client,
+      chatId,
+      "Scrivi il nuovo nome e cognome per la prenotazione."
+    );
+  }
+
+  return startEditChooseBooking(client, chatId, bookings, "edit_change_name");
+}
+
+// ========= Heuristics di intent (semplici ma robusti) =========
+function hasBookingVerb(s) {
+  s = norm(s || "");
+  return /\b(prenot|appunt|fiss|riserv|disponibil|spost|cancell|modific|posto|quando\s+(?:avete|hai|c'e))\w*/i.test(s);
+  // ✅ Aggiunto: "posto", "quando avete", "quando hai"
+}
+function hasDateOrTime(s) {
+  s = String(s || "");
+  return (
+    /\b(oggi|domani|dopodomani|settimana\s+prossima)\b/i.test(s) || // parole chiave
+    /\b([0-3]?\d)[\/\-]([01]?\d)(?:[\/\-](\d{2,4}))?\b/.test(s) || // 21/10[/2025]
+    /\b(?:alle\s*)?([01]?\d|2[0-3])[:\.]([0-5]\d)\b/i.test(s) // 10:30 / alle 9.00
+  );
+}
+function scoreInfoIntent(txt) {
+  const s = norm(txt || "");
+  let score = 0;
+  if (/[?？]\s*$/.test(txt)) score += 1;
+  if (
+    /\b(?:cos[’'` ]?e|cos[’'` ]?è|che\s+cosa|come\s+funzion\w*|informazioni?|info|spieg\w*|dettagl\w*|controindic\w*|fa\s+male|benefici|effetti)\b/.test(
+      s
+    )
+  )
+    score += 2;
+  if (/\b(prezz|costo|listino|tariff|quanto\s+cost)\w*/.test(s)) score += 2; // prezzi = info
+  return score;
+}
+function scoreBookingIntent(txt) {
+  let score = 0;
+  const s = norm(txt || "");
+  if (hasBookingVerb(s)) score += 2;
+  if (hasDateOrTime(s)) score += 1;
+  if (parseHHMM(s)) score += 1;
+  if (safeParseDateWithLock(s)) score += 1;
+  return score;
+}
+function primaryIntent(txt) {
+  const si = scoreInfoIntent(txt);
+  const sb = scoreBookingIntent(txt);
+  if (si >= sb + 1) return "info";
+  if (sb >= si + 1) return "appointment";
+  if (si === sb && /[?？]/.test(txt)) return "info"; // pareggio: domanda -> info
+  return null;
+}
+
+// ========= parseAvailabilityRequest (minimale, safe) =========
+function parseAvailabilityRequest(text) {
+  const t = norm(text || "");
+  const out = { kind: null };
+
+  // giorno singolo: oggi/domani/dopodomani
+  if (/\boggi\b/.test(t) || /\bdomani\b/.test(t) || /\bdopodomani\b/.test(t)) {
+    const d = safeParseDateWithLock(t);
+    if (d) {
+      out.kind = "day";
+      out.date = d;
+    }
+  }
+
+  // GG/MM(/YYYY) o "il 21"
+  if (!out.kind) {
+    const m1 = t.match(/\b([0-3]?\d)[\/\-]([01]?\d)(?:[\/\-](\d{2,4}))?\b/);
+    if (m1) {
+      const dd = +m1[1],
+        mm = +m1[2],
+        yy = m1[3] ? +m1[3] : new Date().getFullYear();
+      out.kind = "day";
+      out.date = new Date(yy, mm - 1, dd, 12, 0, 0, 0);
+    } else {
+      const m2 = t.match(/\bil\s+([1-9]|[12]\d|3[01])\b/);
+      if (m2) {
+        const dd = +m2[1];
+        const now = new Date();
+        out.kind = "day";
+        out.date = new Date(now.getFullYear(), now.getMonth(), dd, 12, 0, 0, 0);
+      }
+    }
+  }
+
+  // settimana prossima
+  if (!out.kind && /\bsettimana\s+prossima\b/.test(t)) {
+    out.kind = "next_week";
+  }
+
+  // mese: "a dicembre", "dic", ecc. (anno auto-forward se mese già passato)
+  if (!out.kind) {
+    const m = t.match(
+      /\b(gen(?:naio)?|feb(?:braio)?|mar(?:zo)?|apr(?:ile)?|mag(?:gio)?|giu(?:gno)?|lug(?:lio)?|ago(?:sto)?|set(?:tembre)?|ott(?:obre)?|nov(?:embre)?|dic(?:embre)?)\b/i
+    );
+    if (m) {
+      const map = {
+        gen: 0,
+        gennaio: 0,
+        feb: 1,
+        febbraio: 1,
+        mar: 2,
+        marzo: 2,
+        apr: 3,
+        aprile: 3,
+        mag: 4,
+        maggio: 4,
+        giu: 5,
+        giugno: 5,
+        lug: 6,
+        luglio: 6,
+        ago: 7,
+        agosto: 7,
+        set: 8,
+        settembre: 8,
+        ott: 9,
+        ottobre: 9,
+        nov: 10,
+        novembre: 10,
+        dic: 11,
+        dicembre: 11,
+      };
+      const key = m[1].toLowerCase();
+      const idx = map[key];
+      if (idx != null) {
+        const now = new Date();
+        let year = now.getFullYear();
+        if (idx < now.getMonth()) year++; // se è già passato -> anno prossimo
+        out.kind = "month";
+        out.year = year;
+        out.monthIdx = idx;
+      }
+    }
+  }
+
+  if (out.kind) {
+    // finestra "mattina/pomeriggio/sera"
+    const win = parseDaypartWindow(text);
+    if (win) out.window = win;
+
+    // vincoli "dopo/prima"
+    const afterM = t.match(/\b(?:dopo|dalle)\s+([0-2]?\d(?::[0-5]\d)?)\b/);
+    if (afterM)
+      out.after =
+        afterM[1].length === 1
+          ? `0${afterM[1]}:00`
+          : afterM[1].includes(":")
+            ? afterM[1]
+            : `${afterM[1]}:00`;
+    const beforeM = t.match(
+      /\b(?:prima|entro)\s+(?:le\s*)?([0-2]?\d(?::[0-5]\d)?)\b/
+    );
+    if (beforeM)
+      out.before =
+        beforeM[1].length === 1
+          ? `0${beforeM[1]}:00`
+          : beforeM[1].includes(":")
+            ? beforeM[1]
+            : `${beforeM[1]}:00`;
+  }
+
+  return out.kind ? out : null;
+}
+
+// ===================== HYBRID INTENT (regex + fuzzy) =====================
+// === INTENT HYBRID PATTERNS — versione corretta ===
+const HYBRID_PATTERNS = {
+  booking: {
+    // Verbi/indizi di nuova prenotazione
+    regex:
+      /\b(prenota(?:re)?|volevo\s+prenotare|vorrei\s+prenotare|voglio\s+prenotare|mi\s+serve\s+prenotare|fissa(?:re)?\s+(?:un\s+)?appuntamento|metti(?:\s+un)?\s+appuntamento|blocca(?:re)?\s+un\s+posto)\b/iu,
+    weight: 6,
+  },
+  // ... lascia invariati gli altri (ma se vedi "..." rimuovili allo stesso modo)
+};
+
+// tokenizzazione “semplice” coerente con il resto
+function tokens(s) {
+  return simpleNorm(String(s || ""))
+    .split(" ")
+    .filter(Boolean);
+}
+
+// similarità Levenshtein normalizzata (0..1)
+function simRatio(a, b) {
+  a = simpleNorm(a);
+  b = simpleNorm(b);
+  if (!a || !b) return 0;
+  const d = levenshtein(a, b);
+  const m = Math.max(a.length, b.length);
+  return m ? 1 - d / m : 0;
+}
+
+// fuzzy “contains”: verifica copertura token + finestra scorrevole
+function fuzzyContains(
+  text,
+  phrase,
+  { minRatio = 0.82, minCoverage = 0.66 } = {}
+) {
+  const T = simpleNorm(text);
+  const P = simpleNorm(phrase);
+  if (!T || !P) return false;
+  if (T.includes(P)) return true;
+
+  const tt = tokens(T),
+    pp = tokens(P);
+  if (!pp.length) return false;
+
+  // 1) copertura token: quanti token della frase compaiono nel testo
+  const setT = new Set(tt);
+  const covered = pp.filter((tok) => setT.has(tok)).length / pp.length;
+  if (covered >= minCoverage) return true;
+
+  // 2) finestra scorrevole: confronta stringhe di pari lunghezza (±1) con Levenshtein ratio
+  const lens = [pp.length, Math.max(1, pp.length - 1), pp.length + 1];
+  for (const L of lens) {
+    if (L > tt.length) continue;
+    for (let i = 0; i + L <= tt.length; i++) {
+      const win = tt.slice(i, i + L).join(" ");
+      if (simRatio(win, P) >= minRatio) return true;
+    }
+  }
+  return false;
+}
+
+function hasAnyRegex(s, arr) {
+  return arr.some((re) => re.test(s));
+}
+function fuzzyAny(text, phrases, opts) {
+  return phrases.some((p) => fuzzyContains(text, p, opts));
+}
+
+// Segnali extra già presenti nel file
+function hasAnyDateOrTime(text) {
+  return hasDateOrTime(text) || !!parseHHMM(text) || !!safeParseDateWithLock(text);
+}
+
+// -------------- INTENT PRINCIPALE (ibrido) ----------------
+function intentByHybrid(t) {
+  const text = (t || "").toLowerCase();
+
+  const scores = { booking: 0, edit: 0, cancel: 0, info: 0 };
+
+  for (const key of Object.keys(HYBRID_PATTERNS)) {
+    const { regex, weight } = HYBRID_PATTERNS[key];
+    if (regex.test(text)) scores[key] += weight;
+  }
+
+  // Penalizza conflitti: se c'è forte booking, riduci edit/cancel "deboli"
+  if (scores.booking >= 6) {
+    scores.edit = Math.max(0, scores.edit - 4);
+    scores.cancel = Math.max(0, scores.cancel - 5);
+  }
+
+  // Evita che la sola parola "prenotazione/appuntamento" (senza verbi) faccia scattare edit/cancel
+  // Nota: i regex di edit/cancel già richiedono verbi d'azione, ma teniamo una rete di sicurezza.
+  const onlyGenericAppWord =
+    /\b(appuntamento|prenotazione|appunt|prenot)\w*\b/iu.test(text) &&
+    !/\b(modifica|sposta|cambia|posticipa|anticipa|aggiorna|annulla|cancella|disdici|disdire|elimina|togli|rimuovi)\b/iu.test(
+      text
+    ) &&
+    !/\b(prenota|fissa|metti|blocca|mi\s+prenoti|vorrei\s+prenotare|voglio\s+prenotare)\b/iu.test(
+      text
+    );
+
+  if (onlyGenericAppWord) {
+    // Non permettere che l’heuristica vada su edit/cancel senza verbi chiari
+    scores.edit = 0;
+    scores.cancel = 0;
+  }
+
+  // Scegli il max
+  let label = "other";
+  let max = -1;
+  for (const [k, v] of Object.entries(scores)) {
+    if (v > max) {
+      max = v;
+      label = k;
+    }
+  }
+
+  // Soglia minima: se tutto è debole, prova booking quando compaiono service/date/ora
+  if (max < 3) {
+    if (
+      /\b(prenota|fissa|metti|mi\s+prenoti|vorrei\s+prenotare|voglio\s+prenotare)\b/iu.test(
+        text
+      )
+    ) {
+      label = "booking";
+    }
+  }
+
+  return { label, scores };
+}
+function hasFutureBookingsForPhone(phone) {
+  try {
+    const all = readJSON("bookings.json", []);
+    const now = Date.now();
+    return all.some((b) => {
+      const p = (b.phone || b.clientPhone || b.client_phone || "").replace(
+        /\D+/g,
+        ""
+      );
+      const when = new Date(
+        b.start || b.startTime || b.start_date || b.when || 0
+      ).getTime();
+      return p.endsWith(phone.replace(/\D+/g, "")) && when && when >= now;
+    });
+  } catch {
+    return false;
+  }
+}
+
+// === Drop-in helpers per etichette professionisti negli slot ===
+
+// "Melissa Granati" -> "Melissa G." / "Melissa" -> "Melissa"
+/**
+ * The function proShort takes a name as input, trims any whitespace, splits the name into parts, and
+ * returns the first part followed by the first letter of the last part with a period.
+ * @param name - The `proShort` function takes a `name` parameter as input. It processes the input name
+ * by trimming any leading or trailing whitespace, splitting it into parts based on whitespace, and
+ * then returning a shortened version of the name.
+ * @returns The function `proShort` takes a name as input, processes it, and returns a shortened
+ * version of the name. If the input is empty or only whitespace, an empty string is returned. If the
+ * input contains only one word, that word is returned. If the input contains multiple words, the
+ * function returns the first word followed by the first letter of the last word, capitalized, and a
+ * period
+ */
+function proShort(name) {
+  const s = String(name || "").trim();
+  if (!s) return "";
+  const parts = s.split(/\s+/).filter(Boolean);
+  if (parts.length === 1) return parts[0];
+  const last = parts[parts.length - 1];
+  const iniz = last[0] ? last[0].toUpperCase() : "";
+  return `${parts[0]} ${iniz}.`;
+}
+
+function normalizeSlotsDetail(raw) {
+  const list = Array.isArray(raw)
+    ? raw
+    : Array.isArray(raw?.slots)
+      ? raw.slots
+      : Array.isArray(raw?.times)
+        ? raw.times
+        : [];
+
+  const toHHMM = (v) => {
+    if (!v) return null;
+
+    if (v instanceof Date) {
+      const hh = String(v.getHours()).padStart(2, "0");
+      const mm = String(v.getMinutes()).padStart(2, "0");
+      return `${hh}:${mm}`;
+    }
+
+    const s = String(v).trim();
+    const m = s.match(/(\d{1,2})\s*[:.]\s*(\d{1,2})/);
+    if (!m) return null;
+
+    const hh = parseInt(m[1], 10);
+    const mm = parseInt(m[2], 10);
+    if (!Number.isFinite(hh) || !Number.isFinite(mm)) return null;
+    if (hh < 0 || hh > 23 || mm < 0 || mm > 59) return null;
+
+    return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
+  };
+
+  const normPro = (p) => {
+    if (!p) return null;
+    if (typeof p === "string") return { name: p, email: p };
+    if (typeof p !== "object") return null;
+
+    const name =
+      p.name || p.displayName || p.fullName || p.label || p.title || "";
+    const email = p.email || p.mail || p.id || p.value || null;
+
+    if (!name && !email) return null;
+    return { name: name || email || "—", email: email || null };
+  };
+
+  const byTime = new Map(); // "HH:MM" -> {time, pros:[]}
+
+  const add = (time, pros) => {
+    if (!time) return;
+    const cur = byTime.get(time) || { time, pros: [] };
+
+    if (Array.isArray(pros) && pros.length) {
+      const seen = new Set(
+        cur.pros.map((x) => String(x.email || x.name || "").toLowerCase())
+      );
+      for (const p of pros) {
+        const key = String(p.email || p.name || "").toLowerCase();
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        cur.pros.push(p);
+      }
+    }
+
+    byTime.set(time, cur);
+  };
+
+  for (const item of list) {
+    if (typeof item === "string") {
+      add(toHHMM(item), []);
+      continue;
+    }
+    if (item && typeof item === "object") {
+      const time = toHHMM(
+        item.time ?? item.hhmm ?? item.startTime ?? item.start ?? item.slot
+      );
+      let pros = item.pros ?? item.professionals ?? item.availablePros ?? [];
+      if (!Array.isArray(pros)) pros = [];
+      pros = pros.map(normPro).filter((p) => p && p.name);
+      add(time, pros);
+    }
+  }
+
+  return Array.from(byTime.values()).sort((a, b) =>
+    a.time.localeCompare(b.time)
+  );
+}
+
+// Normalizza oggetto professionista accettando stringhe o oggetti vari
+function normalizePro(p) {
+  if (!p) return { name: "", email: "" };
+  if (typeof p === "string") {
+    if (p.includes("@")) {
+      // prova a risolvere il nome leggibile se disponibile
+      const nice =
+        (typeof proNameByEmail === "function" ? proNameByEmail(p) : "") || p;
+      return { name: nice, email: p };
+    }
+    return { name: p, email: "" };
+  }
+  const email = String(p.email || "").trim();
+  const name =
+    String(p.name || "").trim() ||
+    (email && typeof proNameByEmail === "function"
+      ? proNameByEmail(email)
+      : "") ||
+    email;
+  return { name, email };
+}
+/**
+ * The function `labelProsForSlot` takes an item object, extracts an array of pros, shortens their
+ * names, and returns a formatted string with a summary of the pros.
+ * @param item - It looks like the `labelProsForSlot` function is designed to process an `item` object
+ * that contains a property called `pros`, which is expected to be an array of objects. The function
+ * checks if `item.pros` is an array, and if so, it extracts the names
+ * @returns The `labelProsForSlot` function returns a string that represents the pros of an item. If
+ * the item has pros, it will format and return them as a string. If there are more than 2 pros, it
+ * will display the first two pros followed by a count of the remaining pros. If there are no pros or
+ * an error occurs, an empty string will be returned.
+ */
+
+
+function labelProsForSlot(item) {
+  try {
+    const pros = Array.isArray(item?.pros) ? item.pros : [];
+    if (!pros.length) return "";
+    const names = pros.map((p) => proShort(p?.name || ""));
+    if (names.length <= 2) return names.filter(Boolean).join(", ");
+    const head = names.slice(0, 2).filter(Boolean).join(", ");
+    return `${head} +${names.length - 2}`;
+  } catch {
+    return "";
+  }
+}
+
+async function askInfoWhichService(client, chatId, state, col) {
+  const svcs = cfgServices();
+  col.infoOptions = svcs;
+  state.step = "info_select_service";
+  pending.set(chatId, state); // aggiorna lo stato
+
+  await reply(
+    client,
+    chatId,
+    `Su quale trattamento vuoi informazioni?\n${svcs
+      .map((s, i) => `${i + 1}) ${s}`)
+      .join("\n")}\n(1-${svcs.length})`
+  );
+  return ""; // per coerenza con handleMessage
+}
+function parseDurationEnv({
+  msVar = "OLLAMA_KEEP_ALIVE_MS",
+  anyVar = "OLLAMA_KEEP_ALIVE",
+  def = "5m",
+} = {}) {
+  const raw = (process.env[anyVar] ?? process.env[msVar] ?? "")
+    .toString()
+    .trim();
+  if (!raw) return def; // default
+  if (/^\d+$/.test(raw)) return `${raw}ms`; // numero nudo -> millisecondi
+  if (/^\d+\s*(ns|us|µs|ms|s|m|h)$/i.test(raw)) return raw; // già con unità
+  console.warn(`[OLLAMA] durata non valida "${raw}", uso default ${def}`);
+  return def;
+} //
+
+/**
+ * The function `creaEInviaSticker` asynchronously creates and sends a sticker using a provided image
+ * file in a specified chat.
+ * @param client - The `client` parameter in the `creaEInviaSticker` function is typically an instance
+ * of a WhatsApp client library that allows you to interact with the WhatsApp API programmatically.
+ * This client is used to send the sticker to a specific chat identified by `chatId`.
+ * @param chatId - The `chatId` parameter in the `creaEInviaSticker` function represents the unique
+ * identifier of the chat or conversation where you want to send the sticker. It is typically a string
+ * that identifies a specific chat or recipient within the messaging platform or application you are
+ * using.
+ * @param immagine - The `immagine` parameter in the `creaEInviaSticker` function represents the path
+ * to the image file that you want to convert and send as a sticker. It is the file path where the
+ * image is located on your filesystem. Make sure to provide the correct path to the image
+ */
+async function creaEInviaSticker(client, chatId, immagine) {
+
+  const mimeType = 'image/jpeg'; // Adatta il tipo MIME al tuo file (es. image/png)
+
+  // 2. Leggi il file e convertilo in Base64
+  const mediaData = fsSync.readFileSync(immagine);
+
+  // 3. Crea la stringa Data URI (fondamentale per wa-automate-nodejs)
+  const imageBase64 = `data:${mimeType};base64,${mediaData.toString('base64')}`;
+
+  // 4. (Opzionale) Definisci i metadati dello sticker
+  const opzioniSticker = {
+    author: 'synkris',      // Nome dell'autore
+    pack: 'stickers!!', // Nome del pacchetto
+    keepScale: true,           // Mantiene la scala originale (utile per non tagliarla)
+    // Se vuoi uno sticker circolare, usa: circle: true
+  };
+
+  // 5. Invia lo sticker
+  try {
+    await client.sendImageAsSticker(
+      chatId,
+      imageBase64,
+      opzioniSticker // Passa le opzioni
+    );
+    console.log(`Sticker inviato con successo a: ${chatId}`);
+  } catch (e) {
+    console.error('Errore durante l\'invio dello sticker:', e);
+  }
+}
+
+// ======================= Gestione messaggi (WhatsApp) =======================ì
+export async function handleMessage(client, chatId, textRaw, tools = {}) {
+  try {
+    let state = getState(chatId);
+    await greetIfReturningUser(chatId, client, state);
+
+    try {
+      if (typeof textRaw === "string" && textRaw.trim()) {
+        const q = textRaw.trim();
+        // pattern ampio per catturare domande tipo "quali sono i vostri trattamenti", "listino", "prezzi", "quanto costa", ecc.
+        const listinoRE = /\b(listin(?:o|i)|listino prezzi|prezzi|prezzo|costo|quanto (?:costa|costano)|tariff(?:a|e)|quali (?:sono|avete) (?:i )?(?:trattamenti|servizi)|che trattamenti avete|cosa offrite|mostrami i (?:trattamenti|servizi))\b/i;
+        // evita di interrompere step critici (es. scelta orario/professionista/edit)
+        if (listinoRE.test(q) && !(typeof state.step === "string" && isInCriticalStep(state.step))) {
+          const svcs = cfgServices() || [];
+          if (!svcs.length) {
+            await reply(client, chatId, "⚠️ Nessun trattamento configurato. Contatta il salone.");
+            return "";
+          }
+          const lines = svcs.map((svc) => {
+            const item = cfgServiceItem(svc) || {};
+            const emoji = item.emoji || item.icon || item.emoticon || "";
+            const label = item.label || svc;
+            const price = cfgServicePriceText(svc);
+            const dur = cfgServiceDuration(svc);
+            return `${emoji ? emoji + " " : ""}${label}: ${price} (durata ${dur} min)`;
+          });
+          const header = "💆‍♀️ Listino trattamenti:\n\n";
+          await reply(client, chatId, header + lines.join("\n"));
+          return "";
+        }
+      }
+    } catch (err) {
+      // fall-back non invasivo: log ed esci dal blocco senza interrompere il flusso
+      try { log("warn", "[LISTINO] errore rilevamento listino", err?.message || err); } catch { }
+    }
+
+    // === GESTIONE RINGRAZIAMENTI ===
+    if (textRaw && /^(grazie|grazie mille|grazie infinite|ti ringrazio|grazie di tutto|thanks?|thank you|thx)[\s!.]*/i.test(textRaw.trim())) {
+      await reply(client, chatId, "Grazie a te per aver usato synkris! 😊");
+      return "";
+    }
+    // === GESTIONE SALUTI DI APERTURA ===
+    if ((textRaw && /^(ciao|buongiorno|buonasera|buon\s+giorno|buona\s+sera|salve|hey|ehi|hi|hello)[\s!.]*/i.test(textRaw.trim())) && state === "collect") {
+      // ✅ PATCH: Aggiungiamo $ per match ESATTO (solo saluto, nient'altro)
+      await reply(
+        client,
+        chatId,
+        'Ciao! 👋 Benvenuto da The Beautiful Room, sono _synkris_!\n\nCome posso aiutarti oggi?\n• Scrivi "_*prenota*_" per un nuovo appuntamento\n• Scrivi "_*modifica*_" per gestire una prenotazione esistente\n'
+      );
+      //  return "";
+    }
+
+    // ✅ NUOVO: Se il messaggio contiene sia saluto CHE parole chiave di prenotazione, continua
+    const hasGreeting = /\b(ciao|buongiorno|buonasera|salve|hey|hi|hello)\b/i.test(textRaw);
+    const hasBookingIntent = /\b(prenot|appunt|fiss|riserv|disponibil|posto|quando\s+avete)\w*/i.test(textRaw);
+
+    if (hasGreeting && hasBookingIntent) {
+      // Rimuovi il saluto e processa il resto come richiesta di prenotazione
+      const cleanedText = textRaw.replace(/^(ciao|buongiorno|buonasera|buon\s+giorno|buona\s+sera|salve|hey|ehi|hi|hello)[,!\s]*/i, '').trim();
+
+      // Continua con il flusso normale (non fare return, lascia che il codice proceda)
+      // Il parsing del servizio e della data verrà gestito dalle sezioni successive
+    }
+
+    // === GESTIONE SCUSE ===
+    if (textRaw && /^(scusa|scusami|mi scuso|perdon[ao]|sorry)[\s!.]*$/i.test(textRaw.trim())) {
+      const responses = [
+        "Nessun problema! 😊",
+        "Tranquillo/a, tutto ok! 👍",
+        "Non ti preoccupare! 🙂"
+      ];
+      const randomResponse = responses[Math.floor(Math.random() * responses.length)];
+      await reply(client, chatId, randomResponse);
+      // return "";
+    }
+
+    // === GESTIONE COMPLIMENTI ===
+    if (textRaw && /^(bravo|brava|ottimo|perfetto|fantastico|bene|ben fatto|complimenti)[\s!.]*$/i.test(textRaw.trim())) {
+      const responses = [
+        "Grazie mille! 😊",
+        "Sono felice di aiutarti! 🌟",
+        "Grazie, è un piacere! ❤️"
+      ];
+      const randomResponse = responses[Math.floor(Math.random() * responses.length)];
+      await reply(client, chatId, randomResponse);
+      return "";
+    }
+    // === GESTIONE ESPRESSIONI DI FRUSTRAZIONE ===
+    if (textRaw && /^(boh|mah|non lo so|che palle|mannaggia)[\s!.]*/i.test(textRaw.trim())) {
+      await reply(
+        client,
+        chatId,
+        'Capisco che possa essere frustrante 😅\nSe hai dubbi, scrivi "aiuto" e ti guiderò passo passo!'
+      );
+      return "";
+    }
+
+    // === GESTIONE DOMANDE SULLO STATO ===
+    if (textRaw && /^(ci sei|ci sei\?|sei là|hello\?)[\s!.]*/i.test(textRaw.trim())) {
+      await reply(client, chatId, "Sì, sono qui! 👋 Come posso aiutarti?");
+      return "";
+    }
+
+    // === GESTIONE RICHIESTE DI CONTATTO DIRETTO ===
+    if (textRaw && /^(numero|telefono|chiamare|contatto diretto|parlare con qualcuno)[\s!.]*/i.test(textRaw.trim())) {
+      await reply(
+        client,
+        chatId,
+        '📞 Puoi chiamarci al numero: +393534043794 \n\nOppure continua a chattare con me per prenotare! 😊'
+      );
+      return "";
+    }
+    // === GESTIONE "VA BENE" / "OK" ===
+    if (textRaw && /^(okay|va bene|d'?accordo|perfetto|ok)[\s!.]*$/i.test(textRaw.trim())) {
+      await reply(client, chatId, "Perfetto! Se hai bisogno di altro, sono qui 😊");
+      return "";
+    }
+
+    // === GESTIONE RICHIESTE DI AIUTO GENERICHE ===
+    if (textRaw && /^(aiuto|help|non capisco|cosa posso fare|come funziona)[\s!.]*/i.test(textRaw.trim())) {
+      await reply(
+        client,
+        chatId,
+        'Certo! Ecco cosa posso fare per te:\n\n📅 Prenotazioni:\n• Scrivi "prenota" per fissare un appuntamento\n• Scrivi "modifica" per cambiare una prenotazione\n\n📍 Informazioni:\n• Chiedi l\'indirizzo o gli orari\n• Chiedi info sui trattamenti\n\nCome posso aiutarti? 😊'
+      );
+      return "";
+    }
+    if (textRaw && /^(arrivederci|a presto|ci vediamo|buona giornata|buona serata|addio|bye|goodbye|see you)[\s!.]*$/i.test(textRaw.trim())) {
+      const responses = [
+        "Ciao! A presto! 👋",
+        "Arrivederci! 😊",
+        "Buona giornata! 🌟",
+        "A presto! 👋",
+        "Ci vediamo! 😊"
+      ];
+      const randomResponse = responses[Math.floor(Math.random() * responses.length)];
+      await reply(client, chatId, randomResponse);
+    }
+    // === LOCK semplice per chat (no ricorsioni) ===
+    while (__busyChats.has(chatId)) {
+      const since = __busySince.get(chatId) || 0;
+      if (since && Date.now() - since > BUSY_TTL_MS) {
+        log("warn", "[BUSY-STALL] force-release", { chatId, since, ttl: BUSY_TTL_MS });
+        __busyChats.delete(chatId);
+        __busySince.delete(chatId);
+        break;
+      }
+      await __delay(50);
+    }
+    // Acquisisci lock per questa chat (evita concorrenza)
+    __busyChats.add(chatId);
+    __busySince.set(chatId, Date.now());
+    if (inactivityClient === null) {
+      inactivityClient = client;
+    }
+    const text = String(textRaw ?? "").trim();
+    const msg = text; // safety alias per compatibilità con rami che usano "msg"
+    const lower = text.toLowerCase();
+
+
+    // Stato conversazione
+    state = getState(chatId);
+    state.collected ||= {};
+    state.context ||= {};
+    ensureContext(state);
+
+    try {
+      // Salva il messaggio utente nella cronologia (best effort)
+      try {
+        await appendUserMessage(chatId, text);
+      } catch (e) {
+        log("warn", "appendUserMessage failed", e?.message || e);
+      }
+
+      // Helper inline
+      const pureNumber = /^\s*\d+\s*[\).]?\s*$/; // numero isolato (es. "2", "2)")
+
+      // EDIT FLOW: mentre siamo in edit_* instradiamo a handleNumericReply anche se l'utente scrive testo
+      // (es. "data", "orario", "sì/no"), altrimenti cade nel flusso prenotazione e può rispondere
+      // "Quel posto è appena stato occupato".
+      if (typeof state.step === "string" && state.step.startsWith("edit_")) {
+        const isCancelMsg = /^(annulla|cancel|stop|fine)\b/i.test(text);
+        const isTextStep =
+          state.step === "edit_reschedule_date" ||
+          state.step === "edit_change_name";
+
+        // per edit_reschedule_date/edit_change_name deve restare in handleMessage (per parsare data/nome)
+        if (!isCancelMsg && !isTextStep) {
+          return await handleNumericReply(client, chatId, text, tools);
+        }
+      }
+
+      const t = norm(text);
+      // --- FUZZY SERVICE PICKER (usa sinonimi da config) ---
+
+      function bestServiceBySynonyms(raw) {
+        try {
+          const svcs =
+            (typeof cfgServices === "function" ? cfgServices() : []) || [];
+          if (!svcs.length) return null;
+
+          const N = (s) =>
+            (typeof norm === "function"
+              ? norm(String(s || ""))
+              : String(s || "").toLowerCase()
+            )
+              .replace(/[^\p{L}\p{N}\s]/gu, " ")
+              .replace(/\s+/g, " ")
+              .trim();
+
+          const msg = " " + N(raw) + " ";
+          let best = null,
+            bestScore = 0;
+
+          for (const svc of Array.isArray(svcs)
+            ? svcs
+            : Object.keys(config?.services || {})) {
+            const syns = (
+              typeof cfgServiceSynonyms === "function"
+                ? cfgServiceSynonyms(svc) || []
+                : (config &&
+                  config.services &&
+                  config.services[svc] &&
+                  config.services[svc].synonyms) ||
+                []
+            ).slice();
+
+            // includi anche il nome servizio come sinonimo
+            syns.unshift(svc);
+
+            // punteggio massimo per questo servizio
+            let svcBest = 0;
+
+            for (const s of syns) {
+              const cand = N(s);
+              if (!cand || cand.length < 3) continue;
+
+              const wrapped = " " + cand + " ";
+              let score = 0;
+
+              // (1) match frase intera
+              if (msg.includes(wrapped)) {
+                score = 1.0 + Math.min(cand.length / 40, 0.25); // preferisci sinonimi più specifici
+              } else {
+                // (2) copertura token (match di parole singole)
+                const toks = cand.split(" ").filter(Boolean);
+                let hit = 0;
+                for (const tk of toks) {
+                  if (tk.length < 3) continue;
+                  if (msg.includes(" " + tk + " ")) hit++;
+                }
+                const cover = hit / Math.max(1, toks.length); // 0..1
+                // bonus per continuità grossolana (2 token consecutivi trovati)
+                const twoGram = toks.some(
+                  (_, i) =>
+                    i < toks.length - 1 &&
+                    msg.includes(" " + toks[i] + " " + toks[i + 1] + " ")
+                );
+                const contBonus = twoGram ? 0.1 : 0;
+
+                // bonus per lunghezza termine
+                const lenBonus = Math.min(cand.length / 50, 0.15);
+
+                score = Math.max(score, 0.65 * cover + contBonus + lenBonus);
+              }
+
+              // tie-breaker per “corte” vs “lunghe”
+              if (/refill/.test(cand)) {
+                const longHint = /\b(lung|lungh|lunghe|lungo)\w*\b/i.test(raw);
+                const shortHint = /\b(cort|corte|corto)\w*\b/i.test(raw);
+                if (longHint && /lungh/i.test(N(svc))) score += 0.12;
+                if (shortHint && /cort/i.test(N(svc))) score += 0.12;
+              }
+
+              svcBest = Math.max(svcBest, score);
+            }
+
+            if (svcBest > bestScore) {
+              bestScore = svcBest;
+              best = svc;
+            }
+          }
+
+          // soglia minima per evitare falsi positivi troppo “deboli”
+          return bestScore >= 0.45 ? best : null;
+        } catch {
+          return null;
+        }
+      }
+
+      // --- INTAKE FREE-TEXT: estrae frammenti di prenotazione dal singolo messaggio ---
+      function parseIntake(raw) {
+        if (!raw) return null;
+        const out = {};
+        const txtNorm = (
+          typeof simpleNorm === "function"
+            ? simpleNorm
+            : (s) => String(s || "").toLowerCase()
+        )(raw);
+        const txtPad = " " + txtNorm + " ";
+        // 1) Servizio tramite nome o sinonimi (con punteggio)
+        try {
+          out.service =
+            bestServiceBySynonyms(raw) ||
+            (typeof fuzzyServiceSafe === "function"
+              ? fuzzyServiceSafe(raw)
+              : null) ||
+            undefined;
+        } catch { }
+
+        // 2) Giorno/data (oggi, domani, lunedì prossimo, tra 2 settimane, 23/10, ecc.)
+        try {
+          let d =
+            (typeof safeParseDateWithLock === "function"
+              ? safeParseDateWithLock(raw)
+              : null) ||
+            (typeof safeParseDateWithLock === "function" ? safeParseDateWithLock(raw) : null) ||
+            null;
+          if (!d && typeof safeParseDateWithLock === "function") {
+            const r = safeParseDateWithLock(raw);
+            if (r && r.date) d = r.date;
+          }
+          if (d) {
+            const at12 = typeof atNoon === "function" ? atNoon(d) : d;
+            if (!(typeof isPast === "function" && isPast(at12))) out.when = at12;
+          }
+        } catch { }
+
+        // 3) Orario (9, 9:30, 9.30, 9 e mezza, 10 meno un quarto, 0930, ecc.)
+        try {
+          const hhmm =
+            (typeof parseTimeSmart === "function" ? parseTimeSmart(raw) : null) ||
+            (typeof parseHHMM === "function" ? parseHHMM(raw) : null);
+          if (hhmm) out.time = hhmm;
+        } catch { }
+
+        // 4) Professionista (“con Diana / Melissa”, oppure “chiunque”)
+        try {
+          const anyRe =
+            /\b(chiunque|qualsiasi|va\s*bene\s*chiunque|non\s*mi\s*interessa)\b/i;
+          if (anyRe.test(raw)) {
+            out.professionalAny = true;
+          } else {
+            const list =
+              (out.service && typeof proCatalog === "function"
+                ? proCatalog(out.service)
+                : null) ||
+              Object.entries((config && config.professionals) || {}).map(
+                ([email, p]) => ({
+                  email,
+                  name: (p && p.name) || email,
+                })
+              );
+            const nrm = (
+              typeof simpleNorm === "function"
+                ? simpleNorm
+                : (s) => String(s || "").toLowerCase()
+            )(raw);
+            let best = null,
+              bestScore = 0;
+            for (const p of list) {
+              const nm =
+                typeof simpleNorm === "function"
+                  ? simpleNorm(p.name)
+                  : String(p.name || "").toLowerCase();
+              if (!nm) continue;
+              if ((" " + nrm + " ").includes(" " + nm + " ")) {
+                best = p;
+                bestScore = 1;
+                break;
+              }
+              if (nrm.includes(nm)) {
+                best = p;
+                bestScore = Math.max(bestScore, 0.95);
+              }
+            }
+            if (best && bestScore >= 0.95) {
+              out.professionalName = best.name;
+              out.professionalEmail = best.email || null;
+              out.professionalAny = false;
+            }
+          }
+        } catch { }
+
+        // 5) Se non ho estratto nulla, torna null
+        return Object.keys(out).length ? out : null;
+      }
+
+      // SHORT-CIRCUIT: risposta numerica da elenco (servizi, giorni, orari, menu edit, ecc.)
+      // NON instradare a handleNumericReply mentre si sta scegliendo il servizio "principale",
+      // altrimenti i numeri 1..N cadono in un ramo che non conosce i servizi -> (1-0).
+      if (pureNumber.test(msg)) {
+        const col = state.collected || (state.collected = {});
+
+        // ci sono opzioni numerate già proposte (slot, menu edit, ecc.)
+        const hasOptions = Array.isArray(col.options) && col.options.length > 0;
+
+        // step che prevedono esplicitamente una scelta da elenco numerato di servizi
+        const waitingService = [
+          "info_select_service",
+          "price_select_service",
+        ].includes(state.step);
+
+        // step iniziale di scelta servizio: qui NON vogliamo deviarti su handleNumericReply
+        const isChoosingService = !col.service && state.step === "choose_service";
+
+        const awaitingDay =
+          (state.availFlow && state.availFlow.awaiting === "day") ||
+          state.step === "choose_day";
+
+        const isEditFlow =
+          typeof state.step === "string" && state.step.startsWith("edit_");
+
+        // step numerici che DEVONO andare a handleNumericReply (es. scelta pro per uno slot specifico, menu edit, ecc.)
+        const inNumberedStep = [
+          "pick_professional_for_time",
+          "price_select_service",
+        ].includes(state.step);
+        if (state.step === "pick_professional" && !col.service) {
+          // ✅ Questo è il picker INIZIALE (prima di scegliere servizio)
+          // Il resto del flusso lo gestisce già correttamente handleMessage
+          // Non fare nulla qui, lascia che handleMessage processi la scelta
+          return handleMessage(client, chatId, text, tools);
+        }
+        // ✅ FIX: pick_professional DEVE essere gestito qui sotto in handleMessage, NON in handleNumericReply
+        const isPickProfessional = state.step === "pick_professional";
+
+        // NON instradare i numeri a handleNumericReply quando stiamo scegliendo il professionista principale
+        const shouldUseNumericHandler =
+          !isChoosingService &&
+          !isPickProfessional &&
+          (awaitingDay || hasOptions || waitingService || inNumberedStep || isEditFlow);
+
+        if (shouldUseNumericHandler) {
+          return await handleNumericReply(client, chatId, text, tools);
+        }
+      }
+
+      // --- FAST-PATH INTAKE: se l'utente scrive frasi tipo "voglio prenotare domani alle 9:30 manicure con Diana"
+      if (!pureNumber.test(text)) {
+        const col = state.collected || (state.collected = {});
+        if (!/^edit_/.test(state.step || "")) {
+          const intake = parseIntake(t);
+          if (intake) {
+            // unisci i pezzi trovati senza forzare passaggi non scelti
+            if (intake.service) col.service = col.service || intake.service;
+            if (intake.when) col.when = col.when || intake.when;
+            if (intake.time) col.time = col.time || intake.time;
+            if (intake.professionalAny) col.professionalAny = true;
+            if (intake.professionalName)
+              col.professionalName = intake.professionalName;
+            if (intake.professionalEmail)
+              col.professionalEmail = intake.professionalEmail;
+
+            // se abbiamo già servizio e pro indicato come "non mi interessa", salta direttamente alla scelta giorno
+            // Non andare mai a "pick_time" senza col.options popolato.
+            // Metti "pick_professional" se serve, altrimenti resta su "choose_day":
+            if (col.service && !state.step) {
+              if (
+                !col.professionalAny &&
+                !col.professionalName &&
+                !col.professionalEmail
+              ) {
+                state.step = "pick_professional";
+              } else {
+                state.step = "choose_day"; // il ramo "SCELTA DEL GIORNO" farà parsing e caricherà gli slot
+              }
+              pending.set(chatId, state);
+            }
+          }
+        }
+      }
+
+      // PATCH fuzzy: evita auto-selezione servizio poco sicura
+      const hasSvcToken = (q) => {
+        try {
+          const tokens = (cfgServices() || [])
+            .flatMap((s) => s.toLowerCase().split(/\W+/))
+            .filter((x) => x && x.length >= 4);
+          const nq = norm(q);
+          return tokens.some((tok) => nq.includes(norm(tok)));
+        } catch {
+          return false;
+        }
+      };
+      const fuzzyServiceSafe = (q) => {
+        const hit = typeof fuzzyService === "function" ? fuzzyService(q) : null;
+        if (!hit) return null;
+        const first =
+          typeof cfgServices === "function" ? cfgServices()[0] || null : null;
+        if (first && norm(hit) === norm(first) && !hasSvcToken(q)) return null;
+        return hit;
+      };
+
+      const phone =
+        typeof phoneFromChatId === "function" ? phoneFromChatId(chatId) : chatId;
+      log("info", "[HANDLE]", { chatId, text });
+
+      // CANCELLAZIONE GLOBALE
+      if (/^(annulla|cancel|stop|fine|esci)\b/i.test(t)) {
+        const st = pending.get(chatId);
+        if (st && /^edit_/.test(st.step)) {
+          pending.delete(chatId);
+          try {
+            releaseSoftHoldByChat(chatId);
+          } catch { }
+          await reply(
+            client,
+            chatId,
+            "✅ Ho chiuso la gestione dell’appuntamento. Nessuna modifica applicata."
+          );
+          return "";
+        }
+        if (st) unlockBooking(st);
+        pending.delete(chatId);
+        try {
+          releaseSoftHoldByChat(chatId);
+        } catch { }
+        if (getLang(chatId) === "en") {
+          await reply(
+            client,
+            chatId,
+            '✅ Operation canceled. If you want to start over, type "book" or "appointment".'
+          );
+        } else {
+          await reply(
+            client,
+            chatId,
+            '✅ Operazione annullata. Se vuoi ricominciare, scrivi "prenota" o "appuntamento".'
+          );
+        }
+        return "";
+      }
+
+      // Risposte rapide info (indirizzo, orari) se non in step critico
+      if (!isInCriticalStep(state.step)) {
+        const RE_ADDR =
+          /(indirizz[oi]|dove\s+(siete|vi\s+trovate)|mappa|google\s*maps|come\s+raggiungerci|ubicazion[ei]|posizion[ei])/i;
+        const RE_HOURS =
+          /(orari?|apert[oi]|chius[oi]|quando\s+(siete|siamo)\s+aperti|fino\s+a\s+che\s+ora)/i;
+        if (RE_ADDR.test(t)) {
+          const addr = (
+            config?.address ||
+            config?.addr ||
+            "Via Bosco, 44/a, 42019 Reggio Emilia RE"
+          ).trim();
+          return reply(
+            client,
+            chatId,
+            addr
+              ? `Ci trovi qui:\n${addr}\n`
+              : `Siamo in Via Bosco, 44/a, 42019 Reggio Emilia RE.`
+          );
+        }
+        if (RE_HOURS.test(t)) {
+          const hours = (config?.openingHours || config?.hours || "").trim();
+          return reply(
+            client,
+            chatId,
+            hours
+              ? `Orari di apertura:\n${hours}`
+              : `Orari tipici: Lun–Ven 9–19, Sab 9–13 (chiuso Dom).`
+          );
+        }
+      }
+
+      ensureContext(state);
+      // Guard: se flusso prenotazione bloccato e utente non annulla
+      if (isBookingLocked(state) && !isCancel) {
+        if (!isInCriticalStep(state.step) && state.step !== "collect") {
+          await safeSend(
+            client,
+            chatId,
+            '❌ Se non vuoi più prenotare, digita "annulla"\n Ho sbagliato a capire qualche info? Non temere! puoi sempre modificare digitando "_annulla_" per ripartire *da capo!*',
+            { noFooter: true }
+          );
+          return { ok: true, ignored: true };
+        }
+      }
+
+      let col = state.collected || (state.collected = {});
+      const setAndPersist = () => pending.set(chatId, state);
+
+      // --- safety: alcune ramificazioni usano `n` e `sNorm` senza dichiararli in ogni percorso
+      // dichiariamo qui valori di default per evitare ReferenceError
+      let n = NaN;
+      const sRaw = String(msg || "");
+      const sNorm = typeof norm === "function" ? norm(sRaw) : sRaw.toLowerCase().trim();
+
+      // --- INIZIO PATCH: interpreto "N" come N:00 per le liste orario ---
+      /**
+       * Condizione: abbiamo opzioni e sembrano tutte orari (stringhe o oggetti con .time)
+       * Se l'utente invia un numero puro (es. "10") proviamo a risolverlo come "10:00"
+       * e selezioniamo la prima opzione che corrisponde a quell'ora esatta (minuti === 0).
+       */
+      if (Array.isArray(col?.options) && col.options.length) {
+        const timeRe = /^\d{1,2}[:.]?\d{0,2}$/; // accetta "10", "10:00", "10.00", "1000"
+        const optionsLookLikeTimes = col.options.every(opt => {
+          const t = typeof opt === "string" ? opt : opt && (opt.time || "");
+          return typeof t === "string" && /^\s*\d{1,2}[:.]\d{2}\s*$/.test(t.trim()) || /^\s*\d{1,2}\s*$/.test(t.trim());
+        });
+
+        if (optionsLookLikeTimes && pureNumber.test(msg)) {
+          // normalizza l'input "10" -> 10, "09" -> 9
+          const hour = parseInt(String(msg).replace(/\D/g, ""), 10);
+          if (!Number.isFinite(hour) || hour < 0 || hour > 23) {
+            return safeSend(client, chatId, "Orario non valido. Scrivi un orario nel formato 9 o 9:00 o 09:00.");
+          }
+
+          // costruisci array di times normalizzati "HH:MM" dalle options
+          const normalized = col.options.map((opt, i) => {
+            const raw = typeof opt === "string" ? opt : (opt && (opt.time || ""));
+            const clean = String(raw).trim().replace(".", ":");
+            // se è solo "10" -> "10:00"
+            if (/^\d{1,2}$/.test(clean)) return { time: `${String(clean).padStart(2, "0")}:00`, idx: i };
+            if (/^\d{1,2}:\d{2}$/.test(clean)) {
+              const parts = clean.split(":");
+              return { time: `${String(parts[0]).padStart(2, "0")}:${parts[1]}`, idx: i };
+            }
+            return { time: null, idx: i };
+          }).filter(x => x.time);
+
+          // cerca la prima opzione con minuti === 00 e ora === hour
+          const match = normalized.find(x => {
+            const [h, m] = x.time.split(":").map(Number);
+            return h === hour && m === 0;
+          });
+
+          if (!match) {
+            // se non trovo esattamente N:00, avvisa l'utente (evitiamo il fallback a indice)
+            return safeSend(
+              client,
+              chatId,
+              `Non ho trovato disponibilità esatta per ${String(hour).padStart(2, "0")}:00. Scrivi l'orario completo (es. "10:00") o scegli un altro orario disponibile.`
+            );
+          }
+
+          // seleziona la corrispondente option e prosegui come per la selezione orario
+          let item = col.options[match.idx];
+          let time = match.time;
+          col.time = time;
+          col.selectedOptionIndex = match.idx; // opzionale, utile per debug/uso futuro
+
+          // salva stato e continua il flusso (re-enter)
+          pending.set(chatId, state);
+
+          if (typeof scheduleReenter === "function") {
+            await scheduleReenter(client, chatId, `ok ${time}`, tools);
+            return;
+          }
+          return handleMessage(client, chatId, `ok ${time}`, tools);
+        }
+      }
+      // --- FINE PATCH ---
+
+      // COMANDI VELOCI MODIFICA PRENOTAZIONE
+      if (
+        /^(modifica|cambia)\s+(data|giorno)\b/i.test(t) ||
+        /^\/data\b/i.test(t)
+      ) {
+        await startEditDate(client, chatId);
+        return "";
+      }
+      // === RESET FORZATO se l'utente sta chiaramente facendo una nuova richiesta ===
+      if (state.step && state.step.startsWith("edit_")) {
+        // Rileva frasi che indicano una NUOVA prenotazione, non una modifica
+        const newBookingIndicators = /\b(avresti\s+posto|prenotare|prenota|appuntamento|disponibilità)\b/i;
+
+        if (newBookingIndicators.test(t) && !wantsEditMenu(t)) {
+          // L'utente vuole fare una nuova prenotazione, non modificare quella vecchia
+          log("info", "[RESET] Utente esce dal menu edit per nuova prenotazione", { chatId, text });
+
+          // Pulisci lo stato edit
+          pending.delete(chatId);
+
+          try {
+            releaseSoftHoldByChat(chatId);
+          } catch { }
+
+          // Crea un nuovo stato pulito
+          state.step = "collect";
+          state.collected = {};
+          state.edit = null;
+          pending.set(chatId, state);
+
+          // Lascia che il messaggio venga elaborato come nuova prenotazione
+          // (il flusso continuerà normalmente sotto)
+        }
+      }
+      if (
+        /^(modifica|cambia)\s+(ora|orario)\b/i.test(t) ||
+        /^\/orario\b/i.test(t)
+      ) {
+        await startEditTime(client, chatId);
+        return "";
+      }
+      if (
+        /^(modifica|cambia)\s+(professionista|operatrice|operatore)\b/i.test(t) ||
+        /^\/pro(f)?\b/i.test(t)
+      ) {
+        await startEditProfessional(client, chatId);
+        return "";
+      }
+      if (
+        /^(modifica|cambia)\s+(nome|intestazione)\b/i.test(t) ||
+        /^\/nome\b/i.test(t)
+      ) {
+        await startEditName(client, chatId);
+        return "";
+      }
+      if (/^\/?modifica\b/i.test(t) || wantsEditMenu(t)) {
+        const phone = phoneFromChatId(chatId);
+        const bookings = getUserActiveBookingsAll(phone);
+
+        if (!bookings.length) {
+          if (state) unlockBooking(state);
+          pending.delete(chatId);
+          await reply(
+            client,
+            chatId,
+            "🤔 Non risulta alcuna prenotazione futura da modificare."
+          );
+          return "";
+        }
+
+        // Una sola prenotazione -> vai direttamente al menu di modifica
+        if (bookings.length === 1) {
+          const booking = bookings[0];
+          _editSnapshotStateFromBooking(state, booking);
+          state.step = "edit_menu";
+          state.edit = { target: booking };
+          pending.set(chatId, state);
+          await reply(client, chatId, showEditMenu(booking));
+          return "";
+        }
+
+        // Più prenotazioni -> chiedi quale gestire
+        await startEditChooseBooking(client, chatId, bookings, null);
+        return "";
+      }
+
+      // --- EDIT FLOW: gestione input testuale per modifica data / nome ---
+      if (state.step === "edit_reschedule_date") {
+        const booking = state.edit && state.edit.target;
+        if (!booking) {
+          pending.delete(chatId);
+          await reply(client, chatId, 'Sessione scaduta. Scrivi "modifica" per ripartire.');
+          return "";
+        }
+
+        // ✅ PATCH: Parsing data con validazione rafforzata
+        let newDay = null;
+        try {
+          newDay = _editParseNewDate ? _editParseNewDate(msg) : parseUnifiedDate(msg);
+        } catch (parseErr) {
+          log('error', '[EDIT_DATE] Parsing fallito', { input: msg, err: parseErr?.message });
+        }
+        if (!newDay) {
+          await reply(
+            client,
+            chatId,
+            'Non ho capito la data. Scrivi "oggi", "domani", "tra 7 giorni" oppure in formato GG/MM.'
+          );
+          return "";
+        }
+
+        // non permettere date nel passato (considera il giorno corrente come ammesso)
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const dayNormalized = new Date(newDay);
+        dayNormalized.setHours(0, 0, 0, 0);
+        if (dayNormalized < today) {
+          await reply(client, chatId, 'Quella data è già passata. Scrivi una data valida (es. "domani" o "12/12").');
+          return "";
+        }
+
+        // durata e professionista del booking attuale
+        const duration = _editDuration ? _editDuration(booking) : null;
+        const pro = booking.professionalEmail || null;
+
+        // libera eventuali soft-hold
+        try { releaseSoftHoldByChat(chatId); } catch (e) { }
+
+        // prendo gli slot per il giorno richiesto
+        const rawSlots = await fetchSlots({
+          service: booking.service,
+          day: typeof atNoon === "function" ? atNoon(dayNormalized) : dayNormalized,
+          duration,
+          professional: pro,
+          wantDetail: true,
+        });
+
+        const slots = (typeof normalizeSlotsDetail === "function" ? normalizeSlotsDetail(rawSlots) : rawSlots) || [];
+
+        if (!slots.length) {
+          const dateStr = typeof formatDateWithWeekdayIT === "function"
+            ? formatDateWithWeekdayIT(dayNormalized)
+            : (typeof fmtDate === "function" ? fmtDate(dayNormalized) : dayNormalized.toLocaleDateString());
+          pending.set(chatId, state);
+          return reply(client, chatId, `Non ci sono orari liberi per ${dateStr}. Prova un altro giorno.`);
+        }
+
+        // metto tutto nello stato e passo alla scelta orario (stesso flusso edit)
+        state.step = "edit_reschedule_time";
+        state.edit = state.edit || {};
+        state.edit.target = booking;
+        state.edit.day = dayNormalized;
+        state.collected = state.collected || {};
+        state.collected.options = slots;
+        pending.set(chatId, state);
+
+        const dateStr = typeof formatDateWithWeekdayIT === "function"
+          ? formatDateWithWeekdayIT(dayNormalized)
+          : (typeof fmtDate === "function" ? fmtDate(dayNormalized) : dayNormalized.toLocaleDateString());
+        const lines = typeof renderSlotsList === "function" ? renderSlotsList(slots) : (slots || []).join("\n");
+
+        return reply(
+          client,
+          chatId,
+          `📅 Disponibilità per ${dateStr}:\n${lines}\n\n💬 Scrivi l'orario desiderato (es. "14:30", "14.30" oppure "alle 14").\nSe vuoi cambiare ancora giorno, scrivi la nuova data. Digita "annulla" per uscire.`
+        );
+      }
+      // --- FINE PATCH: edit_reschedule_date ---
+
+
+      if (state.step === "edit_change_name") {
+        const booking = state.edit && state.edit.target;
+        if (!booking) {
+          pending.delete(chatId);
+          await reply(
+            client,
+            chatId,
+            'Sessione scaduta. Scrivi "modifica appuntamento" per ripartire.'
+          );
+          return "";
+        }
+
+        const newNameRaw = String(msg || "").trim();
+        const newName = extractCustomerName(newNameRaw) || newNameRaw;
+        if (!newName) {
+          await reply(
+            client,
+            chatId,
+            "Scrivi il nuovo nome e cognome per la prenotazione."
+          );
+          return "";
+        }
+
+        const ok = await _editApplyUpdate({ booking, newName });
+        if (!ok) {
+          await reply(
+            client,
+            chatId,
+            "❌ Non sono riuscito ad aggiornare il nome. Riprova tra poco."
+          );
+          return "";
+        }
+
+        state.step = "edit_menu";
+        // ricarico la prenotazione aggiornata per mostrare il menu corretto
+        let updated = booking;
+        try {
+          const all = getUserActiveBookingsAll(booking.clientPhone) || [];
+          const match = all.find((b) => b.eventId === booking.eventId);
+          if (match) updated = match;
+        } catch { }
+        state.edit = { target: updated };
+        pending.set(chatId, state);
+
+        await reply(
+          client,
+          chatId,
+          `✅ Nome aggiornato.\n\n${showEditMenu(updated)}`
+        );
+        return "";
+      }
+      // ===============================
+      // PROFESSIONISTA PRIMA DI TUTTO
+      // ===============================
+      const inEditFlowGlobal =
+        state.step && typeof state.step === "string" && state.step.startsWith("edit_");
+
+      // elenco professionisti (da config.professionals)
+      const getAllProsList = () =>
+        Object.entries(config?.professionals || {}).map(([email, p]) => ({
+          email,
+          name: (p && p.name) || email,
+        }));
+
+      const proNameByEmailSafe = (email) =>
+        (config?.professionals?.[email]?.name) ||
+        (typeof proNameByEmail === "function" ? proNameByEmail(email) : null) ||
+        email;
+
+      // professionisti abilitati per un servizio (email)
+      const serviceProsEmails = (svc) => {
+        try {
+          const item =
+            (typeof cfgServiceItem === "function" ? cfgServiceItem(svc) : null) ||
+            (config?.services?.[svc] || {});
+          const arr = item.professionals || item.pros || [];
+          return Array.isArray(arr) ? arr.filter(Boolean) : [];
+        } catch {
+          return [];
+        }
+      };
+
+      const isServiceAvailableForPro = (svc, proEmail) => {
+        if (!proEmail) return true;
+        // prova prima helper esistente
+        let pros =
+          (typeof cfgServiceProfessionals === "function"
+            ? (cfgServiceProfessionals(svc) || [])
+            : null) || null;
+
+        if (!pros) pros = serviceProsEmails(svc);
+
+        const emails = (Array.isArray(pros) ? pros : [])
+          .map((x) => (typeof x === "string" ? x : (x?.email || x?.name || "")))
+          .filter(Boolean)
+          .map((s) => String(s).toLowerCase());
+
+        return emails.includes(String(proEmail).toLowerCase());
+      };
+
+      // durata per professionista (usa la tua funzione se esiste, altrimenti fallback su config)
+      const getDurForPro = (svc, proEmail) => {
+        try {
+          if (typeof getServiceDurationForPro === "function" && proEmail) {
+            const d = getServiceDurationForPro(svc, proEmail);
+            if (Number.isFinite(+d) && +d > 0) return +d;
+          }
+        } catch { }
+        try {
+          const item = config?.services?.[svc] || {};
+          const pd = item.professionalDurations || {};
+          const d2 = proEmail && pd[proEmail];
+          if (Number.isFinite(+d2) && +d2 > 0) return +d2;
+          const d = item.duration;
+          if (Number.isFinite(+d) && +d > 0) return +d;
+        } catch { }
+        // ultimo fallback
+        return (typeof cfgServiceDuration === "function" ? (cfgServiceDuration(svc) || 30) : 30);
+      };
+
+      const buildServicesMessageForPro = (proEmail) => {
+        const allSvcs =
+          (typeof cfgServices === "function" ? (cfgServices() || []) : []) ||
+          Object.keys(config?.services || {});
+
+        const available = allSvcs.filter((svc) => isServiceAvailableForPro(svc, proEmail));
+        const unavailable = allSvcs.filter((svc) => !isServiceAvailableForPro(svc, proEmail));
+
+        // lista disponibili (numerata)
+        const availableLines = available.map((svc, i) => {
+          const item =
+            (typeof cfgServiceItem === "function" ? (cfgServiceItem(svc) || {}) : {}) ||
+            (config?.services?.[svc] || {});
+          const emoji = item.emoji || item.icon || item.emoticon || "";
+          const label = item.label || svc;
+
+          const price = (typeof cfgServicePriceText === "function" ? cfgServicePriceText(svc) : "") ||
+            (Number.isFinite(+item.price) ? `${item.price}€` : "");
+
+          const dur = getDurForPro(svc, proEmail);
+
+          const pricePart = price ? ` (_${price}_, _*${dur}*_ min)` : ` (_*${dur}*_ min)`;
+          return `${i + 1}) ${emoji ? emoji + " " : ""}${label}${pricePart}`;
+        });
+
+        // lista NON disponibili (con “disponibile con …”)
+        const unavailableLines = unavailable.map((svc) => {
+          const emails = serviceProsEmails(svc);
+          const names = emails.map(proNameByEmailSafe).filter(Boolean);
+          const who = names.length ? names.join(", ") : "—";
+          return `* ${svc} (disponibile con: ${who})`;
+        });
+
+        const proName = proNameByEmailSafe(proEmail);
+
+        let msg = `🧖‍♀️ Trattamenti disponibili con *${proName}*:\n` +
+          (availableLines.length ? availableLines.join("\n") : "⚠️ Nessun trattamento disponibile con questo professionista.");
+
+        if (availableLines.length) msg += `\n(1-${availableLines.length})`;
+
+        if (unavailableLines.length) {
+          msg += `\n\n🚫 Non disponibili con *${proName}*:\n${unavailableLines.join("\n")}\n\n` +
+            `ℹ️ Se vuoi uno dei trattamenti non disponibili: digita "annulla" e prenota di nuovo scegliendo un professionista che lo esegue.`;
+        }
+
+        return { available, msg };
+      };
+
+      // 1) Se NON siamo in edit: chiedi il professionista SOLO se siamo nello stato iniziale ("collect")
+      const needPro = (!col.professionalEmail && !col.professionalName && !col.professionalAny);
+      const alreadyAskingPro = (state.step === "pick_professional");
+
+      const isInitialState = !state.step || state.step === "collect" || state.step === "start";
+      const awaitingName = !!(state && state.context && state.context.awaitingName);
+
+      // ✅ FIX: Non chiedere se abbiamo già un servizio (significa che siamo oltre questa fase)
+      const hasService = !!(col && col.service);
+
+      if (!inEditFlowGlobal && needPro && !alreadyAskingPro && isInitialState && !awaitingName && !hasService) {
+        state.step = "pick_professional";
+        const pros = getAllProsList();
+
+        if (!pros.length) {
+          await reply(client, chatId, "⚠️ Nessun professionista configurato. Contatta il salone.");
+          return "";
+        }
+
+        const list =
+          `👩‍🔧 Prima scegli il professionista:\n` +
+          `0) Non mi interessa\n` +
+          pros.map((p, i) => `${i + 1}) ${p.name}`).join("\n") +
+          `\n(0-${pros.length})`;
+
+        pending.set(chatId, state);
+        await reply(client, chatId, list);
+        return "";
+      }
+
+      // === SCELTA SERVIZIO (solo fuori dal flusso di modifica) ===
+      const pros = getAllProsList();
+      const inEditFlow = state.step && typeof state.step === "string" && state.step.startsWith("edit_");
+      const list =
+        `0) Non mi interessa \n` +
+        pros.map((p, i) => `${i + 1}) ${p.name}`).join("\n") +
+        `\n(0-${pros.length})`;
+
+      if (!inEditFlow && !col.service) {
+        // ✅ FIX: Controlla se abbiamo professionista (ANY incluso)
+        const hasProfessional = col.professionalAny || col.professionalEmail || col.professionalName;
+
+        if (!hasProfessional) {
+          // ✅ Evita di ri-chiedere se siamo già in pick_professional
+          if (state.step !== "pick_professional") {
+            state.step = "pick_professional";
+            pending.set(chatId, state);
+            await reply(client, chatId, `Prima scegli il professionista!\n${list}`);
+          }
+          return "";
+        }
+
+        const proEmail = col.professionalEmail ||
+          (typeof proEmailByName === "function" ? proEmailByName(col.professionalName) : null);
+
+        col.professionalEmail = proEmail;
+
+        // Lista filtrata servizi per questo professionista
+        const { available, msg: svcMsg } = buildServicesMessageForPro(proEmail);
+        col.serviceOptions = Array.isArray(col.serviceOptions) && col.serviceOptions.length
+          ? col.serviceOptions
+          : available;
+
+        const svcs = col.serviceOptions || [];
+
+        if (!svcs.length) {
+          state.step = "choose_service";
+          pending.set(chatId, state);
+          await reply(client, chatId, svcMsg);
+          return "";
+        }
+
+
+        // Parsing servizio dall'input
+        const pickFromFilteredByText = (raw) => {
+          const input = String(raw || "").trim();
+          if (!input) return null;
+
+          // Numerico
+          if (pureNumber.test(input)) {
+            const n = parseInt(input, 10);
+            if (n >= 1 && n <= svcs.length) return svcs[n - 1];
+            return "__INVALID_RANGE__";
+          }
+
+          // Match diretto
+          const low = input.toLowerCase();
+          let idx = svcs.map(s => String(s).toLowerCase()).indexOf(low);
+          if (idx === -1) idx = svcs.findIndex(s => String(s).toLowerCase().startsWith(low));
+          if (idx !== -1) return svcs[idx];
+
+          // Fuzzy/sinonimi
+          let svcMatch = null;
+          try {
+            svcMatch = (typeof bestServiceBySynonyms === "function" ? bestServiceBySynonyms(input) : null) ||
+              (typeof fuzzyServiceSafe === "function" ? fuzzyServiceSafe(input) : null) || null;
+          } catch { }
+
+          if (svcMatch && svcs.some(s => norm(s) === norm(svcMatch))) return svcMatch;
+
+          // Servizio NON disponibile per questo pro
+          try {
+            const all = (typeof cfgServices === "function" ? (cfgServices() || []) : []) || [];
+            const exists = all.find(s => norm(s) === norm(svcMatch || input));
+            if (exists && !isServiceAvailableForPro(exists, proEmail))
+              return { __UNAVAILABLE__: true, svc: exists };
+          } catch { }
+
+          return null;
+        };
+
+        const picked = pickFromFilteredByText(msg);
+
+        if (!picked) {
+          state.step = "choose_service";
+          pending.set(chatId, state);
+          await reply(client, chatId, svcMsg);
+          return "";
+        }
+
+        if (picked === "__INVALID_RANGE__") {
+          await reply(client, chatId, `Numero non valido. Scegli un numero (1-${svcs.length}).`);
+          return "";
+        }
+
+        if (typeof picked === "object" && picked.__UNAVAILABLE__) {
+          const svc = picked.svc;
+          const emails = serviceProsEmails(svc);
+          const names = emails.map(proNameByEmailSafe).filter(Boolean);
+          const who = names.length ? names.join(", ") : "—";
+          await reply(
+            client,
+            chatId,
+            `❌ *${svc}* non è disponibile con *${proNameByEmailSafe(proEmail)}*.\n` +
+            `✅ Disponibile con: ${who}\n\n` +
+            `ℹ️ Se vuoi questo trattamento: scrivi "annulla" e prenota di nuovo scegliendo un professionista che lo esegue.`
+          );
+          state.step = "choose_service";
+          pending.set(chatId, state);
+          await reply(client, chatId, svcMsg);
+          return "";
+        }
+
+        // Servizio selezionato
+        col.service = picked;
+
+        // ✅ PATCH: Validazione compatibilità professionista-servizio
+        try {
+          if (col.professionalEmail && typeof validateProfessionalForService === "function") {
+            const chk = validateProfessionalForService(col.service, col.professionalEmail);
+            if (!chk.ok) {
+              log('warn', '[SERVICE_PICK] Incompatibile', { service: col.service, pro: col.professionalEmail }); state.step = "choose_service";
+              pending.set(chatId, state);
+              await reply(client, chatId, chk.reason + "\n\nScegli un altro trattamento o digita \"annulla\" per ricominciare.");
+              return "";
+            }
+          }
+        } catch (e) {
+          log("error", "validate after service pick failed", e?.stack || e?.message || e);
+          // lasciamo proseguire il flusso in modo conservativo
+        }
+
+        state.step = "choose_day";
+        pending.set(chatId, state);
+
+        await reply(
+          client,
+          chatId,
+          `Che giorno preferisci? (es. "domani", "lunedì prossimo", "tra 2 giorni", "23/10", "28 ottobre")`
+        );
+        return "";
+      }
+
+      // ==========================
+      // 3) SCELTA DEL GIORNO
+      // ==========================
+      if (!col.when || state.step === "choose_day") {
+        state.step = "choose_day";
+
+        const userInput = String(msg || "").trim();
+
+        // Previeni parsing se già in corso per questa chat
+        if (__dateParsingLocks.has(chatId)) {
+          log('warn', '[CHOOSE_DAY] Parsing già in corso, ignoro', { chatId });
+          return "";
+        }
+
+        if (!userInput || userInput.length < 2) {
+          await reply(
+            client,
+            chatId,
+            `Che giorno preferisci? (es. "domani", "lunedì prossimo", "tra 2 giorni", "23/10", "28 ottobre")`
+          );
+          return "";
+        }
+
+        // Verifica se serve ancora scegliere professionista
+        if (
+          !col.professionalAny &&
+          !col.professionalName &&
+          !col.professionalEmail
+        ) {
+          const pros =
+            (typeof cfgServiceProfessionals === "function"
+              ? cfgServiceProfessionals(col.service)
+              : []) || [];
+
+          if (pros.length) {
+            // Salva temporaneamente la data se riconosciuta
+            const tempDay = safeParseDateWithLock(chatId, userInput);
+            if (tempDay) {
+              ensureContext(state);
+              state.context.tmpDay = tempDay;
+            }
+
+            state.step = "pick_professional";
+            await reply(client, chatId, askProfessional(col.service));
+            pending.set(chatId, state);
+            return "";
+          }
+        }
+
+        // Parsing della data con funzione unificata
+        __dateParsingLocks.add(chatId);
+        let parsedDate = null;
+
+        try {
+          parsedDate = safeParseDateWithLock(chatId, userInput);
+        } finally {
+          __dateParsingLocks.delete(chatId);
+        }
+
+        if (!parsedDate || isNaN(parsedDate.getTime())) {
+          await reply(
+            client,
+            chatId,
+            `❌ Data non valida. Scrivi "domani", "lunedì", "23/10" o un formato simile.`
+          );
+          return "";
+        }
+
+        // Normalizza a mezzogiorno
+        const day = typeof atNoon === "function" ? atNoon(parsedDate) : parsedDate;
+
+        // Blocca date nel passato
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const dayCheck = new Date(day);
+        dayCheck.setHours(0, 0, 0, 0);
+
+        if (dayCheck < today) {
+          await reply(
+            client,
+            chatId,
+            `⚠️ Quella data è già passata. Scegli una data futura (es. "domani" o "12/12").`
+          );
+          return "";
+        }
+
+        // Verifica giorno chiuso
+        if (typeof cfgClosedDay === "function" && cfgClosedDay(day)) {
+          const dayStr = typeof formatDateWithWeekdayIT === "function"
+            ? formatDateWithWeekdayIT(day)
+            : day.toLocaleDateString();
+          await reply(
+            client,
+            chatId,
+            `Il giorno ${dayStr} siamo chiusi. Dimmi un altro giorno.`
+          );
+          return "";
+        }
+
+        // Salva il giorno scelto
+        col.when = day;
+
+        // Recupera slot disponibili
+        const duration = typeof cfgServiceDuration === "function"
+          ? cfgServiceDuration(col.service) || 30
+          : 30;
+
+        const professional = col.professionalAny
+          ? null
+          : col.professionalEmail || col.professionalName || null;
+
+        const rawList = await fetchSlots({
+          service: col.service,
+          day: day,
+          duration,
+          professional,
+          wantDetail: true,
+        });
+
+        const slots = (typeof normalizeSlotsDetail === "function"
+          ? normalizeSlotsDetail(rawList)
+          : rawList) || [];
+
+        // Nessuno slot libero
+        if (!slots.length) {
+          const dayStr = typeof formatDateWithWeekdayIT === "function"
+            ? formatDateWithWeekdayIT(day)
+            : day.toLocaleDateString();
+
+          col.when = null;
+          state.step = "choose_day";
+
+          await reply(
+            client,
+            chatId,
+            `Nessuno slot disponibile per ${dayStr}. Prova un altro giorno.`
+          );
+          return "";
+        }
+
+        // Passa a scelta orario
+        col.options = slots;
+        state.step = "pick_time";
+
+        const lineList = slots
+          .map((s) => {
+            const prosNames =
+              s.pros && s.pros.length
+                ? ` (${s.pros.map((p) => p.name).join(", ")})`
+                : "";
+            return `• ${s.time}${prosNames}`;
+          })
+          .join("\n");
+
+        const dayStr = typeof formatDateWithWeekdayIT === "function"
+          ? formatDateWithWeekdayIT(day)
+          : day.toLocaleDateString();
+
+        await reply(
+          client,
+          chatId,
+          `📅 Disponibilità per ${dayStr}:\n${lineList}\n\n💬 Scrivi l'orario desiderato (es. "14:30", "14.30" oppure "alle 14")`
+        );
+
+        pending.set(chatId, state);
+        return "";
+      }
+
+      const isEditStep =
+        typeof state.step === "string" && state.step.startsWith("edit_");
+
+      // step che DEVONO restare nel flusso testuale di handleMessage
+      const editTextSteps =
+        state.step === "edit_reschedule_date" ||
+        state.step === "edit_change_name";
+
+      if (isEditStep && !editTextSteps) {
+        // così anche "data", "orario", "sì", "no", ecc. vengono gestiti dal router edit
+        return await handleNumericReply(client, chatId, text, tools);
+      }
+
+      // 4) SCELTA DELL'ORARIO (solo fuori dal flusso di modifica)
+      /* START PICK_TIME */
+      if (
+        (!col.time || state.step === "pick_time") &&
+        !(typeof state.step === "string" && state.step.startsWith("edit_"))
+      ) {
+        // Assicura che siamo nello step giusto
+        state.step = "pick_time";
+
+        // helper locali
+        const renderSlotsList = () => {
+          return (col.options || [])
+            .map((slot, i) => {
+              const prosNames =
+                slot.pros && slot.pros.length
+                  ? ` (${slot.pros.map((p) => p.name).join(", ")})`
+                  : "";
+              return `• ${slot.time}${prosNames}`;
+            })
+            .join("\n");
+        };
+
+        const hhmmToMin = (s) => {
+          const m = String(s || "").match(/^(\d{1,2}):(\d{2})$/);
+          if (!m) return null;
+          return +m[1] * 60 + +m[2];
+        };
+
+        // parsing dell'orario da testo naturale ("alle 3", "15:30", "3 e mezza" ecc)
+        // pulizia filler tipo "verso le", "intorno alle", ecc
+        const cleanedForTime = String(msg || "").replace(
+          /\b(verso|intorno|circa|per\s+le|alle)\b/gi,
+          " "
+        );
+        const tryParseTime = () =>
+          (typeof parseTimeSmart === "function"
+            ? parseTimeSmart(cleanedForTime)
+            : null) ||
+          (typeof parseHHMM === "function" ? parseHHMM(cleanedForTime) : null);
+
+        // resolveEmailByName: da nome umano -> email professionista
+        const resolveEmailByName = (nm) => {
+          const tryMap =
+            typeof proEmailByName === "function" ? proEmailByName(nm) : null;
+          if (tryMap) return tryMap;
+
+          const profEntry = Object.entries((config && config.professionals) || {}).find(
+            ([email, p]) => {
+              const a =
+                typeof simpleNorm === "function"
+                  ? simpleNorm(p?.name || "")
+                  : String(p?.name || "").toLowerCase();
+              const b =
+                typeof simpleNorm === "function"
+                  ? simpleNorm(nm)
+                  : String(nm || "").toLowerCase();
+              return a === b;
+            }
+          );
+          return profEntry ? profEntry[0] : null;
+        };
+
+        // true se l'utente ha detto "chiunque", "qualsiasi", ecc
+        const anyRe =
+          /\b(chiunque|qualsiasi|va\s*bene\s*chiunque|non\s*mi\s*interessa)\b/i;
+
+        // dato un testo utente e una lista di pro disponibili
+        // prova a capire se ha già nominato uno dei professionisti
+        const extractProFromText = (raw, preferredList) => {
+          try {
+            const txtN =
+              typeof simpleNorm === "function"
+                ? simpleNorm(raw)
+                : String(raw || "").toLowerCase();
+
+            const scan = (arr) => {
+              for (const p of arr) {
+                const nm =
+                  typeof simpleNorm === "function"
+                    ? simpleNorm(p?.name || "")
+                    : String(p?.name || "").toLowerCase();
+                if (!nm) continue;
+                if ((" " + txtN + " ").includes(" " + nm + " ")) return p;
+              }
+              return null;
+            };
+
+            // prima controlla i pro dello slot scelto
+            if (preferredList && preferredList.length) {
+              const hit = scan(preferredList);
+              if (hit) return hit;
+            }
+
+            // fallback: tutti i pro per quel servizio
+            const pros = (
+              typeof cfgServiceProfessionals === "function"
+                ? cfgServiceProfessionals(col.service) || []
+                : []
+            )
+              .map((p) => (typeof p === "string" ? { name: p, email: p } : p))
+              .filter((p) => p && p.name);
+
+            return scan(pros);
+          } catch {
+            return null;
+          }
+        };
+
+        // carica gli slot se ancora non li abbiamo in memoria
+        if ((!col.options || !col.options.length) && col.when && col.service) {
+          const professional = col.professionalAny ? null : (col.professionalEmail || null);
+
+          const duration =
+            (typeof getDurForPro === "function")
+              ? getDurForPro(col.service, professional)
+              : ((typeof cfgServiceDuration === "function" ? (cfgServiceDuration(col.service) || 30) : 30));
+
+
+          const list = await fetchSlots({
+            service: col.service,
+            day: typeof atNoon === "function" ? atNoon(col.when) : col.when,
+            duration,
+            professional,
+            wantDetail: true,
+          });
+
+          const slots =
+            (typeof normalizeSlotsDetail === "function"
+              ? normalizeSlotsDetail(list)
+              : list) || [];
+
+          col.options = Array.isArray(slots) ? slots : [];
+
+          // nessun orario libero
+          if (!col.options.length) {
+            const dayStr =
+              typeof fmtDate === "function"
+                ? fmtDate(col.when)
+                : col.when?.toLocaleDateString?.() || "";
+            col.when = null;
+            state.step = "choose_day";
+
+            await reply(
+              client,
+              chatId,
+              `Non ci sono orari liberi per ${dayStr}. Dimmi un altro giorno (tipo "domani", "sabato", "5 novembre").`
+            );
+
+            pending.set(chatId, state);
+            return "";
+          }
+        }
+
+        // --- NEW: permetti cambio giorno mentre siamo in pick_time ---
+        const rawMsg = String(msg || "");
+        const daySwitchHint =
+          /\b(oggi|domani|dopodomani|tra|fra|settimana|prossim|luned[iì]|marted[iì]|mercoled[iì]|gioved[iì]|venerd[iì]|sabato|domenica|\d{1,2}\s*[\/\-]\s*\d{1,2}|gennaio|febbraio|marzo|aprile|maggio|giugno|luglio|agosto|settembre|ottobre|novembre|dicembre)\b/i;
+
+        async function tryHandleDaySwitch(text) {
+          if (!daySwitchHint.test(String(text || ""))) return false;
+
+          // prova più parser esistenti (ordinalità: relativo -> contestuale -> generico)
+          const parsedSwitch =
+            (typeof safeParseDateWithLock === "function" ? safeParseDateWithLock(text) : null) ||
+            (typeof safeParseDateWithLock === "function" ? safeParseDateWithLock(text) : null) ||
+            (typeof parseNaturalDate === "function"
+              ? parseNaturalDate(text)
+              : null) ||
+            null;
+
+          if (!parsedSwitch) return false;
+
+          // parsedSwitch può essere Date o stringa interpretabile
+          let newDay = parsedSwitch;
+          if (!(newDay instanceof Date)) {
+            try {
+              newDay = new Date(parsedSwitch);
+            } catch {
+              newDay = null;
+            }
+          }
+          if (!newDay || isNaN(newDay.getTime())) return false;
+
+          // normalizza a mezzogiorno se c'è helper
+          const dayAtNoon =
+            typeof atNoon === "function" ? atNoon(newDay) : new Date(newDay.getFullYear(), newDay.getMonth(), newDay.getDate(), 12, 0, 0, 0);
+
+          // controllo passato
+          if (typeof isPast === "function" && isPast(dayAtNoon)) {
+            // comportamento: bump anno o rifiuto. Manteniamo avviso e chiediamo un'altra data.
+            const formatted = typeof formatDateWithWeekdayIT === "function"
+              ? formatDateWithWeekdayIT(dayAtNoon)
+              : (typeof fmtDate === "function" ? fmtDate(dayAtNoon) : dayAtNoon.toLocaleDateString());
+            await reply(client, chatId, `La data ${formatted} è nel passato. Scrivi un'altra data valida (es. "domani", "12/12").`);
+            pending.set(chatId, state);
+            return true;
+          }
+
+          // controllo giorno chiuso
+          if (typeof cfgClosedDay === "function" && cfgClosedDay(dayAtNoon)) {
+            const dayStrClosed =
+              typeof formatDateWithWeekdayIT === "function"
+                ? formatDateWithWeekdayIT(dayAtNoon)
+                : (typeof fmtDate === "function" ? fmtDate(dayAtNoon) : dayAtNoon.toLocaleDateString());
+            await reply(client, chatId, `Il giorno ${dayStrClosed} siamo chiusi. Dimmi un altro giorno (es. "domani", "sabato", "12/12").`);
+            pending.set(chatId, state);
+            return true;
+          }
+
+          // fetch nuovi slot per il nuovo giorno
+          const professional = col.professionalAny ? null : (col.professionalEmail || null);
+
+          const duration =
+            (typeof getDurForPro === "function")
+              ? getDurForPro(col.service, professional)
+              : ((typeof cfgServiceDuration === "function" ? (cfgServiceDuration(col.service) || 30) : 30));
+
+
+          const rawList = await fetchSlots({
+            service: col.service,
+            day: typeof atNoon === "function" ? atNoon(dayAtNoon) : dayAtNoon,
+            duration,
+            professional,
+            wantDetail: true,
+          });
+
+          const slots =
+            (typeof normalizeSlotsDetail === "function"
+              ? normalizeSlotsDetail(rawList)
+              : rawList) || [];
+
+          if (!slots.length) {
+            const dayStr =
+              typeof formatDateWithWeekdayIT === "function"
+                ? formatDateWithWeekdayIT(dayAtNoon)
+                : (typeof fmtDate === "function" ? fmtDate(dayAtNoon) : dayAtNoon.toLocaleDateString());
+
+            await reply(client, chatId, `Non ci sono orari liberi per ${dayStr}. Dimmi un altro giorno (es. "domani", "sabato", "12/12").`);
+            pending.set(chatId, state);
+            return true;
+          }
+
+          // aggiorna col e rispedisci lista slot
+          col.when = dayAtNoon;
+          col.options = Array.isArray(slots) ? slots : [];
+          col.time = null;
+
+          state.step = "pick_time";
+          pending.set(chatId, state);
+
+          const dayStr =
+            typeof formatDateWithWeekdayIT === "function"
+              ? formatDateWithWeekdayIT(col.when)
+              : (typeof fmtDate === "function" ? fmtDate(col.when) : col.when.toLocaleDateString());
+
+          const lineList = col.options
+            .map((s) => {
+              const prosNames =
+                s.pros && s.pros.length
+                  ? ` (${s.pros.map((p) => p.name).join(", ")})`
+                  : "";
+              return `• ${s.time}${prosNames}`;
+            })
+            .join("\n");
+
+          await reply(
+            client,
+            chatId,
+            `📅 Disponibilità per ${dayStr}:\n${lineList}\n\n💬 Scrivi l'orario desiderato (es. "14:30", "14.30" oppure "alle 14")`
+          );
+
+          return true;
+        }
+
+        // prova subito il cambio giorno — se gestito, esci (non proseguire con parsing orario)
+        const handledDaySwitch = await tryHandleDaySwitch(rawMsg);
+        if (handledDaySwitch) return "";
+
+        // a questo punto col.options esiste ed è una lista di slot disponibili
+        // ✅ NOTE: NON accettiamo scelta numerica per gli orari (se volevi ancora supportarla, va reintrodotta qui)
+
+        // Parsing dell'orario da testo naturale
+
+        const tParsed = tryParseTime();
+
+        if (!tParsed || !/^\d{2}:\d{2}$/.test(tParsed)) {
+          // ✅ Validazione formato HH:MM (previene "NaN:NaN")
+          log('warn', '[PICK_TIME] Orario non valido', { input: msg, parsed: tParsed });
+          // Se non è un orario valido mostriamo la lista e suggeriamo cambio giorno
+          const dayLabel = typeof fmtDate === "function"
+            ? fmtDate(col.when)
+            : col.when.toLocaleDateString();
+          const lines = renderSlotsList();
+
+          await reply(
+            client,
+            chatId,
+            `📅 Disponibilità per ${dayLabel}:\n${lines}\n\n💬 Scrivi un orario valido (es. "14:30", "alle 3", "15.00")\n\nSe vuoi cambiare giorno scrivi ad esempio "domani", "giovedì" o "12/12".`
+          );
+          pending.set(chatId, state);
+          return "";
+        }
+
+        // Match esatto dell'orario
+        let chosenSlot = col.options.find((s) => s.time === tParsed);
+
+        if (!chosenSlot) {
+          // Orario non esatto: cerca il più vicino entro 30 minuti
+          const target = hhmmToMin(tParsed);
+          if (target != null) {
+            let best = null;
+            let bestDiff = 1e9;
+            for (const s of col.options) {
+              const m = hhmmToMin(s.time);
+              if (m == null) continue;
+              const diff = Math.abs(m - target);
+              if (diff < bestDiff) {
+                best = s;
+                bestDiff = diff;
+              }
+            }
+            if (best && bestDiff <= 30) chosenSlot = best;
+          }
+        }
+
+        if (!chosenSlot) {
+          const dayLabel = typeof fmtDate === "function"
+            ? fmtDate(col.when)
+            : col.when.toLocaleDateString();
+          const lines = renderSlotsList();
+
+          await reply(
+            client,
+            chatId,
+            `📅 Disponibilità per ${dayLabel}:\n${lines}\nScrivi un orario, per esempio "14:30".`
+          );
+
+          pending.set(chatId, state);
+          return "";
+        }
+
+        // abbiamo uno slot scelto
+        col.time = chosenSlot.time;
+
+        // --- risoluzione professionista prima di proseguire ---
+        const ensureProFromSlot = async () => {
+          // se nello slot ci sono pro espliciti
+          if (chosenSlot.pros && chosenSlot.pros.length) {
+            // 1 solo pro -> auto assegna
+            if (chosenSlot.pros.length === 1) {
+              const only = chosenSlot.pros[0];
+              col.professionalName = only.name;
+              col.professionalEmail =
+                only.email || resolveEmailByName(only.name) || null;
+              col.professionalAny = false;
+              return "one";
+            }
+
+            // più pro possibili
+            // prova a capire se l'utente ha già scritto un nome
+            const pick = extractProFromText(msg, chosenSlot.pros);
+            if (pick) {
+              col.professionalName = pick.name;
+              col.professionalEmail =
+                pick.email || resolveEmailByName(pick.name) || null;
+              col.professionalAny = false;
+              return "one";
+            }
+
+            // se l'utente ha detto "chiunque"
+            if (anyRe.test(msg)) {
+              col.professionalAny = true;
+              return "any";
+            }
+
+            // altrimenti chiedi la scelta del pro
+            col.proOptions = chosenSlot.pros.slice();
+            state.step = "pick_professional_for_time";
+
+            const prosList = chosenSlot.pros
+              .map((p, i) => `${i + 1}) ${p.name}`)
+              .join("\n");
+
+            await reply(
+              client,
+              chatId,
+              `Chi preferisci alle ${chosenSlot.time}?\n${prosList}\nRispondi con un numero (1-${chosenSlot.pros.length}).`
+            );
+
+            pending.set(chatId, state);
+            return "ask";
+          }
+
+          // slot senza lista pro
+          // prova a inferire dal testo
+          const pick = extractProFromText(msg, []);
+          if (pick) {
+            col.professionalName = pick.name;
+            col.professionalEmail =
+              pick.email || resolveEmailByName(pick.name) || null;
+            col.professionalAny = false;
+            return "one";
+          }
+
+          // "chiunque"
+          if (anyRe.test(msg)) {
+            col.professionalAny = true;
+            return "any";
+          }
+
+          // nessuna info pro ancora
+          return "none";
+        };
+
+        // se non abbiamo ancora un professionista fissato, prova a fissarlo
+        if (!col.professionalEmail && !col.professionalName) {
+          const mode = await ensureProFromSlot();
+          // se abbiamo chiesto il numero del professionista allo user usciamo qui
+          if (mode === "ask") return "";
+        }
+
+        // se l'utente aveva detto "chiunque" ma lo slot ha in realtà un solo pro, auto assegna
+        if (
+          col.professionalAny &&
+          chosenSlot.pros &&
+          chosenSlot.pros.length === 1
+        ) {
+          const onlyPro = chosenSlot.pros[0];
+          col.professionalName = onlyPro.name;
+          col.professionalEmail =
+            onlyPro.email || resolveEmailByName(onlyPro.name) || null;
+          col.professionalAny = false;
+        }
+      }
+      /* END PICK_TIME */
+      // ===== Gestione step "collect_name" =====
+      // Inserire questo blocco subito prima della sezione "6) CREAZIONE FINALE APPUNTAMENTO"
+      if (state.step === "collect_name") {
+        const col = state.collected || (state.collected = {});
+        const raw = String(msg || "").trim();
+
+        // prova ad estrarre nome usando helper esistente, altrimenti usa il raw
+        const newName = (typeof extractCustomerName === "function"
+          ? extractCustomerName(raw)
+          : raw) || raw;
+
+        // semplice validazione: almeno nome e cognome (2 token)
+        if (!newName || String(newName).trim().split(/\s+/).filter(Boolean).length < 2) {
+          pending.set(chatId, state);
+          // stesso messaggio che già invii: rimaniamo tolleranti
+          ensureContext(state);
+          state.context.awaitingName = true;
+          pending.set(chatId, state);
+          await reply(
+            client,
+            chatId,
+            'Per favore scrivi nome e cognome (es. "Maria Rossi") per completare la prenotazione.'
+          );
+          return "";
+        }
+
+        // Salva e prosegui (NON ritorniamo: vogliamo che il codice passi alla creazione finale)
+        col.customerName = String(newName).trim();
+
+        // pulisci la flag awaitingName (NON vogliamo che il bot interpreti il prossimo messaggio come "stavo ancora aspettando il nome")
+        ensureContext(state);
+        if (state.context) state.context.awaitingName = false;
+
+        // assicuriamoci che lo state sia persistito nel pending
+        pending.set(chatId, state);
+        // fallthrough: il flusso continuerà nella sezione di finalizzazione già presente
+
+      }
+
+      // 6) CREAZIONE FINALE APPUNTAMENTO
+      // SAFETY: non creare mai una nuova prenotazione mentre siamo nel flusso di modifica
+      // --- Guardie iniziali per la creazione finale: assicurarsi di avere il nome e non ricadere su collect_name ---
+      col = state.collected || (state.collected = {});
+      // se per qualsiasi motivo il nome è altrove (es. bookingDraft) proviamo a recuperarne uno
+      if (!col.customerName || col.customerName.split(/\s+/).length < 2) {
+        state.step = "collect_name";
+        pending.set(chatId, state);
+        ensureContext(state);
+        state.context.awaitingName = true;
+        pending.set(chatId, state);
+        return reply(
+          client,
+          chatId,
+          'Per favore scrivi nome e cognome (es. "Maria Rossi") per completare la prenotazione.'
+        );
+      }
+
+      // se ancora non abbiamo un nome, rimandiamo al passo collect_name (evita loop ripetuto)
+      if (!col.customerName || col.customerName.split(/\s+/).length < 2) {
+        state.step = "collect_name";
+        pending.set(chatId, state);
+        return reply(client, chatId, 'Per favore scrivi nome e cognome (es. "Maria Rossi") per completare la prenotazione.');
+      }
+
+      // Assicuriamoci di usare il nome nel salvataggio / evento
+      const attendeeName = String(col.customerName).trim();
+
+      if (typeof state.step === "string" && state.step.startsWith("edit_")) {
+        const booking = state.edit && state.edit.target;
+        if (booking) {
+          await reply(client, chatId, showEditMenu(booking));
+        } else {
+
+          await reply(
+            client,
+            chatId,
+            'Sei nella modifica dell’appuntamento. Scegli un’opzione dal menu oppure scrivi "annulla".'
+          );
+        }
+        return "";
+      }
+
+      if (!col.service || !col.when || !col.time) {
+        // Se manca qualche informazione, torna allo step appropriato
+        if (!col.service) {
+          state.step = "choose_service";
+          const svcs = cfgServices();
+          const list = svcs.map((s, i) => `${i + 1}) ${s}`).join("\n");
+          const prompt =
+            getLang(chatId) === "en"
+              ? `🧖‍♀️ Scegli il servizio:\n${list}\n(1-${svcs.length})`
+              : `🧖‍♀️ Scegli il trattamento:\n${list}\n(1-${svcs.length})`;
+          await reply(client, chatId, prompt);
+          pending.set(chatId, state);
+          return "";
+        } else if (!col.when) {
+          state.step = "choose_day";
+          await reply(
+            client,
+            chatId,
+            getLang(chatId) === "en"
+              ? `Che giorno preferisci? (es. "domani", "23/10")`
+              : `Che giorno preferisci? (es. "domani", "23/10")`
+          );
+          pending.set(chatId, state);
+          return "";
+        } else {
+          state.step = "pick_time";
+          if (col.options && col.options.length) {
+            const lines = col.options
+              .map((s, i) => {
+                const prosNames =
+                  s.pros && s.pros.length
+                    ? ` (${s.pros.map((p) => p.name).join(", ")})`
+                    : "";
+                return `• ${s.time}${prosNames}`;
+              })
+              .join("\n");
+            await reply(
+              client,
+              chatId,
+              tr(
+                chatId,
+                "CHOOSE_SLOT_FOR_DAY",
+                typeof formatDateWithWeekdayIT === "function"
+                  ? formatDateWithWeekdayIT(col.when)
+                  : (typeof fmtDate === "function" ? fmtDate(col.when) : col.when.toLocaleDateString()),
+                linesOut,
+                slots.length
+              )
+
+            );
+          } else {
+            state.step = "choose_day";
+            await reply(
+              client,
+              chatId,
+              getLang(chatId) === "en"
+                ? `Che giorno preferisci? (es. "domani", "23/10")`
+                : `Che giorno preferisci? (es. "domani", "23/10")`
+            );
+          }
+          pending.set(chatId, state);
+          return "";
+        }
+      }
+
+      const start =
+        typeof setTime === "function"
+          ? setTime(col.when, col.time)
+          : new Date(+col.when);
+      if (typeof isPast === "function" && isPast(start)) {
+        // Orario scelto ormai passato
+        const oldDateStr =
+          typeof fmtDate === "function"
+            ? fmtDate(col.when)
+            : col.when.toLocaleDateString();
+        col.time = null;
+        state.step = "pick_time";
+        // --- Ensure professional resolved for the chosen time before booking ---
+        if (
+          !col.professionalAny &&
+          !col.professionalEmail &&
+          !col.professionalName
+        ) {
+          const chosenSlot = (col.options || []).find(
+            (s) => s && s.time === col.time
+          );
+          if (
+            chosenSlot &&
+            Array.isArray(chosenSlot.pros) &&
+            chosenSlot.pros.length
+          ) {
+            if (chosenSlot.pros.length === 1) {
+              const only = chosenSlot.pros[0];
+              col.professionalName =
+                only.name ||
+                (typeof proNameByEmail === "function"
+                  ? proNameByEmail(only.email)
+                  : null) ||
+                null;
+              col.professionalEmail =
+                only.email ||
+                (typeof proEmailByName === "function"
+                  ? proEmailByName(only.name)
+                  : null) ||
+                null;
+              col.professionalAny = false;
+            } else {
+              // chiedi quale pro per quell'orario
+              col.proOptions = chosenSlot.pros.slice();
+              state.step = "pick_professional_for_time";
+              const list = chosenSlot.pros
+                .map((p, i) => `${i + 1}) ${p.name}`)
+                .join("\n");
+              await reply(
+                client,
+                chatId,
+                tr(
+                  chatId,
+                  "CHOOSE_PRO_FOR_TIME",
+                  col.time,
+                  list,
+                  chosenSlot.pros.length
+                )
+              );
+              pending.set(chatId, state);
+              return "";
+            }
+          }
+        }
+
+        const professional = col.professionalAny
+          ? null
+          : (col.professionalEmail || null);
+
+        const duration =
+          (typeof getDurForPro === "function")
+            ? getDurForPro(col.service, professional)
+            : ((typeof cfgServiceDuration === "function" ? (cfgServiceDuration(col.service) || 30) : 30));
+
+        const list = await fetchSlots({
+          service: col.service,
+          day: typeof atNoon === "function" ? atNoon(col.when) : col.when,
+          duration,
+          professional,
+          wantDetail: true,
+        });
+        const slots =
+          typeof normalizeSlotsDetail === "function"
+            ? normalizeSlotsDetail(list)
+            : list;
+        if (!slots || !slots.length) {
+          col.when = null;
+          state.step = "choose_day";
+          if (getLang(chatId) === "en") {
+            await reply(
+              client,
+              chatId,
+              `L’orario selezionato è passato e non ci sono altri orari disponibili per ${oldDateStr}. Scegli un altro giorno.`
+            );
+          } else {
+            await reply(
+              client,
+              chatId,
+              `L’orario selezionato è passato e non ci sono altri orari disponibili per ${oldDateStr}. Scegli un altro giorno.`
+            );
+          }
+          pending.set(chatId, state);
+          return "";
+        }
+        col.options = slots;
+        const lines = slots
+          .map((s, i) => {
+            const prosNames =
+              s.pros && s.pros.length
+                ? ` (${s.pros.map((p) => p.name).join(", ")})`
+                : "";
+            return `• ${s.time}${prosNames}`;
+          })
+          .join("\n");
+        if (getLang(chatId) === "en") {
+          await reply(
+            client,
+            chatId,
+            `L’orario scelto è nel passato. Disponibili invece:\n${lines}\n(1-${slots.length})`
+          );
+        } else {
+          await reply(
+            client,
+            chatId,
+            `L’orario scelto è nel passato. Disponibili invece:\n${lines}\n(1-${slots.length})`
+          );
+        }
+        pending.set(chatId, state);
+        return "";
+      }
+
+
+      const durationMin = col.professionalEmail && col.service
+        ? (typeof getServiceDurationForPro === "function" ? getServiceDurationForPro(col.service, col.professionalEmail) : getServiceDurationForPro(col.service, col.professionalEmail))
+        : (typeof cfgServiceDuration === "function"
+          ? cfgServiceDuration(col.service) || 30
+          : 30);
+      const proEmail = col.professionalAny
+        ? null
+        : col.professionalEmail ||
+        (typeof proEmailByName === "function"
+          ? proEmailByName(col.professionalName)
+          : null) ||
+        null;
+
+      // Ultimo controllo: il professionista può davvero eseguire questo servizio?
+      if (col.service && !col.professionalAny) {
+        try {
+          const chkFinal = validateProfessionalForService(col.service, proEmail);
+          if (!chkFinal.ok) {
+            // Non procedere: informa l'utente e riportalo alla scelta servizio/professionista
+            state.step = "choose_service";
+            pending.set(chatId, state);
+            await reply(client, chatId, chkFinal.reason + "\n\nScegli un altro trattamento o digita 'annulla' per ricominciare.");
+            return "";
+          }
+        } catch (e) {
+          log("error", "validateProfessionalForService(final) failed", e?.stack || e?.message || e);
+          // se la validazione fallisce per errore imprevisto, stop conservativo
+          await reply(client, chatId, "Errore tecnico durante la validazione del trattamento. Riprova tra poco o contatta il salone.");
+          return "";
+        }
+      }
+
+      // ✅ PATCH: Hold con retry e validazione timestamp
+      let holdOk = false;
+      try {
+        if (typeof acquireSoftHold === "function") {
+          // Verifica che start sia valido prima di acquisire hold
+          if (!start || isNaN(start.getTime())) {
+            throw new Error('Start time non valido per hold');
+          }
+
+          holdOk = acquireSoftHold({
+            chatId,
+            professionalEmail: proEmail || (col.professionalAny ? "" : ""),
+            startTime: start,
+            durationMin,
+          });
+        } else {
+          holdOk = true; // Fallback se acquireSoftHold non esiste
+        }
+      } catch (err) {
+        log('error', '[HOLD] Acquisizione fallita', { chatId, err: err?.message });
+        holdOk = false;
+      }
+
+      // ✅ PATCH: Obbligo nome+cognome con validazione robusta
+      const nameValid = col.customerName &&
+        String(col.customerName).trim().split(/\s+/).filter(Boolean).length >= 2;
+
+      if (!nameValid) {
+        // Previeni loop: se siamo già in collect_name da >30s, forza fallback
+        const nameAttemptStart = state.context?.nameAttemptStart || 0;
+        if (nameAttemptStart && (Date.now() - nameAttemptStart > 30000)) {
+          log('warn', '[NAME] Timeout raccolta nome, uso fallback', { chatId });
+          col.customerName = col.customerName || 'Cliente'; // Fallback emergenza
+        } else {
+          state.step = "collect_name";
+          ensureContext(state);
+          state.context.awaitingName = true;
+          state.context.nameAttemptStart = state.context.nameAttemptStart || Date.now();
+          pending.set(chatId, state);
+          return reply(
+            client,
+            chatId,
+            'Per favore scrivi nome e cognome (es. "Maria Rossi") per completare la prenotazione.'
+          );
+        }
+
+        if (!holdOk) {
+          // Slot appena occupato da altri: aggiorna lista orari
+          const professional = proEmail || null;
+          const list = await fetchSlots({
+            service: col.service,
+            day: typeof atNoon === "function" ? atNoon(col.when) : col.when,
+            duration: durationMin,
+            professional,
+            wantDetail: true,
+          });
+          const slots =
+            typeof normalizeSlotsDetail === "function"
+              ? normalizeSlotsDetail(list)
+              : list;
+          if (!slots || !slots.length) {
+            await reply(
+              client,
+              chatId,
+              getLang(chatId) === "en"
+                ? "Quel posto è appena stato occupato. Non ho più disponibilità per quel giorno."
+                : "Quel posto è appena stato occupato. Non ho più disponibilità per quel giorno."
+            );
+            col.when = null;
+            state.step = "choose_day";
+            pending.set(chatId, state);
+            return "";
+          }
+          col.options = slots;
+          state.step = "pick_time";
+          const lines = slots
+            .map((s, i) => {
+              const prosNames =
+                s.pros && s.pros.length
+                  ? ` (${s.pros.map((p) => p.name).join(", ")})`
+                  : "";
+              return `• ${s.time}${prosNames}`;
+            })
+            .join("\n");
+          await reply(
+            client,
+            chatId,
+            getLang(chatId) === "en"
+              ? `Quel posto è appena stato occupato 😕. Disponibili invece:\n${lines}\n(1-${slots.length})`
+              : `Quel posto è appena stato occupato 😕. Disponibili invece:\n${lines}\n(1-${slots.length})`
+          );
+          pending.set(chatId, state);
+          return "";
+        }
+
+        if (!col.service || !start || !durationMin || !phone) {
+          await reply(
+            client,
+            chatId,
+            getLang(chatId) === "en"
+              ? "Errore: alcuni dati obbligatori per la prenotazione non sono disponibili. Riprova dall'inizio digitando 'annulla'."
+              : "Errore: alcuni dati obbligatori per la prenotazione non sono disponibili. Riprova dall'inizio digitando 'annulla'."
+          );
+          pending.delete(chatId);
+          return "";
+        }
+        // --- se non è stato scelto un professionista, chiedilo prima di procedere ---
+        // PATCH FIX: Correct checking of professional properties and rendering of [object Object]
+        if (!col.professionalEmail && !col.professionalName && !col.professionalAny) {
+          const slot = (col.options || []).find((s) => s && s.time === col.time);
+
+          // Recupera i pro dallo slot, oppure dalla config globale se lo slot non ha dettagli
+          const pros =
+            (slot && slot.pros) ||
+            (state && state.proOptions) ||
+            (typeof cfgServiceProfessionals === "function" ? cfgServiceProfessionals(col.service) : []) ||
+            [];
+
+          if (Array.isArray(pros) && pros.length > 0) {
+            // Usa lo step corretto per gestire la risposta numerica nello slot temporale
+            state.step = "pick_professional_for_time";
+            // Salva le opzioni nella proprietà standard usata da handleNumericReply
+            col.proOptions = pros;
+            pending.set(chatId, state);
+
+            let list = "Scegli il professionista desiderato:\n";
+            pros.forEach((p, i) => {
+              // FIX: stampa p.name se p è un oggetto, altrimenti p stringa
+              const pName = p.name || (typeof p === 'string' ? p : 'Professionista');
+              list += `${i + 1}) ${pName}\n`;
+            });
+            list += "\n0) Qualsiasi professionista (assegniamo il primo disponibile)\n\nRispondi con il numero corrispondente.";
+
+            await reply(client, chatId, list);
+            return "";
+          }
+          // se non trovi professionisti specifici, il flusso continua e assegnerà "qualsiasi" o fallirà nel blocco successivo
+        }
+
+        // allow null proEmail when user accepts "qualsiasi" professional (professionalAny === true)
+        if (!proEmail && !col.professionalAny) {
+          await reply(
+            client,
+            chatId,
+            getLang(chatId) === "en"
+              ? "⚠️ Nessun professionista selezionato o disponibile per l'orario scelto. Riprova."
+              : "⚠️ Nessun professionista selezionato o disponibile per l'orario scelto. Riprova."
+          );
+          col.time = null;
+          state.step = "pick_time";
+          pending.set(chatId, state);
+          return "";
+        }
+
+
+        console.log("DEBUG makeEvent:", {
+          serviceName: col.service,
+          professionalEmail: proEmail,
+          clientPhone: phone,
+          startTime: start,
+          durationMin,
+        });
+
+        // === Conferma finale (opzionale) ===
+        if (
+          process.env.REQUIRE_FINAL_CONFIRM === "1" &&
+          state.step !== "confirm_final"
+        ) {
+          state.step = "confirm_final";
+          pending.set(chatId, state);
+          const dd = fmtDate(start);
+          const tt = `${String(start.getHours()).padStart(2, "0")}:${String(
+            start.getMinutes()
+          ).padStart(2, "0")}`;
+          const proLine = col.professionalName
+            ? ` con ${col.professionalName}`
+            : "";
+          const dateStr = formatDateWithWeekdayIT(start);
+          const timeStr = `${hh}:${mi}`;
+          reply(client, chatId,
+            `Confermi ${col.service}${proLine} ${dateStr} alle ${timeStr}?`
+          );
+
+          return "";
+        }
+        if (state.step === "confirm_final") {
+          if (!/\b(si|sì|yes|ok)\b/i.test(msg)) {
+            await reply(
+              client,
+              chatId,
+              'Ok, annullato. Scrivi "prenota" per ricominciare.'
+            );
+            pending.delete(chatId);
+            try {
+              releaseSoftHoldByChat?.(chatId);
+            } catch { }
+            return "";
+          }
+        }
+
+
+        // se tutto ok, procedi
+        // ✅ PATCH: Creazione evento con rollback su errore
+        let ev = null;
+        let eventCreated = false;
+
+        try {
+          ev = await makeEvent({
+            serviceName: col.service,
+            professionalEmail: proEmail,
+            professionalName: col.professionalName || undefined,
+            clientPhone: phone,
+            customerName: col.customerName || undefined,
+            startTime: start,
+            durationMin,
+            notes: col.notes || undefined,
+            price:
+              typeof cfgServicePriceText === "function"
+                ? cfgServicePriceText(col.service)
+                : undefined,
+          });
+
+          eventCreated = true;
+
+          // ✅ PATCH: Persistenza con retry su errore
+          const bookingRecord = {
+            eventId: ev?.id || ev?.eventId || `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+            service: col.service,
+            professionalName: col.professionalName || null,
+            professionalEmail: proEmail || null,
+            clientPhone: phone,
+            clientChatId: chatId, // ✅ aggiungi
+            customerName: col.customerName || null,
+            startTime:
+              start instanceof Date
+                ? start.toISOString()
+                : new Date(start).toISOString(),
+            durationMin,
+            status: "confirmed",
+            createdAt: new Date().toISOString(),
+          };
+
+        } catch (bookingErr) {
+          log('error', '[BOOKING] Persistenza fallita', { chatId, err: bookingErr?.message });
+
+          // ✅ Rollback: cancella evento se booking non salvato
+          if (eventCreated && ev?.id) {
+            try {
+              await cancelEventSafe(ev.id);
+              log('info', '[BOOKING] Evento rollback OK', { eventId: ev.id });
+            } catch (rollbackErr) {
+              log('error', '[BOOKING] Rollback fallito', { eventId: ev.id, err: rollbackErr?.message });
+            }
+          }
+
+          await reply(client, chatId,
+            "❌ Errore durante il salvataggio. Riprova o contatta il salone."
+          );
+          return "";
+        }
+
+        // Cleanup finale
+        try {
+          releaseSoftHoldByChat?.(chatId);
+        } catch (cleanupErr) {
+          log('warn', '[CLEANUP] Hold release fallito', { chatId, err: cleanupErr?.message });
+        }
+
+        pending.delete(chatId);
+        __dateParsingLocks.delete(chatId);
+        // Prepara la data e l'ora formattate per il messaggio di conferma
+        const dd = String(start.getDate()).padStart(2, "0");
+        const mm = String(start.getMonth() + 1).padStart(2, "0");
+        const hh = String(start.getHours()).padStart(2, "0");
+        const mi = String(start.getMinutes()).padStart(2, "0");
+        const proLine = col.professionalName
+          ? `${getLang(chatId) === "en" ? " with " : " con "}${col.professionalName}`
+          : "";
+        await reply(client, chatId,
+          `✅ Prenotato: ${col.service}${proLine} ${formatDateWithWeekdayIT(start)} alle ${hh}:${mi}.`
+        );
+
+        // PATCH: informa l'utente che può modificare in seguito
+        await reply(
+          client,
+          chatId,
+          '💡 Puoi scrivere "modifica" o "cambiare" per modificare un appuntamento.'
+        );
+        return "";
+      } catch (e) {
+      log("error", "handleMessage critical error", e?.stack || e?.message || String(e));
+
+      // ✅ Cleanup forzato su errore critico
+      try {
+        pending.delete(chatId);
+        __dateParsingLocks.delete(chatId);
+        releaseSoftHoldByChat?.(chatId);
+      } catch (cleanupErr) {
+        log('warn', '[CLEANUP] Errore durante cleanup critico', { err: cleanupErr?.message });
+      }
+
+      try {
+        await reply(client, chatId,
+          "😵‍💫 Errore tecnico. Scrivi 'annulla' e riprova, o contatta il salone."
+        );
+      } catch (sendErr) {
+        log("warn", "Invio messaggio errore fallito", sendErr?.message);
+      }
+
+      return "";
+    } finally {
+      __busyChats.delete(chatId);
+      __busySince.delete(chatId);
+    }
+    }
+  }
+
+// Helper robusto per scelte numeriche "1", "1)", "1.", con invisibili ecc.
+// allowZero=true permette "0" (es. nessuna preferenza pro).
+
+// ============== Gestione risposte numeriche (liste) ==============
+/**
+ * The `handleNumericReply` function handles various scenarios related to selecting services, choosing
+ * professionals, and scheduling appointments, with added patches for specific flows like picking
+ * professionals for a specific time slot.
+ * @param client - The `client` parameter is the client object that represents the connection to the
+ * messaging platform or API. It is used to send messages or perform actions related to the messaging
+ * platform, such as sending replies to the user.
+ * @param chatId - The `handleNumericReply` function is quite extensive and handles various scenarios
+ * related to processing numeric replies in a chat conversation. Here is a breakdown of the main
+ * functionalities it provides:
+ * @param textRaw - The `handleNumericReply` function is quite extensive and seems to handle various
+ * scenarios related to processing numeric replies in a chat application. It includes logic for
+ * selecting services, choosing professionals, managing availability, and handling different steps in
+ * the conversation flow.
+ * @param [tools] - The `tools` parameter in the `handleNumericReply` function is an object that
+ * contains various tools or utilities that can be used within the function. These tools are typically
+ * helper functions or services that can assist in performing specific tasks or operations within the
+ * function.
+ * @returns The function `handleNumericReply` returns a message or an empty string based on the logic
+ * and conditions within the function. The return value could be a message to be sent to the user, such
+ * as availability information, error messages, prompts for user input, or confirmation messages. If
+ * certain conditions are met, the function may also trigger other actions or functions in the chat
+ * flow.
+ */
+export async function handleNumericReply(client, chatId, textRaw, tools = {}) {
+      // === corpo di handleNumericReply (versione patchata) ===
+      const msg = (textRaw || "").trim();
+      const pureNumber = /^\s*\d+\s*[\).]?\s*$/; // accetta "2", "2)", "2."
+      const t = typeof norm === "function" ? norm(msg) : msg.toLowerCase();
+      let n = NaN;
+      const sRaw = String(msg || "");
+      const sNorm = typeof norm === "function" ? norm(sRaw) : sRaw.toLowerCase().trim();
+      const s = pending.get(chatId);
+      if (!s) return safeSend(client, chatId, "Nessuna scelta in corso.");
+
+      const state = s;
+      const col = state.collected || (state.collected = {});
+      const setAndPersist = () => pending.set(chatId, state);
+      // --- INIZIO PATCH: gestione pick_professional_for_time ---
+      if (state.step === "pick_professional_for_time") {
+        const pros =
+          Array.isArray(col.proOptions) && col.proOptions.length
+            ? col.proOptions.slice()
+            : Array.isArray(state.proOptions) && state.proOptions.length
+              ? state.proOptions.slice()
+              : [];
+
+        if (!pros.length) {
+          state.step = "collect";
+          pending.set(chatId, state);
+          return safeSend(client, chatId, "Ops, non riesco a trovare i professionisti disponibili. Riprova.");
+        }
+
+        // Parsing numero
+        if (pureNumber.test(msg)) {
+          const idx = parseListIndex(msg, pros.length);
+          if (!Number.isFinite(idx) || idx < 1 || idx > pros.length) {
+            return safeSend(client, chatId, `Scegli un numero valido (1-${pros.length}).`);
+          }
+          const chosen = pros[idx - 1];
+          col.professionalName = chosen && chosen.name ? chosen.name : null;
+          col.professionalEmail = chosen && chosen.email ? chosen.email : null;
+          col.professionalAny = false;
+          col.proOptions = null;
+
+          // ✅ FIX: Passa a "collect" e re-entra
+          state.step = "collect";
+          pending.set(chatId, state);
+
+          if (typeof scheduleReenter === "function") {
+            await scheduleReenter(client, chatId, "ok professionista", tools);
+            return "";
+          }
+          return handleMessage(client, chatId, "ok professionista", tools);
+
+        }
+
+        // Parsing testo (nome professionista)
+        const choice =
+          typeof resolveProReply === "function" ? resolveProReply(msg, pros) : null;
+        if (choice) {
+          if (choice.any) {
+            col.professionalAny = true;
+            col.professionalName = null;
+            col.professionalEmail = null;
+          } else {
+            col.professionalName = choice.name || null;
+            col.professionalEmail = choice.email || null;
+            col.professionalAny = false;
+          }
+          col.proOptions = null;
+
+          // ✅ FIX: Passa a "collect" per permettere al flusso normale di gestire il prossimo step
+          state.step = "collect";
+          pending.set(chatId, state);
+
+          // ✅ Re-entra nel flusso per processare il giorno (se già presente) o chiederlo
+          if (typeof scheduleReenter === "function") {
+            await scheduleReenter(client, chatId, "ok professionista", tools);
+            return "";
+          }
+          return handleMessage(client, chatId, "ok professionista", tools);
+        }
+
+        // Risposta non valida
+        return safeSend(
+          client,
+          chatId,
+          `Risposta non valida. Rispondi con il numero (1-${pros.length}) oppure scrivi il nome del professionista.`
+        );
+      }
+      // --- FINE PATCH ---
+
+      // ==== AVAILABILITY FLOW: scelta giorno con numero secco ====
+      if (state.availFlow && state.availFlow.awaiting === "day") {
+        const totalDays =
+          (state.availFlow.mode === "week" &&
+            (state.availFlow.days || []).length) ||
+          (state.availFlow.mode === "month"
+            ? daysInMonth(state.availFlow.year, state.availFlow.monthIdx)
+            : 31);
+        const dayNum = parseListIndex(msg, totalDays);
+        if (!Number.isFinite(dayNum))
+          return safeSend(client, chatId, 'Dimmi il giorno in numero (es. "21").');
+
+        if (state.availFlow.mode === "month") {
+          const { year, monthIdx } = state.availFlow;
+          const max = daysInMonth(year, monthIdx);
+          if (dayNum < 1 || dayNum > max)
+            return safeSend(client, chatId, `Giorno non valido (1-${max}).`);
+          const d = new Date(year, monthIdx, dayNum, 12, 0, 0, 0);
+          state.availFlow = null;
+          pending.set(chatId, state);
+          const msgOut = await buildAvailabilityMessage({
+            day: atNoon(d),
+            service: (state.collected || {}).service || null,
+            duration: null,
+            professional:
+              (state.collected || {}).professionalEmail ||
+              (state.collected || {}).professionalName ||
+              null,
+          });
+          return safeSend(client, chatId, msgOut);
+        }
+
+        if (state.availFlow.mode === "week") {
+          const arr = state.availFlow.days || [];
+          let d = null;
+          if (dayNum >= 1 && dayNum <= arr.length) d = arr[dayNum - 1];
+          else d = arr.find((x) => x.getDate() === dayNum) || null;
+          if (!d) {
+            const lines = arr
+              .map(
+                (D, i) =>
+                  `${i + 1}) ${String(D.getDate()).padStart(
+                    2,
+                    "0"
+                  )} ${itaWeekdayName(D)}`
+              )
+              .join("\n");
+            return safeSend(
+              client,
+              chatId,
+              `Scegli 1-${arr.length} o un giorno del mese presente nella lista:\n${lines}`
+            );
+          }
+          state.availFlow = null;
+          pending.set(chatId, state);
+          const msgOut = await buildAvailabilityMessage({
+            day: atNoon(d),
+            service: (state.collected || {}).service || null,
+            duration: null,
+            professional:
+              (state.collected || {}).professionalEmail ||
+              (state.collected || {}).professionalName ||
+              null,
+          });
+          return safeSend(client, chatId, msgOut);
+        }
+      }
+
+      // ==== SCELTA SERVIZIO DA ELENCO NUMERATO ====
+      if (state.step === "choose_service") {
+        const n = parseListIndex(
+          msg,
+          Array.isArray(state.ui && state.ui.lastServiceList)
+            ? state.ui.lastServiceList.length
+            : Array.isArray(col.svcOptions)
+              ? col.svcOptions.length
+              : Array.isArray(col.serviceOptions)
+                ? col.serviceOptions.length
+                : state.options && Array.isArray(state.options.services)
+                  ? state.options.services.length
+                  : Array.isArray(config?.services)
+                    ? config.services.length
+                    : 0
+        );
+
+        const candidates = [
+          state.ui && Array.isArray(state.ui.lastServiceList)
+            ? state.ui.lastServiceList
+            : null,
+          Array.isArray(col.svcOptions) ? col.svcOptions : null, // <— aggiunto (tuo nome)
+          Array.isArray(col.serviceOptions) ? col.serviceOptions : null, // <— legacy
+          state.options && Array.isArray(state.options.services)
+            ? state.options.services
+            : null,
+          Array.isArray(config?.services) ? config.services : null,
+        ].filter(Boolean);
+
+        const opts = candidates[0] || [];
+        if (!Number.isFinite(n) || n < 1 || n > opts.length) {
+          return safeSend(
+            client,
+            chatId,
+            `Scegli un numero valido (1-${opts.length}).`
+          );
+        }
+
+        const chosen = opts[n - 1];
+        const svc =
+          typeof chosen === "string"
+            ? chosen
+            : chosen?.name || chosen?.id || chosen?.title || String(chosen);
+
+        col.service = svc;
+        state.step = "collect";
+        pending.set(chatId, state);
+        // ✅ Controllo compatibilità professionista ↔ servizio
+        const check = validateProfessionalForService(col.service, col.professionalEmail);
+        if (!check.ok) {
+          await reply(client, chatId, check.reason);
+          // opzionale: rimetti l'utente nello step di scelta del servizio
+          state.step = "choose_service";
+          pending.set(chatId, state);
+          return "";
+        }
+
+
+        // Avanza il flusso di prenotazione come nel resto del codice
+        scheduleReenter(client, chatId, `ok servizio ${svc}`, tools);
+        return "";
+      }
+      // ==== MENU DI MODIFICA (prenotazione esistente) ====
+      // ==== Scelta prenotazione da modificare (quando ce ne sono più di una) ====
+      if (state.step === "edit_pick_booking") {
+        const list = (state.edit && state.edit.list) || [];
+        if (!list.length) {
+          pending.delete(chatId);
+          return reply(
+            client,
+            chatId,
+            'Sessione scaduta. Scrivi "modifica appuntamento" per ripartire.'
+          );
+        }
+
+        const n = parseListIndex(msg, list.length);
+        if (!Number.isFinite(n) || n < 1 || n > list.length) {
+          return reply(
+            client,
+            chatId,
+            `Scegli un numero valido (1-${list.length}).`
+          );
+        }
+
+        const chosen = list[n - 1];
+        _editSnapshotStateFromBooking(state, chosen);
+        const nextStep = state.edit && state.edit.nextStep;
+
+        // Se il comando rapido voleva una modifica specifica (data)
+        if (nextStep === "edit_reschedule_date") {
+          state.step = "edit_reschedule_date";
+          state.edit = { target: chosen };
+          state.collected = state.collected || {};
+          pending.set(chatId, state);
+
+          return reply(
+            client,
+            chatId,
+            `Vuoi cambiare la data di:\n${_fmtBookingLine(
+              chosen
+            )}\n\nDimmi la nuova data (GG/MM, "oggi" o "domani").`
+          );
+        }
+
+        // Se il comando rapido voleva cambiare solo l'orario
+        if (nextStep === "edit_reschedule_time") {
+          const day = _editDayFromBooking(chosen);
+          const duration = _editDuration(chosen);
+          const pro = chosen.professionalEmail || null;
+
+          try {
+            releaseSoftHoldByChat(chatId);
+          } catch { }
+
+          const slots = normalizeSlotsDetail(
+            await fetchSlots({
+              service: chosen.service,
+              day,
+              duration,
+              professional: pro,
+              wantDetail: true,
+            })
+          );
+
+          if (!slots.length) {
+            pending.set(chatId, state);
+            return reply(
+              client,
+              chatId,
+              `Non vedo orari liberi per ${fmtDate(
+                day
+              )} con il professionista attuale. Puoi cambiare data o professionista dal menu di modifica.`
+            );
+          }
+
+          const col = state.collected || (state.collected = {});
+          col.options = slots;
+
+          state.step = "edit_reschedule_time";
+          state.edit = { target: chosen, day };
+          pending.set(chatId, state);
+
+          return reply(
+            client,
+            chatId,
+            `Orari disponibili per ${fmtDate(
+              day
+            )} (tengo il professionista attuale):\n${renderSlotsList(slots)}\n(1-${slots.length
+            })`
+          );
+        }
+
+        // Se il comando rapido voleva cambiare solo il professionista
+        if (nextStep === "edit_pick_professional") {
+          const pros = cfgServiceProfessionals(chosen.service)
+            .map((x) => x.name)
+            .filter(Boolean);
+          if (!pros.length) {
+            pending.delete(chatId);
+            return reply(
+              client,
+              chatId,
+              "Non ho professionisti associati a questo servizio."
+            );
+          }
+
+          state.step = "edit_pick_professional";
+          state.edit = { target: chosen, proOptions: pros };
+          pending.set(chatId, state);
+
+          const listPros =
+            "0) Non mi interessa\n" +
+            pros.map((p, i) => `${i + 1}) ${p}`).join("\n");
+          return reply(
+            client,
+            chatId,
+            `Scegli il professionista:\n${listPros}\n(0-${pros.length})`
+          );
+        }
+
+        // Se il comando rapido voleva cambiare il nome
+        if (nextStep === "edit_change_name") {
+          state.step = "edit_change_name";
+          state.edit = { target: chosen };
+          pending.set(chatId, state);
+          return reply(
+            client,
+            chatId,
+            "Scrivi il nuovo nome e cognome per la prenotazione."
+          );
+        }
+
+        // Default: apre il menu generico di modifica
+        state.step = "edit_menu";
+        state.edit = { target: chosen };
+        pending.set(chatId, state);
+        return reply(client, chatId, showEditMenu(chosen));
+      }
+
+      // ==== Gestione del MENU DI MODIFICA vero e proprio ====
+      if (state.step === "edit_menu") {
+        // Accetta sia numeri che testo (es. "nome", "orario", "data", "professionista", "annulla")
+        const sRaw = String(msg || "");
+        const sNorm =
+          typeof norm === "function" ? norm(sRaw) : sRaw.toLowerCase().trim();
+        let n = parseInt(sNorm, 10);
+
+        // Mappa testo -> opzione
+        // 0 = annulla prenotazione
+        // 1 = cambia data
+        // 2 = cambia orario
+        // 3 = cambia professionista
+        // 4 = cambia nome
+        const map = [
+          [0, /\b(annull|cancell|disd)(a|o|i|e)?\w*\b/],
+          [1, /\b(data|giorno|gg|sposta\s+data|cambia\s+data|nuova\s+data)\b/],
+          [2, /\b(ora|orario|time|slot|fascia|fascia\s+orar)\w*\b/],
+          [
+            3,
+            /\b(professionista|operatric(e|i)?|operatore|pro\b|tecnic[oa]|nail|master)\b/,
+          ],
+          [4, /\b(nome|intestaz|intestat|cliente|intestatario)\w*\b/],
+        ];
+
+        if (Number.isNaN(n)) {
+          for (const [num, re] of map) {
+            if (re.test(sNorm)) {
+              n = num;
+              break;
+            }
+          }
+        }
+
+        const booking = state.edit && state.edit.target;
+        if (!booking) {
+          return reply(
+            client,
+            chatId,
+            "Ops, non trovo la prenotazione da gestire."
+          );
+        }
+
+        // Range valido 0..4
+        if (Number.isNaN(n) || n < 0 || n > 4) {
+          return reply(
+            client,
+            chatId,
+            "Scegli un numero valido (0-4) oppure scrivi: nome / orario / data / professionista / annulla."
+          );
+        }
+
+        // 0) Cancella prenotazione
+        if (n === 0) {
+          state.step = "edit_cancel_confirm";
+          pending.set(chatId, state);
+          const when = new Date(booking.startTime);
+          const dd = String(when.getDate()).padStart(2, "0");
+          const mm = String(when.getMonth() + 1).padStart(2, "0");
+          const hh = String(when.getHours()).padStart(2, "0");
+          const mi = String(when.getMinutes()).padStart(2, "0");
+          const pro =
+            booking.professionalName ||
+            proNameByEmail(booking.professionalEmail) ||
+            "—";
+          const line = `${dd}/${mm} ${hh}:${mi} — ${booking.service} con ${pro}`;
+          return reply(
+            client,
+            chatId,
+            `Sei sicuro di voler cancellare questa prenotazione?\n${line}\n\nRispondi sì/no.`
+          );
+        }
+
+        // 1) Cambia data -> passo a edit_reschedule_date
+        if (n === 1) {
+          state.step = "edit_reschedule_date";
+          state.edit = { target: booking };
+          state.collected = state.collected || {};
+          pending.set(chatId, state);
+          return reply(
+            client,
+            chatId,
+            `Vuoi cambiare la data di:\n${_fmtBookingLine(
+              booking
+            )}\n\nDimmi la nuova data (GG/MM, "oggi" o "domani").`
+          );
+        }
+
+        // 2) Cambia orario -> passo a edit_reschedule_time (con professionista attuale)
+        if (n === 2) {
+          const day = _editDayFromBooking(booking);
+          const duration = _editDuration(booking);
+          const pro = booking.professionalEmail || null;
+
+          try {
+            releaseSoftHoldByChat(chatId);
+          } catch { }
+
+          const slots = normalizeSlotsDetail(
+            await fetchSlots({
+              service: booking.service,
+              day,
+              duration,
+              professional: pro,
+              wantDetail: true,
+            })
+          );
+
+          if (!slots.length) {
+            pending.set(chatId, state);
+            return reply(
+              client,
+              chatId,
+              `Non vedo orari liberi per ${fmtDate(
+                day
+              )} con il professionista attuale. Puoi cambiare data o professionista dal menu di modifica.`
+            );
+          }
+
+          const col = state.collected || (state.collected = {});
+          col.options = slots;
+
+          state.step = "edit_reschedule_time";
+          state.edit = { target: booking, day };
+          pending.set(chatId, state);
+
+          return reply(
+            client,
+            chatId,
+            `Orari disponibili per ${fmtDate(
+              day
+            )} (tengo il professionista attuale):\n${renderSlotsList(slots)}\n(1-${slots.length
+            })`
+          );
+        }
+
+        // 3) Cambia professionista -> passo a edit_pick_professional
+        if (n === 3) {
+          const pros = cfgServiceProfessionals(booking.service)
+            .map((x) => x.name)
+            .filter(Boolean);
+          if (!pros.length) {
+            return reply(
+              client,
+              chatId,
+              "Non ho professionisti associati a questo servizio."
+            );
+          }
+          state.step = "edit_pick_professional";
+          state.edit = { target: booking, proOptions: pros };
+          pending.set(chatId, state);
+
+          const listPros =
+            "0) Non mi interessa\n" +
+            pros.map((p, i) => `${i + 1}) ${p}`).join("\n");
+          return reply(
+            client,
+            chatId,
+            `Scegli il professionista:\n${listPros}\n(0-${pros.length})`
+          );
+        }
+
+        // 4) Cambia nome -> passo a edit_change_name
+        if (n === 4) {
+          state.step = "edit_change_name";
+          state.edit = { target: booking };
+          pending.set(chatId, state);
+          return reply(
+            client,
+            chatId,
+            "Scrivi il nuovo nome e cognome per la prenotazione."
+          );
+        }
+      }
+
+      // ==== EDIT FLOW: scelta orario (dopo cambio data/orario) ====
+      if (state.step === "edit_reschedule_time") {
+        const booking = state.edit?.target;
+        const dayRaw = state.edit?.day || (booking ? _editDayFromBooking(booking) : null);
+        const day = (dayRaw && (dayRaw instanceof Date ? dayRaw : new Date(dayRaw))) || null;
+
+        const col = (state.collected = state.collected || {});
+        const options = Array.isArray(col.options) ? col.options : [];
+
+        // session validation
+        if (!booking || !day || !options.length) {
+          pending.delete(chatId);
+          return reply(client, chatId, 'Sessione scaduta. Scrivi "modifica appuntamento" per ripartire.');
+        }
+
+        const raw = String(msg || "").trim();
+        if (/^annulla$/i.test(raw)) {
+          pending.delete(chatId);
+          return reply(client, chatId, "Operazione annullata.");
+        }
+
+        // 1) se l'utente ha scritto una nuova DATA -> cambia giorno e ricarica slot
+        const maybeNewDay = _editParseNewDate ? _editParseNewDate(raw) : null;
+        if (maybeNewDay && maybeNewDay instanceof Date && !Number.isNaN(maybeNewDay.getTime())) {
+          const newDay = new Date(maybeNewDay);
+          newDay.setHours(0, 0, 0, 0);
+
+          // check chiusure/validità (se esiste cfgClosedDay)
+          if (typeof cfgClosedDay === "function" && cfgClosedDay(newDay)) {
+            const dayStrClosed = typeof formatDateWithWeekdayIT === "function"
+              ? formatDateWithWeekdayIT(newDay)
+              : (typeof fmtDate === "function" ? fmtDate(newDay) : newDay.toLocaleDateString());
+            pending.set(chatId, state);
+            return reply(client, chatId, `Il giorno ${dayStrClosed} è chiuso. Prova un altro giorno.`);
+          }
+
+          // fetch nuovi slot per il nuovo giorno
+          const duration = _editDuration ? _editDuration(booking) : null;
+          const pro = booking.professionalEmail || null;
+
+          try { releaseSoftHoldByChat(chatId); } catch (e) { }
+
+          const rawSlots = await fetchSlots({
+            service: booking.service,
+            day: typeof atNoon === "function" ? atNoon(newDay) : newDay,
+            duration,
+            professional: pro,
+            wantDetail: true,
+          });
+
+          const slots = (typeof normalizeSlotsDetail === "function" ? normalizeSlotsDetail(rawSlots) : rawSlots) || [];
+
+          if (!slots.length) {
+            pending.set(chatId, state);
+            const dateStr = typeof formatDateWithWeekdayIT === "function"
+              ? formatDateWithWeekdayIT(newDay)
+              : (typeof fmtDate === "function" ? fmtDate(newDay) : newDay.toLocaleDateString());
+            return reply(client, chatId, `Non ci sono orari liberi per ${dateStr}. Prova un altro giorno.`);
+          }
+
+          // aggiorna stato e mostra nuovo elenco
+          state.edit.day = newDay;
+          state.collected.options = slots;
+          pending.set(chatId, state);
+
+          const dateStr = typeof formatDateWithWeekdayIT === "function"
+            ? formatDateWithWeekdayIT(newDay)
+            : (typeof fmtDate === "function" ? fmtDate(newDay) : newDay.toLocaleDateString());
+          const lines = typeof renderSlotsList === "function" ? renderSlotsList(slots) : slots.join("\n");
+
+          return reply(
+            client,
+            chatId,
+            `📅 Nuova disponibilità per ${dateStr}:\n${lines}\n\n💬 Scrivi l'orario desiderato (es. "14:30" oppure "alle 14").`
+          );
+        }
+
+        // helper: normalizza stringa orario a "HH:MM"
+        const parseUserTime = (text) => {
+          const s = String(text || "").toLowerCase().trim();
+          // supporta: "10", "10:00", "10.30", "alle 10", "9 e 30", "9:30"
+          const m = s.match(/(?:alle\s*)?(\d{1,2})(?:\s*[:.\h,\s]\s*(\d{2}))?/i);
+          if (!m) return null;
+          const hh = parseInt(m[1], 10);
+          const mm = m[2] == null ? 0 : parseInt(m[2], 10);
+          if (!Number.isFinite(hh) || hh < 0 || hh > 23) return null;
+          if (!Number.isFinite(mm) || mm < 0 || mm > 59) return null;
+          return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
+        };
+
+        // 2) se è un numero puro: permette selezione per indice (1-based) o 0 = mostra tutti
+        if (/^\d+$/.test(raw)) {
+          const n = Number(raw);
+          if (n === 0) {
+            // mostra tutti gli slot (richiesta esplicita)
+            const allRaw = await fetchSlots({
+              service: booking.service,
+              day: typeof atNoon === "function" ? atNoon(state.edit.day || day) : (state.edit.day || day),
+              duration: _editDuration ? _editDuration(booking) : null,
+              professional: booking.professionalEmail || null,
+              wantDetail: true,
+            });
+            const allSlots = (typeof normalizeSlotsDetail === "function" ? normalizeSlotsDetail(allRaw) : allRaw) || [];
+            if (!allSlots.length) return reply(client, chatId, "Nessuno slot disponibile per quel giorno.");
+            state.collected.options = allSlots;
+            pending.set(chatId, state);
+            const dateStr = typeof formatDateWithWeekdayIT === "function"
+              ? formatDateWithWeekdayIT(state.edit.day || day)
+              : (typeof fmtDate === "function" ? fmtDate(state.edit.day || day) : (state.edit.day || day).toLocaleDateString());
+            const lines = typeof renderSlotsList === "function" ? renderSlotsList(allSlots) : allSlots.join("\n");
+            return reply(client, chatId, `📅 Disponibilità per ${dateStr}:\n${lines}\n\nScrivi l'orario desiderato.`);
+          }
+
+          // se è un indice, lo interpreto rispetto a col.options attuali (1-based)
+          const idx = n - 1;
+          if (Number.isInteger(idx) && idx >= 0 && idx < options.length) {
+            const item = options[idx];
+            const time = (typeof item === "object" ? item.time : item) || null;
+            if (!time) {
+              pending.set(chatId, state);
+              return reply(client, chatId, "Impossibile leggere l'orario selezionato. Riprova scrivendo l'orario (es. 14:30).");
+            }
+            // costruisco la nuova start ISO e applico l'edit
+            const [hh, mm] = time.split(":").map(Number);
+            const d = new Date(state.edit.day || day);
+            d.setHours(hh, mm || 0, 0, 0);
+            const newStartISO = d.toISOString();
+            const ok = await _editApplyUpdate({ booking, newStartISO });
+            if (!ok) {
+              state.step = "edit_menu";
+              pending.set(chatId, state);
+              return reply(client, chatId, "Quel posto sembra occupato. Puoi cambiare orario oppure scegliere un altro professionista.");
+            }
+            pending.delete(chatId);
+            const dateStr = typeof formatDateWithWeekdayIT === "function" ? formatDateWithWeekdayIT(d) : (typeof fmtDate === "function" ? fmtDate(d) : d.toLocaleString());
+            return reply(client, chatId, `✅ Prenotazione spostata a ${dateStr}.`);
+          }
+
+          // se numero fuori range -> errore
+          pending.set(chatId, state);
+          return reply(client, chatId, "Numero non valido. Scrivi l'orario (es. 14:30) oppure il numero corrispondente all'orario mostrato.");
+        }
+
+        // 3) altrimenti provo a interpretare l'input come orario testuale
+        const requestedHHMM = parseUserTime(raw);
+        if (!requestedHHMM) {
+          pending.set(chatId, state);
+          return reply(client, chatId, `💬 Scrivi l'orario in formato orario (es. "14:30", "14.30" oppure "alle 14").`);
+        }
+
+        // cerco lo slot corrispondente
+        const found = options.find((o) => {
+          const t = (typeof o === "string" ? o : (o && (o.time || o.hhmm))) || "";
+          return String(t).replace(".", ":") === requestedHHMM;
+        });
+
+        if (!found) {
+          pending.set(chatId, state);
+          return reply(client, chatId, `⚠️ Non ho trovato disponibilità alle ${requestedHHMM}. Scegli un orario dall'elenco mostrato.`);
+        }
+
+        // applico la modifica
+        const hh = Number(requestedHHMM.split(":")[0]);
+        const mm = Number(requestedHHMM.split(":")[1] || 0);
+        const newDate = new Date(state.edit.day || day);
+        newDate.setHours(hh, mm, 0, 0);
+        const newStartISO = newDate.toISOString();
+
+        const ok = await _editApplyUpdate({ booking, newStartISO });
+        if (!ok) {
+          state.step = "edit_menu";
+          pending.set(chatId, state);
+          return reply(client, chatId, "Quel posto sembra occupato. Puoi cambiare orario oppure scegliere un altro professionista.");
+        }
+
+        pending.delete(chatId);
+        const dateStr = typeof formatDateWithWeekdayIT === "function" ? formatDateWithWeekdayIT(newDate) : (typeof fmtDate === "function" ? fmtDate(newDate) : newDate.toLocaleString());
+        return reply(client, chatId, `✅ Prenotazione spostata a ${dateStr}.`);
+      }
+
+      // ==== EDIT FLOW: scelta professionista ====
+      if (state.step === "edit_pick_professional") {
+        const editState = state.edit || {};
+        const booking = editState.target;
+        const pros = Array.isArray(editState.proOptions) ? editState.proOptions : [];
+
+        if (!booking || !pros.length) {
+          pending.delete(chatId);
+          return reply(
+            client,
+            chatId,
+            'Sessione scaduta. Scrivi "modifica appuntamento" per ripartire.'
+          );
+        }
+
+        const txt = String(msg || "").trim();
+        const n = Number.parseInt(txt, 10);
+
+        if (!Number.isFinite(n) || !Number.isInteger(n) || n < 0 || n > pros.length) {
+          return reply(
+            client,
+            chatId,
+            `Scegli un numero valido (0-${pros.length}).`
+          );
+        }
+
+        // 0) Torno al menu senza cambiare nulla
+        if (n === 0) {
+          state.step = "edit_menu";
+          pending.set(chatId, state);
+          return reply(client, chatId, showEditMenu(booking));
+        }
+
+        const chosenName = pros[n - 1];
+        const newProEmail = proEmailByName(chosenName);
+
+        if (!newProEmail) {
+          return reply(
+            client,
+            chatId,
+            "Non riesco a collegare quel nome a un professionista valido. Riprova scegliendo dall’elenco."
+          );
+        }
+
+        // Se ha scelto lo stesso professionista non faccio lavoro inutile
+        if (booking.professionalEmail && booking.professionalEmail === newProEmail) {
+          state.step = "edit_menu";
+          pending.set(chatId, state);
+          return reply(
+            client,
+            chatId,
+            `Hai già ${chosenName} assegnata/o a questo appuntamento.\n\n${showEditMenu(
+              booking
+            )}`
+          );
+        }
+
+        // Controllo extra: il professionista deve essere abilitato per questo servizio
+        const svcCfg =
+          (config.services && config.services[booking.service]) || {};
+        const svcPros = Array.isArray(svcCfg.professionals)
+          ? svcCfg.professionals
+          : [];
+
+        const serviceLabel =
+          booking.serviceName ||
+          booking.serviceLabel ||
+          booking.service ||
+          "questo trattamento";
+
+        if (svcPros.length && !svcPros.includes(newProEmail)) {
+          // Non applico l’update, torno semplicemente al menu di modifica
+          state.step = "edit_menu";
+          pending.set(chatId, state);
+          return reply(
+            client,
+            chatId,
+            "⚠️ " +
+            chosenName +
+            " non è configurata per eseguire " +
+            serviceLabel +
+            " nel gestionale. " +
+            "Scegli un altro professionista (3) oppure lascia quello attuale."
+          );
+        }
+
+        // Ok, applico il cambio professionista
+        const ok = await _editApplyUpdate({ booking, newProEmail });
+        if (!ok) {
+          state.step = "edit_menu";
+          pending.set(chatId, state);
+          return reply(
+            client,
+            chatId,
+            "Quel professionista sembra occupato in quell’orario 😕. " +
+            "Puoi cambiare orario (2) oppure scegliere un altro professionista (3)."
+          );
+        }
+
+        // ricarico dal file booking per essere sicuro di avere la versione aggiornata
+        let updated = booking;
+        try {
+          const all = getUserActiveBookingsAll(booking.clientPhone) || [];
+          const match = all.find((b) => b.eventId === booking.eventId);
+          if (match) updated = match;
+        } catch { }
+
+        state.step = "edit_menu";
+        state.edit = { target: updated };
+        pending.set(chatId, state);
+
+        return reply(
+          client,
+          chatId,
+          `✅ Prenotazione aggiornata:\n${_fmtBookingLine(
+            updated
+          )}\n\n${showEditMenu(updated)}`
+        );
+      }
+
+
+
+      // ==== Conferma cancellazione edit ====
+      if (state.step === "edit_cancel_confirm") {
+        const booking = state.edit && state.edit.target;
+        if (!booking) {
+          pending.delete(chatId);
+          return reply(
+            client,
+            chatId,
+            "Sessione scaduta. Scrivi “modifica appuntamento” per ripartire."
+          );
+        }
+        const sMsg = norm(String(msg || ""));
+        const yes =
+          /\b(si|sì|ok|va bene|confermo|confermare|procedi|procedere|certo|affermativo)\b/i.test(
+            sMsg
+          );
+        const no = /\b(no|annulla|indietro|stop)\b/i.test(sMsg);
+        if (yes) {
+          // Idempotenza: se è già cancellata, non rifaccio la procedura
+          const curStatus = String(booking.status || "").toLowerCase();
+          if (/(cancel|annull)/.test(curStatus)) {
+            pending.delete(chatId);
+            return reply(
+              client,
+              chatId,
+              "ℹ️ Questa prenotazione risulta già cancellata nel sistema."
+            );
+          }
+
+          let gcalOk = false;
+          try {
+            gcalOk = await cancelEventSafe(booking.eventId);
+          } catch { }
+          const patched = {
+            status: "cancelled",
+            cancelledAt: new Date().toISOString(),
+          };
+          let updated = false;
+          if (booking.eventId) {
+            updateBookingByEventId(booking.eventId, patched);
+            updated = true;
+          } else {
+            updated = updateBookingByComposite(
+              { clientPhone: booking.clientPhone, startTime: booking.startTime },
+              patched
+            );
+          }
+          pending.delete(chatId);
+          if (gcalOk && updated)
+            return reply(client, chatId, "✅ Prenotazione cancellata.");
+          if (!gcalOk && updated)
+            return reply(
+              client,
+              chatId,
+              "⚠️ Ho aggiornato il sistema interno, ma non sono riuscito a cancellare l’evento in calendario. Avvisa il salone se vedi ancora l’appuntamento."
+            );
+          return reply(
+            client,
+            chatId,
+            "❌ Errore interno durante la cancellazione. Riprova tra poco."
+          );
+        }
+        if (no) {
+          state.step = "edit_menu";
+          pending.set(chatId, state);
+          return reply(client, chatId, showEditMenu(booking));
+        }
+        return reply(
+          client,
+          chatId,
+          'Scrivi "sì" per confermare la cancellazione oppure "annulla" per tornare indietro.'
+        );
+      }
+
+      // ==== Selezioni info/prezzi ====
+      if (state.step === "info_select_service") {
+        const n = parseInt(msg, 10);
+        const list = col.infoOptions || [];
+        const svc = list[n - 1];
+        if (!svc)
+          return safeSend(
+            client,
+            chatId,
+            `Scegli un numero valido (1-${list.length}).`
+          );
+        state.step = "collect";
+        col.infoOptions = null;
+        rememberService(chatId, svc);
+        pending.set(chatId, state);
+        const topic = getLastInfoTopic(chatId);
+        const base = composeInfoPrompt(svc, topic);
+        let a = (
+          await askQA(buildQAPromptWithMemory(chatId, base), tools, client)
+        ).trim();
+        if (!a)
+          a = `• ${svc}: ${cfgServicePriceText(svc)} (durata ${cfgServiceDuration(
+            svc
+          )} min)`;
+        return safeSend(client, chatId, a);
+      }
+
+      if (state.step === "price_select_service") {
+        const n = parseInt(msg, 10);
+        const list = col.infoOptions || [];
+        const svc = list[n - 1];
+        if (!svc)
+          return safeSend(
+            client,
+            chatId,
+            `Scegli un numero valido (1-${list.length}).`
+          );
+        state.step = "collect";
+        col.infoOptions = null;
+        rememberService(chatId, svc);
+        pending.set(chatId, state);
+        return safeSend(
+          client,
+          chatId,
+          `• ${svc}: ${cfgServicePriceText(svc)} (durata ${cfgServiceDuration(
+            svc
+          )} min)`
+        );
+      }
+
+
+
+      // ==== Orari (prenotazione standard) ====
+      if (state.step !== "pick_time") {
+        scheduleReenter(client, chatId, "ok professionista", tools);
+        return "";
+      }
+
+      // ==== Orari (prenotazione standard) ====
+      if (state.step !== "pick_time") {
+        scheduleReenter(client, chatId, "ok professionista", tools);
+        return "";
+      }
+
+      // assicurati che ci sia la data in contesto
+      if (!(col && col.when)) {
+        return safeSend(client, chatId, 'Mi manca il giorno: dimmi la data (es. domani / 12 dic / 12/12).');
+      }
+
+      // ✅ NEW: durante pick_time permetti cambio giorno (es. "giovedì", "martedì prossimo", "12/12", "28 ottobre")
+      const daySwitchHint =
+        /\b(oggi|domani|dopodomani|tra|fra|settimana|prossim|luned[iì]|marted[iì]|mercoled[iì]|gioved[iì]|venerd[iì]|sabato|domenica|\d{1,2}\s*[\/\-]\s*\d{1,2}|gennaio|febbraio|marzo|aprile|maggio|giugno|luglio|agosto|settembre|ottobre|novembre|dicembre)\b/i;
+
+      if (daySwitchHint.test(String(msg || ""))) {
+        const parsedSwitch =
+          (typeof safeParseDateWithLock === "function" ? safeParseDateWithLock(msg) : null) ||
+          (typeof safeParseDateWithLock === "function" ? safeParseDateWithLock(msg) : null) ||
+          null;
+
+        if (parsedSwitch && !isNaN(parsedSwitch)) {
+          const day =
+            typeof atNoon === "function"
+              ? atNoon(parsedSwitch)
+              : new Date(parsedSwitch.getFullYear(), parsedSwitch.getMonth(), parsedSwitch.getDate(), 12, 0, 0, 0);
+
+          if (typeof cfgClosedDay === "function" && cfgClosedDay(day)) {
+            const dayStrClosed =
+              typeof formatDateWithWeekdayIT === "function"
+                ? formatDateWithWeekdayIT(day)
+                : (typeof fmtDate === "function" ? fmtDate(day) : day.toLocaleDateString());
+            pending.set(chatId, state);
+            return safeSend(client, chatId, `Il giorno ${dayStrClosed} siamo chiusi. Dimmi un altro giorno (es. "domani", "sabato", "12/12").`);
+          }
+
+          col.when = day;
+          col.time = null;
+
+          const duration = getDurForPro(col.service, col.professionalEmail);
+
+
+          const professional = col.professionalAny
+            ? null
+            : col.professionalEmail || col.professionalName || null;
+
+          const rawList = await fetchSlots({
+            service: col.service,
+            day: typeof atNoon === "function" ? atNoon(col.when) : col.when,
+            duration,
+            professional,
+            wantDetail: true,
+          });
+
+          const slots =
+            (typeof normalizeSlotsDetail === "function"
+              ? normalizeSlotsDetail(rawList)
+              : rawList) || [];
+
+          if (!slots.length) {
+            const dayStr =
+              typeof formatDateWithWeekdayIT === "function"
+                ? formatDateWithWeekdayIT(col.when)
+                : (typeof fmtDate === "function" ? fmtDate(col.when) : col.when.toLocaleDateString());
+            col.when = null;
+            state.step = "choose_day";
+            pending.set(chatId, state);
+            return safeSend(client, chatId, `Non ci sono orari liberi per ${dayStr}. Dimmi un altro giorno (es. "domani", "sabato", "12/12").`);
+          }
+
+          col.options = slots;
+          state.step = "pick_time";
+          pending.set(chatId, state);
+
+          const lines = slots
+            .map((s) => {
+              const prosNames =
+                s.pros && s.pros.length ? ` (${s.pros.map((p) => p.name).join(", ")})` : "";
+              return `• ${s.time}${prosNames}`;
+            })
+            .join("\n");
+
+          const dayStr =
+            typeof formatDateWithWeekdayIT === "function"
+              ? formatDateWithWeekdayIT(col.when)
+              : (typeof fmtDate === "function" ? fmtDate(col.when) : col.when.toLocaleDateString());
+
+          return safeSend(
+            client,
+            chatId,
+            `📅 Disponibilità per ${dayStr}:\n${lines}\n\n💬 Scrivi l'orario desiderato (es. "14:30", "14.30" oppure "alle 14")`
+          );
+        }
+      }
+
+      // ✅ PATCH: accetta SOLO orari testuali (HH:MM), NON numeri di lista
+      const parsedTime = (typeof parseTimeSmart === "function" ? parseTimeSmart(msg) : null)
+        || (typeof parseHHMM === "function" ? parseHHMM(msg) : null);
+
+      if (!parsedTime) {
+        return safeSend(
+          client,
+          chatId,
+          `Scrivi l'orario nel formato "14:30" o "14.30". Non usare numeri dell'elenco.`
+        );
+      }
+
+
+      // Trova lo slot corrispondente all'orario scritto
+      const matchedSlot = (col.options || []).find(s => s.time === parsedTime);
+
+      if (!matchedSlot) {
+        // Orario non disponibile: suggerisci alternative
+        const nearest = typeof nearestTimes === "function"
+          ? nearestTimes(col.options.map(s => s.time), parsedTime, 3)
+          : [];
+
+        if (nearest.length) {
+          return safeSend(
+            client,
+            chatId,
+            `L'orario ${parsedTime} non è disponibile. Orari vicini:\n${nearest.map(t => `• ${t}`).join('\n')}\n\nScrivi uno di questi orari.`
+          );
+        }
+
+        return safeSend(client, chatId, `L'orario ${parsedTime} non è disponibile. Scegli tra quelli mostrati sopra.`);
+      }
+      // dichiarazioni preliminari per evitare ReferenceError
+      let item = null;
+      let time = null;
+
+
+      // ✅ Orario valido: continua con matchedSlot
+      item = matchedSlot;
+      time = item && item.time ? item.time : null;
+      col.time = time;
+
+
+      if (n === 0) {
+        const duration = cfgServiceDuration(col.service);
+        const allSlots = await fetchSlots({
+          service: col.service,
+          day: atNoon(col.when),
+          duration,
+          professional: null,
+          wantDetail: true,
+        });
+
+        if (!allSlots.length)
+          return safeSend(
+            client,
+            chatId,
+            "Nessuno slot disponibile in quel giorno."
+          );
+
+        col.options = allSlots;
+        col.allSlotsMode = true;
+        pending.set(chatId, state);
+
+        const linesAll = allSlots
+          .map(
+            (it, i) =>
+              `${i + 1}) ${it.time} (${(it.pros || [])
+                .map((p) => p.name)
+                .join(", ")})`
+          )
+          .join("\n");
+
+        return safeSend(
+          client,
+          chatId,
+          `Tutti gli slot disponibili (${fmtDate(col.when)}):\n${linesAll}\n(1-${allSlots.length
+          })`
+        );
+      }
+
+      // n è l'input dell'utente (es. "3"), col/options è un array di opzioni
+      const idx = Number(n) - 1;
+      const hasOptions = Array.isArray(col.options);
+      const len = hasOptions ? col.options.length : 0;
+
+      if (!Number.isInteger(idx) || idx < 0 || !hasOptions || idx >= len) {
+        return safeSend(client, chatId, `Scrivi l'orario in formato _HH:MM_! Ad esempio _14:00_ *oppure* semplicemente "_alle 14_"!`);
+      }
+
+      // riusa le variabili già dichiarate
+      item = col.options[idx];
+      time = item && typeof item === "object" ? item.time : item;
+
+
+      if (!time) {
+        return safeSend(
+          client,
+          chatId,
+          tr(chatId, "GENERIC_ERROR") || "Errore: orario non valido."
+        );
+      }
+
+      col.time = time;
+
+      // Gestione professionisti
+      const needPro =
+        !col.professionalEmail && !col.professionalName && !col.professionalAny;
+
+      const hasPros = item && Array.isArray(item.pros);
+
+      if (needPro && hasPros && item.pros.length > 1) {
+        // più professionisti disponibili a quell'orario: chiedi quale
+        col.proOptions = item.pros.slice(); // OGGETTI {name,email}
+        state.step = "pick_professional_for_time";
+        pending.set(chatId, state);
+
+        const list = item.pros.map((p, i) => `${i + 1}) ${p.name}`).join("\n");
+        await reply(
+          client,
+          chatId,
+          tr(chatId, "CHOOSE_PRO_FOR_TIME", time, list, item.pros.length)
+        );
+        return "";
+      }
+
+      if (
+        hasPros &&
+        item.pros.length === 1 &&
+        !col.professionalEmail &&
+        !col.professionalName
+      ) {
+        // un solo professionista: assegnalo automaticamente
+        const only = item.pros[0];
+        col.professionalName = only.name;
+        col.professionalEmail =
+          only.email ||
+          (typeof proEmailByName === "function" ? proEmailByName(only.name) : null);
+        col.professionalAny = false;
+      }
+
+      // Se vuoi bloccare il caso "nessun pro e non è ANY", scommenta:
+      // if (needPro && (!hasPros || item.pros.length === 0)) {
+      //   return safeSend(client, chatId, tr(chatId, "NO_PRO_AVAILABLE_FOR_TIME", time));
+      // }
+
+      state.step = "collect";
+      pending.set(chatId, state);
+
+      if (typeof scheduleReenter === "function") {
+        await scheduleReenter(client, chatId, `ok ${time}`, tools);
+        return "";
+      }
+      // fallback (non dovrebbe servire, ma è sicuro):
+      return handleMessage(client, chatId, `ok ${time}`, tools);
+
+      // ============== Parsing e altre funzioni ==============
+      function parseIntake(text) {
+        const out = {};
+        const t = norm(text);
+        let svc = resolveServiceFromText(text);
+        if (!svc) {
+          const hit = fuzzyService(text);
+          const first =
+            (typeof cfgServices === "function" && (cfgServices()[0] || null)) ||
+            null;
+          const hasSvcToken = (() => {
+            try {
+              const tokens = (cfgServices() || [])
+                .flatMap((s) => s.toLowerCase().split(/\W+/))
+                .filter((x) => x && x.length >= 4);
+              const nq = norm(text);
+              return tokens.some((tok) => nq.includes(norm(tok)));
+            } catch {
+              return false;
+            }
+          })();
+          if (hit && !(first && norm(hit) === norm(first) && !hasSvcToken))
+            svc = hit;
+        }
+        if (svc) out.service = svc;
+
+        const relDay = safeParseDateWithLock(text);
+        if (relDay) out.when = relDay;
+        let time = parseTimeSmart(text);
+        if (!time) time = parseNaturalTime(text);
+
+        if (time) out.time = time;
+        return out;
+      }
+      function parseDaypartWindow(text) {
+        const t = norm(text);
+        const dp = getDaypartBoundaries();
+        if (/\bmattin/.test(t)) return dp.mattina;
+        if (/\bpomeriggio\b/.test(t)) return dp.pomeriggio;
+        if (/\bsera\b/.test(t)) return dp.sera;
+        return null;
+      }
+
+      // === Giorno chiuso? (settimana + date specifiche)
+      function cfgClosedDay(date) {
+        const d = date instanceof Date ? date : new Date(date);
+        const dayKey = isoWeekday(d); // '1'..'7'
+
+        // chiusure settimanali
+        const closed = config.closedDays ?? config.daysOff ?? {};
+        if (Array.isArray(closed)) {
+          if (closed.map(String).includes(dayKey)) return true;
+        } else if (closed && typeof closed === "object") {
+          // se esiste la chiave ed è truthy (o non esplicitamente false) consideriamo chiuso
+          if (
+            Object.prototype.hasOwnProperty.call(closed, dayKey) &&
+            closed[dayKey] !== false
+          )
+            return true;
+        }
+
+        // date specifiche (ferie/festivi)
+        const toYMD = (dd) =>
+          `${dd.getFullYear()}-${String(dd.getMonth() + 1).padStart(
+            2,
+            "0"
+          )}-${String(dd.getDate()).padStart(2, "0")}`;
+        const ymd = toYMD(d);
+        const closedDates = Array.isArray(config.holidays)
+          ? config.holidays
+          : Array.isArray(config.closedDates)
+            ? config.closedDates
+            : [];
+        if (closedDates.includes(ymd)) return true;
+
+        return false;
+      }
+
+      // === Orari vicini a un target (es. se 10:30 non c'è, proponi 10:00/11:00…)
+      function nearestTimes(slots, target, count = 3) {
+        const tm = timeToMinutes(target);
+        return (slots || [])
+          .map((s) => ({ s, d: Math.abs(timeToMinutes(s) - tm) }))
+          .sort((a, b) => a.d - b.d)
+          .slice(0, count)
+          .map((x) => x.s);
+      }
+
+      // === Prompt “scegli servizio” (lista da config)
+      function askService(stateIn, chatId) {
+        const svcs = cfgServices();
+        if (!svcs.length) return "Quale trattamento desideri prenotare?";
+
+        const st = stateIn || getState(chatId);
+        st.ui = st.ui || {};
+        st.ui.lastServiceList = svcs; // già c’è
+        st.collected ||= {};
+        st.collected.svcOptions = svcs; // <-- AGGIUNGI QUESTA RIGA
+        pending.set(chatId, st);
+
+        return `💆‍♀️ Quale trattamento desideri prenotare?\n${svcs
+          .map((s, i) => `${i + 1}) ${s}`)
+          .join("\n")}\n(1-${svcs.length})`;
+      }
+
+      // === Filtra times con vincoli after/before tipo "dopo 15:00" / "prima 18:00"
+      function filterTimesByAfterBefore(
+        times,
+        { after = null, before = null } = {}
+      ) {
+        let out = Array.isArray(times) ? times.slice() : [];
+        if (after) {
+          const a = timeToMinutes(after);
+          out = out.filter((t) => timeToMinutes(t) >= a);
+        }
+        if (before) {
+          const b = timeToMinutes(before);
+          out = out.filter((t) => timeToMinutes(t) <= b);
+        }
+        return out.sort(compareHHMM);
+      }
+
+      // === Se il giorno è oggi, elimina gli orari già passati
+      function filterOutPastTimesForToday(day, times) {
+        const D = day instanceof Date ? day : new Date(day);
+        const now = new Date();
+        const isSameDate =
+          D.getFullYear() === now.getFullYear() &&
+          D.getMonth() === now.getMonth() &&
+          D.getDate() === now.getDate();
+        if (!isSameDate) return times;
+
+        const curMin = now.getHours() * 60 + now.getMinutes();
+        return (times || [])
+          .filter((t) => timeToMinutes(t) >= curMin)
+          .sort(compareHHMM);
+      }
+
+      // === Messaggio di disponibilità (giorno singolo) con raggruppamento per fasce e lista pro nello slot
+      async function buildAvailabilityMessage({
+        day,
+        service = null, // nome servizio (opzionale)
+        duration = null, // in minuti (se assente, prende da config servizio o 30)
+        professional = null, // email o nome pro (opzionale)
+        window = null, // es. ['09:00','12:30']
+        after = null, // 'HH:MM'
+        before = null, // 'HH:MM'
+      } = {}) {
+        const D = atNoon(day);
+        if (cfgClosedDay(D)) {
+          const next = nextOpenDay(D);
+          return `Il giorno ${fmtDate(D)} siamo chiusi. Ti va bene ${fmtDate(
+            next
+          )}?`;
+        }
+
+        // Risoluzione pro
+        const proEmail = professional
+          ? professional.includes("@")
+            ? professional
+            : proEmailByName(professional) || null
+          : null;
+
+        // Durata
+        let durMin = Number(duration);
+        if (!Number.isFinite(durMin) || durMin <= 0) {
+          durMin = service ? cfgServiceDuration(service) : 30;
+        }
+
+        // Prendi slots dettagliati (time + pros)
+        const detail = await fetchSlots({
+          service,
+          day: D,
+          duration: durMin,
+          professional: proEmail || professional || null,
+          wantDetail: true,
+        });
+        const list = Array.isArray(detail) ? detail : [];
+        let times = list.map((x) => x.time);
+
+        // Finestra “mattina/pomeriggio/sera”
+        if (window && Array.isArray(window) && window.length === 2) {
+          times = filterSlotsByWindow(times, window);
+        }
+
+        // Vincoli after/before
+        times = filterTimesByAfterBefore(times, { after, before });
+
+        // Se oggi, elimina orari passati
+        times = filterOutPastTimesForToday(D, times);
+
+        if (!times.length) {
+          const fascia = window ? " nella fascia richiesta" : "";
+          return `Per ${fmtDate(D)} non vedo orari liberi${service ? ` per ${service}` : ""
+            }${fascia}.`;
+        }
+
+        // Mappa time -> dettaglio (per label dei pro)
+        const byTime = new Map(list.map((x) => [x.time, x]));
+
+        // Raggruppamento in blocchi
+        const grouped = groupSlotsByDaypart(times);
+        const renderGroup = (title, arr) => {
+          if (!arr || !arr.length) return null;
+          const lines = arr
+            .map((h) => {
+              const item = byTime.get(h) || { pros: [] };
+              const lbl = labelProsForSlot(item); // usa la tua versione già presente
+              return `• ${h}${lbl ? ` (${lbl})` : ""}`;
+            })
+            .join("\n");
+          return `${title}\n${lines}`;
+        };
+
+        const headSvc = service ? ` • ${service}` : "";
+        const headPro = proEmail
+          ? ` • ${proNameByEmail(proEmail) || proEmail}`
+          : "";
+        const blocks = [
+          renderGroup("🌅 Mattina", grouped.mattina),
+          renderGroup("🌤️ Pomeriggio", grouped.pomeriggio),
+          renderGroup("🌙 Sera", grouped.sera),
+        ]
+          .filter(Boolean)
+          .join("\n");
+
+        return `📅 Disponibilità ${fmtDate(D)}${headSvc}${headPro}\n${blocks}`;
+      }
+    }
+
+    // ==== Stato conversazione (export compat) ====
+    export function getState(chatId) {
+      if (!pending.has(chatId)) {
+        pending.set(chatId, {
+          step: "collect",
+          collected: {
+            service: null,
+            when: null,
+            time: null,
+            professionalAny: false, // <— NEW
+            professionalName: null,
+            professionalEmail: null,
+            customerName: null,
+            options: [],
+            proOptions: null,
+            daypartWindow: null,
+            infoOptions: null,
+          },
+          context: { lastService: null, lastInfoTopic: null, lock: null },
+        });
+      }
+      return pending.get(chatId);
+    }
+
+    export function resetState(chatId) {
+      pending.delete(chatId);
+    }
+    function setState(chatId, st) {
+      if (!st || typeof st !== "object") return;
+      pending.set(chatId, st);
+    }
+    // === MENU EDIT HELPERS ===
+    function _fmtBookingLine(booking) {
+      if (!booking) return "";
+      const when = new Date(booking.startTime || booking.day || new Date());
+      const dd = String(when.getDate()).padStart(2, "0");
+      const mm = String(when.getMonth() + 1).padStart(2, "0");
+      const hh = String(when.getHours()).padStart(2, "0");
+      const mi = String(when.getMinutes()).padStart(2, "0");
+      const pro =
+        booking.professionalName ||
+        proNameByEmail(booking.professionalEmail) ||
+        "—";
+      const service = booking.service || booking.serviceName || "";
+      return `${dd}/${mm} ${hh}:${mi} — ${service}${pro ? " con " + pro : ""}`;
+    }
+    function showEditMenu(booking) {
+      const when = new Date(booking.startTime);
+      const dd = String(when.getDate()).padStart(2, "0");
+      const mm = String(when.getMonth() + 1).padStart(2, "0");
+      const hh = String(when.getHours()).padStart(2, "0");
+      const mi = String(when.getMinutes()).padStart(2, "0");
+      const pro =
+        booking.professionalName ||
+        proNameByEmail(booking.professionalEmail) ||
+        "—";
+      const line = `${dd}/${mm} ${hh}:${mi} — ${booking.service} con ${pro}`;
+      return `Vuoi gestire questa prenotazione?
+• ${line}
+
+0) Cancella
+1) Modifica data
+2) Modifica orario
+3) Modifica professionista
+4) Modifica nome
+(0-4)`;
+    }
+    function renderEditBookingList(bookings) {
+      return bookings
+        .map((b, i) => {
+          const when = new Date(b.startTime);
+          const dd = String(when.getDate()).padStart(2, "0");
+          const mm = String(when.getMonth() + 1).padStart(2, "0");
+          const hh = String(when.getHours()).padStart(2, "0");
+          const mi = String(when.getMinutes()).padStart(2, "0");
+          const pro =
+            b.professionalName || proNameByEmail(b.professionalEmail) || "—";
+          return `${i + 1}) ${dd}/${mm} ${hh}:${mi} — ${b.service} con ${pro}`;
+        })
+        .join("\n");
+    }
+
+    async function startEditChooseBooking(
+      client,
+      chatId,
+      bookings,
+      nextStep = null
+    ) {
+      const s = pending.get(chatId) || getState(chatId);
+      s.step = "edit_pick_booking";
+      s.edit = { list: bookings, nextStep: nextStep || null };
+      pending.set(chatId, s);
+
+      const list = renderEditBookingList(bookings);
+      const msg =
+        getLang(chatId) === "en"
+          ? `Which booking do you want to manage?\n${list}\n(1-${bookings.length})`
+          : `Quale prenotazione vuoi gestire?\n${list}\n(1-${bookings.length})`;
+
+      return reply(client, chatId, msg);
+    }
+
+    // ===== [PATCH helpers intent & sanitize] =====
+
+    function _wb(re) {
+      return new RegExp(`(?:^|\\b)${re}(?:\\b|$)`, "i");
+    }
+    // Typo-tolerance: Damerau–Levenshtein distance (micro)
+    function dlDist(a = "", b = "") {
+      a = String(a);
+      b = String(b);
+      const n = a.length,
+        m = b.length;
+      if (!n) return m;
+      if (!m) return n;
+      const INF = n + m;
+      const da = new Map();
+      const d = Array(n + 2);
+      for (let i = 0; i < n + 2; i++) d[i] = Array(m + 2).fill(0);
+      d[0][0] = INF;
+      for (let i = 0; i <= n; i++) {
+        d[i + 1][1] = i;
+        d[i + 1][0] = INF;
+      }
+      for (let j = 0; j <= m; j++) {
+        d[1][j + 1] = j;
+        d[0][j + 1] = INF;
+      }
+      for (let i = 1; i <= n; i++) {
+        let db = 0;
+        for (let j = 1; j <= m; j++) {
+          const i1 = da.get(b[j - 1]) || 0;
+          const j1 = db;
+          const cost = a[i - 1] === b[j - 1] ? ((db = j), 0) : 1;
+          d[i + 1][j + 1] = Math.min(
+            d[i][j] + cost, // sost
+            d[i + 1][j] + 1, // ins
+            d[i][j + 1] + 1, // canc
+            d[i1][j1] + (i - i1 - 1) + 1 + (j - j1 - 1) // trasposizione
+          );
+        }
+        da.set(a[i - 1], i);
+      }
+      return d[n + 1][m + 1];
+    }
+    function typoSim(a = "", b = "") {
+      const L = Math.max(a.length, b.length) || 1;
+      return 1 - dlDist(a, b) / L; // 0..1
+    }
+
+    function parseExplicitMention(text = "") {
+      const s = text.toLowerCase();
+      const m = s.match(
+        /(?:info|informazioni|dettagli|spiegami|dimmi).{0,20}\b(?:su|sul|sulla|sui|sulle)\s+([^\?\!\.\n]+)/i
+      );
+      return m ? m[1].trim() : null;
+    }
+    function _servicesForIntent() {
+      return cfgServices().map((n) => ({
+        name: n,
+        synonyms: cfgServiceSynonyms(n),
+      }));
+    }
+
+    function scoreService(text, svc) {
+      const t = _norm(text);
+      const name = _norm(svc.name || "");
+      const syns = (svc.synonyms || []).map(_norm);
+
+      let score = 0;
+
+      // 1) match “forte” a parola intera
+      if (_wb(name).test(t)) score = Math.max(score, 0.92);
+      for (const sy of syns) if (_wb(sy).test(t)) score = Math.max(score, 0.92);
+
+      // 2) overlap token parziale (già presente)
+      const tokens = new Set(t.split(" "));
+      for (const sy of [name, ...syns]) {
+        const parts = sy.split(" ").filter(Boolean);
+        if (!parts.length) continue;
+        const hit = parts.filter((p) => tokens.has(p)).length / parts.length;
+        score = Math.max(score, hit * 0.72);
+      }
+
+      // 3) typo-tolerance (Damerau-Levenshtein) su token singoli
+      //    Applica solo quando non abbiamo già match forte.
+      if (score < 0.85) {
+        const cand = [name, ...syns].filter(Boolean);
+        const inputTokens = t.split(" ").filter(Boolean);
+
+        let bestTypo = 0;
+        for (const itok of inputTokens) {
+          // ignora token troppo corti/comuni
+          if (itok.length < 3) continue;
+          for (const label of cand) {
+            const parts = label.split(" ").filter(Boolean);
+            for (const p of parts) {
+              if (p.length < 3) continue;
+              const sim = typoSim(itok, p); // 0..1
+              // soglia morbida: >=0.72 è un buon “quasi match” (1-2 errori)
+              if (sim >= 0.72) bestTypo = Math.max(bestTypo, sim);
+            }
+          }
+        }
+        // pesa moderatamente: non superare match esatti
+        if (bestTypo > 0) score = Math.max(score, Math.min(0.82, bestTypo * 0.82));
+      }
+
+      return score;
+    }
+
+    const REFILL_PAT =
+      /\b(re[\s-]?fill|refil{1,2}|ritocco|ribilanciamento|manutenzione)\b.*\b(gel|ricostruzione)?\b/i;
+
+    /* Risolve il servizio dal testo con priorità alle menzioni esplicite. */
+    export function resolveServiceIntent(text, state = {}, services = []) {
+      const explicit = parseExplicitMention(text);
+      if (REFILL_PAT.test(text)) return "Refill Gel";
+
+      if (explicit) {
+        const e = _norm(explicit);
+        let best = { name: null, score: 0 };
+        for (const s of services) {
+          const sc = scoreService(e, s);
+          if (sc > best.score) best = { name: s.name, score: sc };
+        }
+        if (best.score >= 0.6) return best.name;
+      }
+
+      const t = _norm(text);
+      let best = { name: null, score: 0 };
+      for (const s of services) {
+        const sc = scoreService(t, s);
+        if (sc > best.score) best = { name: s.name, score: sc };
+      }
+      if (best.score >= 0.6) return best.name;
+
+      return state.lastService || null;
+    }
+    let __lastReminderSlotKey = ""; // evita doppio invio nello stesso slot (runtime)
+
+    function normalizeRecipientId(b) {
+      const raw = (b?.clientChatId || b?.chatId || b?.clientPhone || "").toString().trim();
+      if (!raw) return "";
+      if (raw.includes("@c.us") || raw.includes("@g.us")) return raw;
+      const digits = raw.replace(/[^\d]/g, "");
+      return digits ? `${digits}@c.us` : raw;
+    }
+
+    function floorToHalfHour(d) {
+      const x = new Date(d);
+      x.setSeconds(0, 0);
+      x.setMinutes(x.getMinutes() < 30 ? 0 : 30);
+      return x;
+    }
+
+    function slotKey(d) {
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+    }
+
+    // Tick “a slot”: se ora è 09:30 -> target = domani 09:30..10:00
+    export async function remind24hTick(sendFn, opts = {}) {
+      const { batchLimit = 120, graceMinutes = 10 } = opts;
+      if (typeof sendFn !== "function") throw new Error("remind24hTick: sendFn mancante");
+
+      const now = new Date();
+      const slot = floorToHalfHour(now);
+
+      // Se il processo parte “in ritardo” (es. sono le 09:25 e slot=09:00), non inviare quello vecchio
+      const lateMs = now.getTime() - slot.getTime();
+      if (lateMs < 0 || lateMs > graceMinutes * 60_000) return 0;
+
+      const sk = slotKey(slot);
+      if (sk === __lastReminderSlotKey) return 0;
+      __lastReminderSlotKey = sk;
+
+      // domani stessa ora/minuti dello slot
+      const targetStart = new Date(slot);
+      targetStart.setDate(targetStart.getDate() + 1);
+
+      // finestra: 30 minuti (09:30..10:00)
+      const targetEnd = new Date(targetStart);
+      targetEnd.setMinutes(targetEnd.getMinutes() + 30);
+
+      const arr = (typeof loadBookings === "function" ? loadBookings() : null) || [];
+      if (!Array.isArray(arr)) return 0;
+
+      const fromMs = targetStart.getTime();
+      const toMs = targetEnd.getTime();
+
+      let sent = 0;
+
+      for (const b of arr) {
+        if (sent >= batchLimit) break;
+        if (!b || b.status === "cancelled") continue;
+
+        // idempotenza anche dopo riavvio: se già inviato per questo slot, skippa
+        if (b.reminder24hSent || b.reminder24hSlotKey === sk) continue;
+
+        const startMs = Date.parse(b.startTime);
+        if (!Number.isFinite(startMs)) continue;
+
+        // ✅ qui la tua richiesta: tutti gli appuntamenti tra targetStart e targetEnd
+        if (startMs < fromMs || startMs >= toMs) continue;
+
+        const toId = normalizeRecipientId(b);
+        if (!toId) continue;
+
+        const svc = b.service || b.serviceName || "il trattamento";
+
+        const pro =
+          b.professionalName ||
+          (typeof proNameByEmail === "function" ? proNameByEmail(b.professionalEmail) : null) ||
+          "il professionista";
+
+        const dt = new Date(startMs);
+        const timeStr = `${String(dt.getHours()).padStart(2, "0")}:${String(dt.getMinutes()).padStart(2, "0")}`;
+        const dayStr =
+          (typeof formatDateWithWeekdayIT === "function"
+            ? formatDateWithWeekdayIT(dt)
+            : dt.toLocaleDateString("it-IT", { weekday: "long", day: "2-digit", month: "long", year: "numeric" })
+          );
+
+        const msg =
+          `Ciao! Ti ricordiamo che domani hai *${svc}* alle *${timeStr}* (${dayStr}) con *${pro}*.\n\n` +
+          `Se vuoi modificare qualche dettaglio, scrivi *modifica*.\nNon vediamo l'ora di accoglierti 🌸`;
+
+        try {
+          await sendFn(toId, msg);
+
+          if (typeof updateBookingByEventId === "function" && b.eventId) {
+            updateBookingByEventId(b.eventId, {
+              reminder24hSent: true,
+              reminder24hSentAt: new Date().toISOString(),
+              reminder24hSlotKey: sk,
+            });
+          } else {
+            b.reminder24hSent = true;
+            b.reminder24hSentAt = new Date().toISOString();
+            b.reminder24hSlotKey = sk;
+          }
+
+          sent++;
+        } catch (e) {
+          console.warn("[remind24hTick] invio fallito:", e?.message || e);
+        }
+      }
+
+      console.log(`[remind24hTick] slot=${sk} target=[${slotKey(targetStart)}..${slotKey(targetEnd)}] sent=${sent}`);
+      return sent;
+    }
+
+
+    // --- CONFIG ---
+    const INACTIVITY_MS = 60 * 60 * 1000; // 1 ora (modifica se vuoi)
+
+    // --- FUNZIONE: invia saluto se l'utente torna dopo inattività ---
+    /**
+     * The function `greetIfReturningUser` checks if a user is returning based on their last activity and
+     * sends a greeting message with an image based on the time of day.
+     * @param chatId - The `chatId` parameter in the `greetIfReturningUser` function represents the unique
+     * identifier for the chat or conversation where the user interaction is taking place. It is used to
+     * track and manage the state and activity of the user within that specific chat context.
+     * @param client - The `client` parameter in the `greetIfReturningUser` function is typically the
+     * client object that manages the chat communication. It is used to send messages and stickers to the
+     * user in the chat identified by `chatId`. If the `client` object is not provided, the function falls
+     * back
+     * @param state - The `state` parameter in the `greetIfReturningUser` function is used to keep track of
+     * the current state of the conversation with the user. In this case, if a returning user is detected
+     * and greeted, the state is set to "collect". This state can be used to manage the
+     */
+    async function greetIfReturningUser(chatId, client, state) {
+      try {
+        const db = loadChatDB();
+        const now = Date.now();
+        const data = db[chatId] = db[chatId] || {};
+        const lastActive = Number(data.lastActive || 0);
+        const lastGreet = Number(data.lastGreet || 0);
+
+        // Solo se c'era una precedente attività e l'inattività supera la soglia
+        // e non abbiamo già salutato dopo l'ultima attività.
+        if (lastActive && now - lastActive >= INACTIVITY_MS && lastGreet < lastActive) {
+          state = "collect";
+          let image;
+          const hour = new Date().getHours();
+          let greeting = "";
+          if (hour >= 6 && hour < 13) {
+            greeting += "Buongiorno 🌞, che bello rivederti!";
+            image = "./buongiorno.jpg";
+          } else if (hour >= 13 && hour < 18) {
+            greeting += "Buon pomeriggio 🍹, mi fa piacere rivederti qui!";
+            image = "./buonpomeriggio.jpg";
+          } else if (hour >= 18 && hour < 22) {
+            greeting += "Buonasera 🌇, che bello rivederti!";
+            image = "./buonasera.jpg";
+          } else {
+            greeting += "Buonanotte 🌙, che bello rivederti!";
+            image = "./buonanotte.jpg";
+          }
+
+          try {
+            // usa il client passato (normalmente il client che gestisce la chat)
+            await safeSend(client || inactivityClient, chatId, greeting);
+            creaEInviaSticker(client, chatId, image);
+            __delay(1000);
+            data.lastGreet = now; // marca il saluto inviato
+          } catch (err) {
+            log("warn", `Errore invio saluto bentornato a ${chatId}`, err?.message || err);
+          }
+        }
+
+        // registra comunque l'attività (l'utente ha scritto ora)
+        data.lastActive = now;
+        saveChatDB(db);
+      } catch (err) {
+        log("error", "greetIfReturningUser failed", err?.message || err);
+      }
+    }
+
+    // --------------------------- util.js: append this block (setAndPersist) ---------------------------
+
+    /**
+     * The `setAndPersist` function in JavaScript is designed to set and persist data to a file system in
+     * an atomic manner, handling different argument combinations for various use cases.
+     * @param a - a can be a string, an object, or a string representing a key.
+     * @param b - The parameter `b` in the `setAndPersist` function represents the data object that you
+     * want to write to a file. It should be an object containing the data that you want to persist.
+     * @param c - The parameter `c` in the `setAndPersist` function represents the third argument that can
+     * be passed to the function. It is used in the third scenario where the function is called with the
+     * following format: `(key, value, stateObj, [filePath])`.
+     * @param d - The parameter `d` in the `setAndPersist` function represents an optional file path where
+     * the data will be written. If provided, the function will use this file path to persist the data. If
+     * not provided, the function will default to using the file path specified in the `stateObj.__
+     * @returns The `setAndPersist` function returns different values based on the input arguments:
+     */
+    export function setAndPersist(a, b, c, d) {
+      const writeAtomic = (targetPath, data) => {
+        try {
+          const dir = path.dirname(targetPath);
+          if (!fsSync.existsSync(dir)) fsSync.mkdirSync(dir, { recursive: true });
+          const tmp = targetPath + ".tmp";
+          fsSync.writeFileSync(tmp, JSON.stringify(data, null, 2), "utf8");
+          fsSync.renameSync(tmp, targetPath);
+        } catch (e) {
+          throw new Error(`writeAtomic failed: ${e?.message || e}`);
+        }
+      };
+
+      const resolvePath = (p) =>
+        path.isAbsolute(String(p || ""))
+          ? p
+          : path.join(DATA_DIR || ".", String(p || ""));
+
+      try {
+        // caso: (filePath, obj)
+        if (typeof a === "string" && typeof b === "object" && b !== null && c === undefined) {
+          const filePath = resolvePath(a);
+          writeAtomic(filePath, b);
+          return b;
+        }
+
+        // caso: (stateObj, filePath)
+        if (typeof a === "object" && a !== null && typeof b === "string" && c === undefined) {
+          const stateObj = a;
+          const filePath = resolvePath(b);
+          writeAtomic(filePath, stateObj);
+          return stateObj;
+        }
+
+        // caso: (key, value, stateObj, [filePath])
+        if (typeof a === "string" && arguments.length >= 3 && typeof c === "object" && c !== null) {
+          const key = a;
+          const value = b;
+          const stateObj = c;
+          const filePath = d
+            ? resolvePath(d)
+            : stateObj.__file
+              ? resolvePath(stateObj.__file)
+              : path.join(DATA_DIR || ".", "state.json");
+          // aggiorna in-place
+          stateObj[key] = value;
+          writeAtomic(filePath, stateObj);
+          return stateObj;
+        }
+
+        throw new Error("setAndPersist: argomenti non riconosciuti");
+      } catch (err) {
+        // usa la funzione di logging già definita in util.js
+        try {
+          log && typeof log === "function"
+            ? log("error", "[setAndPersist] errore", err?.message || err)
+            : console.error("[setAndPersist] errore", err);
+        } catch { }
+        throw err;
+      }
+    }
+
+
+    /* The above code defines a JavaScript function called `getServiceDurationForPro` that takes two
+    parameters: `serviceName` and `proId`. The function is intended to calculate the service duration
+    for a specific professional identified by `proId` for a given `serviceName`. However, the actual
+    implementation of the function is represented by placeholder characters (` */
+    function getServiceDurationForPro(serviceName, proId) {
+      try {
+        // fallback rapido
+        const DEFAULT = 30;
+        if (!serviceName) {
+          if (typeof cfgServiceDuration === "function") {
+            const d = cfgServiceDuration();
+            return Number.isFinite(+d) && +d > 0 ? +d : DEFAULT;
+          }
+          return DEFAULT;
+        }
+
+        // Ottieni item servizio (supporta helper esistenti)
+        const svcItem =
+          (typeof cfgServiceItem === "function" ? cfgServiceItem(serviceName) : null) ||
+          (config && config.services && config.services[serviceName]) ||
+          {};
+
+        // mappa professionalDurations (se esiste)
+        const pd = svcItem.professionalDurations || svcItem.professionalDuration || {};
+
+        // Normalizza proId: se è un nome cerca email con proEmailByName se disponibile
+        let proEmail = proId || null;
+        if (proEmail && typeof proEmailByName === "function" && !/@/.test(String(proEmail))) {
+          try {
+            const mapped = proEmailByName(proEmail);
+            if (mapped) proEmail = mapped;
+          } catch { }
+        }
+
+        // 1) Cerca corrispondenza chiave diretta (case-insensitive) su professionalDurations
+        if (proEmail && pd && typeof pd === "object") {
+          const lookup = String(proEmail).toLowerCase();
+          for (const k of Object.keys(pd)) {
+            if (!k) continue;
+            if (k.toLowerCase() === lookup) {
+              const val = +pd[k];
+              if (Number.isFinite(val) && val > 0) return val;
+            }
+          }
+        }
+
+        // 2) Potrebbe esserci una chiave in pd usata come "nome" invece che email — confronto fuzzy semplice
+        if (proId && pd && typeof pd === "object") {
+          const tryNorm = (v) =>
+            typeof simpleNorm === "function" ? simpleNorm(String(v || "")) : String(v || "").toLowerCase().trim();
+          const tgt = tryNorm(proId);
+          for (const k of Object.keys(pd)) {
+            if (!k) continue;
+            // confronto sulla chiave (nome) o, se la chiave è un'email presente in config.professionals, confronto il nome associato
+            if (tryNorm(k) === tgt) {
+              const val = +pd[k];
+              if (Number.isFinite(val) && val > 0) return val;
+            }
+            const maybeName = config?.professionals?.[k]?.name;
+            if (maybeName && tryNorm(maybeName) === tgt) {
+              const val = +pd[k];
+              if (Number.isFinite(val) && val > 0) return val;
+            }
+          }
+        }
+
+        // 3) Fallback al campo generico duration del servizio (config.services[svc].duration)
+        if (Number.isFinite(+svcItem.duration) && +svcItem.duration > 0) return +svcItem.duration;
+
+        // 4) Fallback all'helper cfgServiceDuration se presente
+        if (typeof cfgServiceDuration === "function") {
+          try {
+            const d = cfgServiceDuration(serviceName);
+            if (Number.isFinite(+d) && +d > 0) return +d;
+          } catch { }
+        }
+
+        // default ultimo
+        return DEFAULT;
+      } catch (err) {
+        // sicurezza: non rompere il flusso di prenotazione
+        try { log && typeof log === "function" && log("warn", "getServiceDurationForPro error", err?.message || err); } catch { }
+        return 30;
+      }
+    }
+
+
+    const __dateParsingInProgress = new Set();
+
+    /**
+     * The function `parseUnifiedDate` in JavaScript parses various date formats and relative date
+     * expressions to return a valid Date object, with the option to provide a base date for context.
+     * @param text - The `parseUnifiedDate` function you provided is quite comprehensive and handles
+     * various date formats and relative date expressions. It parses the input `text` to determine a date
+     * based on the provided `baseDate` or the current date if no base date is specified.
+     * @param [baseDate] - The `baseDate` parameter in the `parseUnifiedDate` function is used to provide a
+     * reference date for parsing relative dates or dates without a specified year. If no `baseDate` is
+     * provided, the current date and time will be used as the default reference point. This allows for
+     * more accurate
+     * @returns The `parseUnifiedDate` function parses a given text input to determine a date relative to a
+     * base date. It handles various formats and expressions such as relative dates (e.g., "today",
+     * "tomorrow"), weekdays, numeric dates, month names, and more. The function returns a `Date` object
+     * representing the parsed date or `null` if the input text does not contain a recognizable date
+     */
+    function parseUnifiedDate(text, baseDate = new Date()) {
+      if (text == null) return null;
+
+      const stripDiacritics = (s) =>
+        String(s).normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+
+      const normalize = (s) => {
+        let t = stripDiacritics(String(s ?? "").toLowerCase().trim());
+        t = t.replace(/[“”"']/g, "");
+        t = t.replace(/\s+/g, " ").trim();
+        // rimuove punteggiatura ai bordi (così "domani?" / "15/12," ecc)
+        t = t.replace(/^[?!.,;:()\[\]{}<>]+/g, "").replace(/[?!.,;:()\[\]{}<>]+$/g, "").trim();
+        return t;
+      };
+
+      const s = normalize(text);
+
+      const base = baseDate instanceof Date ? new Date(baseDate) : new Date();
+      const baseDay = new Date(base);
+      baseDay.setHours(0, 0, 0, 0);
+
+      const setNoon = (d) => {
+        if (!(d instanceof Date) || Number.isNaN(d.getTime())) return null;
+        d.setHours(12, 0, 0, 0);
+        return d;
+      };
+
+      const isValidDate = (d, y, m, day) =>
+        d instanceof Date &&
+        !Number.isNaN(d.getTime()) &&
+        d.getFullYear() === y &&
+        d.getMonth() === m &&
+        d.getDate() === day;
+
+      const makeDate = (y, m, day) => {
+        const d = new Date(y, m, day, 12, 0, 0, 0);
+        return isValidDate(d, y, m, day) ? d : null;
+      };
+
+      const normalizeYear = (yy) => {
+        if (yy == null) return null;
+        const n = parseInt(String(yy), 10);
+        if (Number.isNaN(n)) return null;
+        if (n < 100) return 2000 + n; // 25 -> 2025
+        return n;
+      };
+
+      const rollFutureIfMissingYear = (d) => {
+        if (d && d < baseDay) d.setFullYear(d.getFullYear() + 1);
+        return d;
+      };
+
+      const addDays = (n) => {
+        const d = new Date(baseDay);
+        d.setDate(d.getDate() + n);
+        return setNoon(d);
+      };
+
+      const addMonths = (n) => {
+        const d = new Date(baseDay);
+        d.setMonth(d.getMonth() + n);
+        return setNoon(d);
+      };
+
+      const addYears = (n) => {
+        const d = new Date(baseDay);
+        d.setFullYear(d.getFullYear() + n);
+        return setNoon(d);
+      };
+
+      const wordToNumber = (w) => {
+        const map = {
+          un: 1, uno: 1, una: 1,
+          due: 2, tre: 3, quattro: 4, cinque: 5, sei: 6, sette: 7, otto: 8, nove: 9, dieci: 10,
+          undici: 11, dodici: 12, tredici: 13, quattordici: 14, quindici: 15, sedici: 16,
+          diciassette: 17, diciotto: 18, diciannove: 19, venti: 20,
+          ventuno: 21, ventidue: 22, ventitre: 23, ventiquattro: 24, venticinque: 25,
+          ventisei: 26, ventisette: 27, ventotto: 28, ventinove: 29, trenta: 30, trentuno: 31
+        };
+        if (w == null) return null;
+        const t = normalize(w);
+        if (/^\d+$/.test(t)) return parseInt(t, 10);
+        return map[t] ?? null;
+      };
+
+      // --- 1) Relativi (anche dentro frasi) ---
+      // "oggi" / "domani?" / "dopodomani" / "dopo domani"
+      if (/\boggi\b/.test(s)) return addDays(0);
+      if (/\b(dopodomani|dopo domani)\b/.test(s)) return addDays(2);
+      if (/\bdomani\b/.test(s)) return addDays(1);
+
+      // "settimana prossima", "mese prossimo", "anno prossimo"
+      if (/\bsettimana\s+prossima\b/.test(s)) return addDays(7);
+      if (/\bmese\s+prossim[oa]\b/.test(s)) return addMonths(1);
+      if (/\banno\s+prossim[oa]\b/.test(s)) return addYears(1);
+
+      // "tra/fra X giorni|settimane|mesi|anni" (X cifra o parola)
+      {
+        const rel = s.match(/\b(tra|fra)\s+([a-z0-9]+)\s*(giorno|giorni|g|gg|settimana|settimane|sett|mese|mesi|anno|anni)\b/);
+        if (rel) {
+          const n = wordToNumber(rel[2]);
+          const unit = rel[3];
+          if (n != null && n >= 0) {
+            if (unit === "giorno" || unit === "giorni" || unit === "g" || unit === "gg") return addDays(n);
+            if (unit === "settimana" || unit === "settimane" || unit === "sett") return addDays(n * 7);
+            if (unit === "mese" || unit === "mesi") return addMonths(n);
+            if (unit === "anno" || unit === "anni") return addYears(n);
+          }
+        }
+      }
+
+      // --- 2) Giorni della settimana ---
+      {
+        const weekdayMap = {
+          lunedi: 1, lun: 1,
+          martedi: 2, mar: 2,
+          mercoledi: 3, mer: 3,
+          giovedi: 4, gio: 4,
+          venerdi: 5, ven: 5,
+          sabato: 6, sab: 6,
+          domenica: 0, dom: 0
+        };
+
+        const w = s.match(/\b(lunedi|lun|martedi|mar|mercoledi|mer|giovedi|gio|venerdi|ven|sabato|sab|domenica|dom)\b/);
+        if (w) {
+          const key = w[1];
+          const targetDow = weekdayMap[key];
+          const currentDow = baseDay.getDay();
+          let diff = (targetDow - currentDow + 7) % 7;
+          if (diff === 0) diff = 7; // prossima occorrenza, non "oggi"
+
+          // "venerdì della prossima settimana" => forza settimana successiva
+          if (/\b(settimana prossima|della prossima settimana)\b/.test(s)) diff += 7;
+
+          const d = new Date(baseDay);
+          d.setDate(d.getDate() + diff);
+          return setNoon(d);
+        }
+      }
+
+      // --- 3) Date numeriche (anche dentro frasi) ---
+      // ISO: YYYY-MM-DD / YYYY/MM/DD / YYYY.MM.DD
+      {
+        const iso = s.match(/\b(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})\b/);
+        if (iso) {
+          const y = parseInt(iso[1], 10);
+          const m = parseInt(iso[2], 10) - 1;
+          const day = parseInt(iso[3], 10);
+          const d = makeDate(y, m, day);
+          if (d) return d;
+        }
+      }
+
+      // D/M(/Y) con / - . (prova anche M/D se necessario)
+      {
+        const dmy = s.match(/\b(\d{1,2})[\/\-.](\d{1,2})(?:[\/\-.](\d{2,4}))?\b/);
+        if (dmy) {
+          const a = parseInt(dmy[1], 10);
+          const b = parseInt(dmy[2], 10);
+          const yOpt = normalizeYear(dmy[3]) ?? baseDay.getFullYear();
+
+          // preferenza IT: D/M
+          let d = makeDate(yOpt, b - 1, a);
+
+          // se non valida, prova swap (M/D)
+          if (!d) d = makeDate(yOpt, a - 1, b);
+
+          if (d) {
+            if (dmy[3] == null) d = rollFutureIfMissingYear(d);
+            return d;
+          }
+        }
+      }
+
+      // Spazi: "15 12 2025" / "15 12" (solo se è praticamente tutto il testo)
+      {
+        const spaced = s.match(/^(?:il\s+|data\s+)?(\d{1,2})\s+(\d{1,2})(?:\s+(\d{2,4}))?$/);
+        if (spaced) {
+          const a = parseInt(spaced[1], 10);
+          const b = parseInt(spaced[2], 10);
+          const yOpt = normalizeYear(spaced[3]) ?? baseDay.getFullYear();
+
+          let d = makeDate(yOpt, b - 1, a); // D M
+          if (!d) d = makeDate(yOpt, a - 1, b); // swap
+
+          if (d) {
+            if (spaced[3] == null) d = rollFutureIfMissingYear(d);
+            return d;
+          }
+        }
+      }
+
+      // --- 4) Mese scritto: "15 dicembre", "15 dic 2025", "dicembre 15" ---
+      {
+        const monthMap = {
+          gennaio: 0, gen: 0,
+          febbraio: 1, feb: 1,
+          marzo: 2, mar: 2,
+          aprile: 3, apr: 3,
+          maggio: 4, mag: 4,
+          giugno: 5, giu: 5,
+          luglio: 6, lug: 6,
+          agosto: 7, ago: 7,
+          settembre: 8, set: 8, sett: 8,
+          ottobre: 9, ott: 9,
+          novembre: 10, nov: 10,
+          dicembre: 11, dic: 11
+        };
+
+        const monthKeys = Object.keys(monthMap).sort((a, b) => b.length - a.length).join("|");
+
+        // giorno + mese (+ anno)
+        const dm = s.match(new RegExp(`\\b(\\d{1,2})(?:\\s*(?:°|º))?\\s*(?:di\\s*)?(${monthKeys})\\b(?:\\s+(\\d{2,4}))?`, "i"));
+        if (dm) {
+          const day = parseInt(dm[1], 10);
+          const mKey = normalize(dm[2]);
+          const mm = monthMap[mKey];
+          const yOpt = normalizeYear(dm[3]) ?? baseDay.getFullYear();
+          let d = makeDate(yOpt, mm, day);
+          if (d) {
+            if (dm[3] == null) d = rollFutureIfMissingYear(d);
+            return d;
+          }
+        }
+
+        // mese + giorno (+ anno)
+        const md = s.match(new RegExp(`\\b(${monthKeys})\\s+(\\d{1,2})(?:\\s*(?:°|º))?\\b(?:\\s+(\\d{2,4}))?`, "i"));
+        if (md) {
+          const mKey = normalize(md[1]);
+          const day = parseInt(md[2], 10);
+          const mm = monthMap[mKey];
+          const yOpt = normalizeYear(md[3]) ?? baseDay.getFullYear();
+          let d = makeDate(yOpt, mm, day);
+          if (d) {
+            if (md[3] == null) d = rollFutureIfMissingYear(d);
+            return d;
+          }
+        }
+      }
+
+      // --- 5) Solo giorno: "9", "il 9", "giorno 9" ---
+      {
+        const onlyDay = s.match(/^(?:il\s+|giorno\s+)?(\d{1,2})(?:\s*(?:°|º))?$/);
+        if (onlyDay) {
+          const day = parseInt(onlyDay[1], 10);
+          if (day >= 1 && day <= 31) {
+            let y = baseDay.getFullYear();
+            let m = baseDay.getMonth();
+
+            let d = makeDate(y, m, day);
+            if (!d) return null;
+
+            if (d < baseDay) {
+              m += 1;
+              if (m > 11) {
+                m = 0;
+                y += 1;
+              }
+              d = makeDate(y, m, day);
+              if (!d) return null;
+            }
+            return d;
+          }
+        }
+      }
+
+      // --- 6) Fallback: parser esterno se presente ---
+      if (typeof parseDaySmart === "function") {
+        const d = parseDaySmart(String(text), { baseDate: baseDay });
+        if (d && !Number.isNaN(d.getTime())) return setNoon(new Date(d));
+      }
+
+      return null;
+    }
+
+    /**
+     * Wrapper sicuro per prevenire loop
+     */
+    function safeParseDateWithLock(chatId, text) {
+      // Previeni parsing ricorsivo per la stessa chat
+      if (__dateParsingInProgress.has(chatId)) {
+        log('warn', '[DATE] Parsing già in corso, ignoro', { chatId });
+        return null;
+      }
+
+      try {
+        __dateParsingInProgress.add(chatId);
+        return parseUnifiedDate(text);
+      } finally {
+        __dateParsingInProgress.delete(chatId);
+      }
+    }
+  }

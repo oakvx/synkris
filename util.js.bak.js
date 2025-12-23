@@ -8,6 +8,7 @@ import {
   createCalendarEvent as _createCalendarEvent,
 } from "./gcal.js";
 import * as GCAL from "./gcal.js";
+let inactivityClient = null;
 // --- mini lock per chat ---
 const __busyChats = new Set();
 const __busySince = new Map();
@@ -66,14 +67,13 @@ function log(level, msg, payload = null) {
   const lvl = String(level || "").toLowerCase();
   if (!okLevel(lvl)) return;
   const ts = new Date().toISOString();
-  const line = `[${ts}] [${lvl.toUpperCase()}] ${msg}${
-    payload ? " " + safeJSON(payload) : ""
-  }`;
+  const line = `[${ts}] [${lvl.toUpperCase()}] ${msg}${payload ? " " + safeJSON(payload) : ""
+    }`;
   (lvl === "error"
     ? console.error
     : lvl === "warn"
-    ? console.warn
-    : console.log)(line);
+      ? console.warn
+      : console.log)(line);
 }
 // === NEW: re-entry scheduler to avoid lock recursion ===
 function scheduleReenter(client, chatId, text, tools = {}) {
@@ -86,7 +86,7 @@ function scheduleReenter(client, chatId, text, tools = {}) {
               chatId,
               error: String(err && err.stack ? err.stack : err),
             });
-          } catch {}
+          } catch { }
         }
       );
     }, 0);
@@ -99,7 +99,7 @@ function scheduleReenter(client, chatId, text, tools = {}) {
 const MESSAGES = {
   it: {
     CHOOSE_SLOT_FOR_DAY: (day, lines, n) =>
-      `📅 Disponibilità per il ${day}:\n${lines}\n(1-${n})`,
+      `📅 Disponibilità per ${day}:\n${lines}\n\nScrivi l'orario desiderato (es. "14:30").`,
     INVALID_RANGE: (n) => `Scrivi un numero valido (1-${n}).`,
     CHOOSE_PRO_FOR_TIME: (hhmm, list, n) =>
       `Chi preferisci alle ${hhmm}?\n${list}\n(1-${n})`,
@@ -119,18 +119,54 @@ const MESSAGES = {
       `Which booking do you want to manage?\n${lines}\n(1-${n})`,
   },
 };
-function parseListIndex(input, max) {
-  // rimuove caratteri invisibili WhatsApp: LRM/RLM/NBSP/Unicode bidi
-  const s = String(input ?? "")
-    .replace(/[\u200e\u200f\u202a-\u202e\u00a0]/g, " ")
+
+
+function formatDateWithWeekdayIT(d) {
+  try {
+    const dt = d instanceof Date ? d : new Date(d);
+    if (Number.isNaN(dt.getTime())) return "";
+    // Formatta in italiano: "lunedì 21 dicembre"
+    return dt.toLocaleDateString('it-IT', {
+      weekday: 'long', day: 'numeric', month: 'long'
+    }).toLowerCase();
+  } catch (e) {
+    return "";
+  }
+}
+
+
+function validateDateInRange(d, maxDays = 30) {
+  try {
+    const dt = d instanceof Date ? d : new Date(d);
+    const now = new Date();
+    const diff = Math.ceil((dt - atNoon(now)) / (24 * 60 * 60 * 1000));
+    return diff >= 0 && diff <= maxDays;
+  } catch (e) {
+    return false;
+  }
+}
+
+
+// Helper robusto per scelte numeriche "1", "1)", "1.", ecc.
+// allowZero=true permette "0" (nessuna preferenza).
+function parseListIndex(raw, max, allowZero = false) {
+  const s = String(raw ?? "")
+    .replace(/[\u200e\u200f\u202a-\u202e\u00a0]/g, "")
     .trim();
 
-  // prende il primo numero all’inizio, anche se seguito da ")" "." "-" ecc.
-  const m = s.match(/^\s*(\d{1,3})(?=\D|$)/);
+  const m = s.match(/^(\d+)\s*[\)\.\-]?$/);
   if (!m) return NaN;
+
   const n = parseInt(m[1], 10);
-  if (n < 1 || n > max) return NaN;
-  return n;
+  if (Number.isNaN(n)) return NaN;
+
+  if (max == null) return n;
+
+  if (allowZero) {
+    return n >= 0 && n <= max ? n : NaN;
+  }
+
+  return n >= 1 && n <= max ? n : NaN;
 }
 
 function detectLangHeuristic(text) {
@@ -169,6 +205,21 @@ function tr(chatId, key, ...args) {
   const msg = pack[key] || MESSAGES.it[key];
   return typeof msg === "function" ? msg(...args) : msg || key;
 }
+// === DATE HELPERS ROBUSTI (dd/mm, dd-mm, ISO, timestamp) ===
+const isValidDate = (d) => d instanceof Date && !isNaN(d);
+
+const toISODate = (d) => {
+  const x = d instanceof Date ? d : new Date(d);
+  if (!isValidDate(x)) return null;
+  const y = x.getFullYear();
+  const m = String(x.getMonth() + 1).padStart(2, "0");
+  const day = String(x.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+};
+
+// Guard contro parsing ricorsivo (evita loop infiniti)
+const __dateParsingLocks = new Set();
+
 
 // ================= Bookings.json helpers =================
 function loadBookings() {
@@ -191,19 +242,37 @@ function loadBookings() {
   }
 }
 function saveBookings(arr) {
+  const json = JSON.stringify(arr, null, 2);
+  const tmpPath = BOOKINGS_PATH + ".tmp";
+
   try {
-    const tmpPath = BOOKINGS_PATH + ".tmp";
-    fsSync.writeFileSync(tmpPath, JSON.stringify(arr, null, 2), "utf8");
-    fsSync.renameSync(tmpPath, BOOKINGS_PATH);
+    fsSync.writeFileSync(tmpPath, json, "utf8");
+
+    try {
+      fsSync.renameSync(tmpPath, BOOKINGS_PATH);
+      return true;
+    } catch (e) {
+      // Windows (EPERM) / file lock: fallback a write diretto
+      try {
+        fsSync.writeFileSync(BOOKINGS_PATH, json, "utf8");
+      } catch (e2) {
+        console.error("[bookings] save error:", e2?.message || e2);
+        return false;
+      }
+      try { fsSync.unlinkSync(tmpPath); } catch {}
+      return true;
+    }
   } catch (e) {
     console.error("[bookings] save error:", e?.message || e);
+    return false;
   }
 }
 function persistBooking(rec) {
   const arr = loadBookings();
   arr.push(rec);
-  saveBookings(arr);
+  return saveBookings(arr);
 }
+
 function updateBookingByEventId(eventId, patch) {
   if (!eventId) return;
   const arr = loadBookings();
@@ -302,10 +371,10 @@ export function getUserActiveBookingsAll(phone) {
     const rows = Array.isArray(data)
       ? data
       : Array.isArray(data.bookings)
-      ? data.bookings
-      : Array.isArray(data.rows)
-      ? data.rows
-      : [];
+        ? data.bookings
+        : Array.isArray(data.rows)
+          ? data.rows
+          : [];
 
     const now = Date.now();
     const norm = (s) =>
@@ -352,6 +421,8 @@ function loadHolds() {
     return [];
   }
 }
+
+
 function saveHolds(arr) {
   try {
     const tmp = HOLDS_PATH + ".tmp";
@@ -387,7 +458,7 @@ function getHoldIntervalsForDay(day, email, { ignoreChatId = null } = {}) {
     if (
       email &&
       String(h.professionalEmail || "").toLowerCase() !==
-        String(email || "").toLowerCase()
+      String(email || "").toLowerCase()
     )
       continue;
     const s = Number(h.startMs),
@@ -495,9 +566,12 @@ export async function reviewFollowupsTick(sendFn, opts = {}) {
     const endMs = startMs + (Number(b.durationMin) || 0) * 60_000;
     if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) continue;
 
-    if (endMs <= now && endMs >= from) {
+ if (endMs <= now && endMs >= from) {
+      const toId = normalizeRecipientId(b);
+      if (!toId) continue;
+
       try {
-        await sendFn(b.clientPhone, buildReviewMessage(b));
+        await sendFn(toId, buildReviewMessage(b));
         updateBookingByEventId(b.eventId, {
           reviewAsked: true,
           reviewAskedAt: new Date().toISOString(),
@@ -506,8 +580,7 @@ export async function reviewFollowupsTick(sendFn, opts = {}) {
       } catch (e) {
         console.warn("[reviewFollowupsTick] invio fallito:", e?.message || e);
       }
-    }
-  }
+    }  }
   return sent;
 }
 
@@ -517,21 +590,28 @@ export function buildConfirmMessage(b) {
   const pro = b?.professionalName ? ` con ${b.professionalName}` : "";
   const dt = b?.startTime ? new Date(b.startTime) : null;
   const dd = dt
-    ? `${String(dt.getDate()).padStart(2, "0")}/${String(
-        dt.getMonth() + 1
-      ).padStart(2, "0")}`
+    ? `${String(dt.getDate()).padStart(2, "0")}/${String(dt.getMonth() + 1).padStart(2, "0")}`
     : "";
   const tt = dt
-    ? `${String(dt.getHours()).padStart(2, "0")}:${String(
-        dt.getMinutes()
-      ).padStart(2, "0")}`
+    ? `${String(dt.getHours()).padStart(2, "0")}:${String(dt.getMinutes()).padStart(2, "0")}`
     : "";
-  return `Ciao${name}! Promemoria: ${svc}${pro} il ${dd} alle ${tt}. Non vediamo l'ora di vederti ❤!`;
+  // PATCH: sostituito messaggio di modifica con nota esplicativa
+  return `Ciao${name}! Promemoria: ${svc}${pro} il ${dd} alle ${tt}. Non vediamo l'ora di vederti ❤!\n\nNota: per modificare la prenotazione devi rifarla da capo.`;
 }
 
 /*
  * Semplice tick di conferma: manda un promemoria qualche ora prima.
  * Evita crash se il file non è un array.
+ */
+/**
+ * The function `confirmAppointmentsTick` asynchronously confirms appointments within a specified time
+ * range by sending confirmation messages to clients.
+ * @param sendFn - `sendFn` is a function that will be used to send confirmation messages to clients.
+ * It should accept two parameters: the client's phone number and the confirmation message to be sent.
+ * @param [opts] - The `opts` parameter in the `confirmAppointmentsTick` function is an object that can
+ * contain two optional properties:
+ * @returns The function `confirmAppointmentsTick` returns the number of appointments that were
+ * successfully confirmed and for which a confirmation message was sent.
  */
 export async function confirmAppointmentsTick(sendFn, opts = {}) {
   const { aheadMinutes = 180, batchLimit = 20 } = opts;
@@ -599,6 +679,8 @@ function renderProPrompt(list) {
 function resolveProReply(reply, list) {
   const txt = (reply || "").trim();
   const pureNumber = /^\s*\d+\s*[\).]?\s*$/; // accetta "3" "3)" "3."
+  // no-preference textual answers
+  if (/\b(no|non\s+mi\s+interessa|nessuno|no\s+grazie|non\s+importa)\b/i.test(txt)) { return { any: true, noPreference: true }; }
   if (pureNumber.test(txt)) {
     const n = parseInt(txt, 10);
     if (n === 0) return { any: true };
@@ -634,7 +716,7 @@ function resolveProReply(reply, list) {
   }
   // Soglia severa: accetta solo se è praticamente un match certo
   if (scoreBest >= 0.9) return best;
-  return null; // nome non valido → obbligo scelta dalla lista
+  return null; // nome non valido -> obbligo scelta dalla lista
 }
 
 // Mostra la domanda (mai testo libero)
@@ -668,7 +750,11 @@ function appendUserMessage(chatId, text) {
   const db = loadChatDB();
   db[chatId] = db[chatId] || { msgs: [] };
   db[chatId].msgs.push(String(text || "").slice(0, 800));
-  if (db[chatId].msgs.length > 5) db[chatId].msgs = db[chatId].msgs.slice(-5);
+  if (db[chatId].msgs.length > 5) {
+    db[chatId].msgs = db[chatId].msgs.slice(-5);
+  }
+  // Aggiorna il timestamp di ultima attività dell'utente
+  db[chatId].lastActive = Date.now();
   saveChatDB(db);
 }
 function getRecentMessages(chatId) {
@@ -684,24 +770,62 @@ function getLastService(chatId) {
 function getLastInfoTopic(_) {
   return null;
 }
-function rememberService(_) {}
-function rememberInfoTopic(_) {}
+function rememberService(_) { }
+function rememberInfoTopic(_) { }
 
 // ============== Safe send & reply (+ booking footer) ==============
 export async function safeSend(client, chatId, text, opts = {}) {
   const t = String(text ?? "");
   if (!t.trim()) return "";
-  try {
-    if (client?.sendText) await client.sendText(chatId, t);
-  } catch (e) {
-    log("warn", "safeSend", e?.message || e);
+
+  if (!chatId) {
+    log("warn", "safeSend called without chatId", { preview: t.slice(0, 120) });
+    return "";
   }
-  // Footer automatico per il flow di prenotazione (messaggio separato)
+
+  // ✅ PATCH: Verifica che il client sia pronto
+  if (!client || typeof client.sendText !== "function") {
+    log("warn", "safeSend: client.sendText not available", { chatId });
+    return "";
+  }
+
+  // ✅ PATCH: Aggiungi retry con delay
+  const MAX_RETRIES = 3;
+  const RETRY_DELAY = 1000;
+
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      await client.sendText(chatId, t);
+      log("info", `[SEND OK] attempt ${attempt}`, { chatId, preview: t.slice(0, 50) });
+      break; // Successo, esci dal loop
+    } catch (e) {
+      log("warn", `[SEND FAIL] attempt ${attempt}/${MAX_RETRIES}`, {
+        chatId,
+        err: e?.message || String(e)
+      });
+
+      if (attempt === MAX_RETRIES) {
+        log("error", "safeSend: tutti i tentativi falliti", { chatId });
+        return "";
+      }
+
+      // Attendi prima di riprovare
+      await new Promise(resolve => setTimeout(resolve, RETRY_DELAY * attempt));
+    }
+  }
+
+  // Footer automatico (solo dopo invio riuscito)
   try {
-    await postReplyHook(client, chatId, t, opts);
-  } catch {}
+    if (typeof postReplyHook === "function") {
+      await postReplyHook(client, chatId, t, opts);
+    }
+  } catch (e) {
+    log("warn", "safeSend: postReplyHook threw", { chatId, err: e?.stack || e?.message || e });
+  }
+
   return t;
 }
+
 
 // wrapper usato ovunque nel flow
 async function reply(client, chatId, text, opts = {}) {
@@ -710,22 +834,37 @@ async function reply(client, chatId, text, opts = {}) {
 // === Footer automatico per il flow booking ===
 async function postReplyHook(client, chatId, sentText, opts = {}) {
   try {
+    if (!chatId) return;
     if (opts?.noFooter) return;
+    if (!pending || typeof pending.get !== "function") return;
 
     const st = pending.get(chatId);
-    const col = st?.collected || {};
-    const active = isBookingFlowActive(st, col) || isBookingLocked(st);
+    if (!st) return;
+    const col = st.collected || {};
+    const active = (typeof isBookingFlowActive === "function" && isBookingFlowActive(st, col)) ||
+      (typeof isBookingLocked === "function" && isBookingLocked(st));
     if (!active) return;
 
     // evita loop: se il messaggio appena inviato È già il footer, non reinviare
-    const FOOTER = '❌ Se non vuoi più prenotare, digita "annulla".';
-    if (String(sentText || "").includes('digita "annulla"')) return;
+    const FOOTER = 'ℹ️Se vuoi *ricominciare* da capo, digita “ _annulla_ ”.\nℹ️ Se vuoi *modificare* un appuntamento, digita “ _modifica_ ”!';
+    if (String(sentText || "").includes('digita "annulla"') || String(sentText || "").includes('ricominciare')) return;
 
-    await safeSend(client, chatId, FOOTER, { noFooter: true });
+    // ATTENZIONE: non chiamare safeSend qui (potenziale ricorsione footer->postReplyHook->safeSend->postReplyHook).
+    // Invia il footer direttamente con client.sendText e gestisci gli errori.
+    if (!client || typeof client.sendText !== "function") {
+      log("warn", "postReplyHook: client.sendText not available", { chatId });
+      return;
+    }
+    try {
+      await client.sendText(chatId, FOOTER);
+    } catch (e) {
+      log("warn", "postReplyHook: client.sendText failed", { chatId, err: e?.stack || e?.message || e });
+    }
   } catch (e) {
-    log("warn", "postReplyHook", e?.message || e);
+    log("warn", "postReplyHook", e?.stack || e?.message || e);
   }
 }
+
 
 // ============== LLM Output Sanitization ==============
 const CHATML_STOPS = [
@@ -885,16 +1024,9 @@ function monthLabelIT(idx) {
 // Nome giorno settimana in italiano
 function itaWeekdayName(dateLike) {
   const d = dateLike instanceof Date ? dateLike : new Date(dateLike);
-  const names = [
-    "Domenica",
-    "Lunedì",
-    "Martedì",
-    "Mercoledì",
-    "Giovedì",
-    "Venerdì",
-    "Sabato",
-  ];
-  return names[d.getDay()];
+  const names = ["domenica", "lunedì", "martedì", "mercoledì",
+    "giovedì", "venerdì", "sabato"];
+  return names[d.getDay()] || "";
 }
 
 // Lunedì..Domenica della *prossima* settimana (a mezzogiorno per neutralizzare i fusi)
@@ -926,23 +1058,51 @@ function buildAskDayOfMonthPrompt(year, monthIdx) {
   return `Quale giorno di ${monthLabelIT(monthIdx)} ${year}? (1-${max})`;
 }
 
-// Vuole aprire il menu “modifica appuntamento”?
+// Vuole aprire il menu "modifica appuntamento"?
 function wantsEditMenu(text) {
-  const s = norm(text || "");
-  return (
-    /^\/?modifica\b/.test(s) ||
-    (/\b(modifica|gestisci|cambia|sposta|annulla)\b/.test(s) &&
-      /\b(appunt|prenot)\w*/.test(s)) ||
-    (/\b(appunt|prenot)\w*/.test(s) &&
-      /\b(modifica|gestisci|cambia|sposta|annulla)\b/.test(s))
-  );
-}
+  const s = norm(text || "").trim();
 
+  // Comando secco sempre valido
+  if (/^\/?modifica\b/i.test(s)) return true;
+
+  // Verbi "forti" (chiaro intento di modificare/spostare/annullare)
+  const strongActionRe =
+    /\b(?:modific\w*|gestisc\w*|gestir\w*|cambi\w*|spost\w*|rinvi\w*|rimand\w*|posticip\w*|riprogramm\w*|slitt\w*|anticip\w*|annull\w*|cancell\w*|disdic\w*)\b/i;
+
+  // Verbi ambigui richiesti (inoltrare/tramandare): SOLO se scritti da soli
+  const weakSoloCmdRe =
+    /^\/?(?:inoltra|inoltrare|tramanda|tramandare)\s*$/i;
+
+  // Comandi secchi (anche senza contesto)
+  const soloCmdStrongRe =
+    /^\/?(?:edit|gestisci|gestire|cambia|sposta|spostare|rinvia|rimanda|rimandare|posticipa|posticipare|riprogramma|riprogrammare|slitta|slittare|anticipa|anticipare|annulla|annullare|cancella|cancellare|disdici|disdire)\s*$/i;
+
+  // Contesto tipico di appuntamento/prenotazione o cosa stai cambiando
+  const ctxRe =
+    /\b(?:appunt\w*|prenot\w*|booking|data|giorno|ora|orario|slot|professionist\w*|operatric\w*|operatore|nome|intestat\w*)\b/i;
+
+  // Cue data/tempo
+  const dateCueRe =
+    /\b(?:oggi|domani|dopodomani|tra|fra|settimana|prossim\w*|luned\w*|marted\w*|mercoled\w*|gioved\w*|venerd\w*|sabato|domenica|\d{1,2}\s*[\/\-]\s*\d{1,2})\b/i;
+
+  // Indicatori tipici di NUOVA prenotazione (non "prenotazione" ma "prenotare/prenota...")
+  const newBookingRe =
+    /\b(?:prenota|prenotare|prenoto|prenoti|prenotiamo|prenotate|prenoterei|prenoter\w*|disponibilit\w*|avete\s+(?:posto|un\s+buco)|siete\s+liber\w*|vorrei\s+prenot\w*|voglio\s+prenot\w*)\b/i;
+
+  // Se è una frase da nuova prenotazione e NON c'è un verbo forte di modifica -> NON edit
+  if (newBookingRe.test(s) && !strongActionRe.test(s)) return false;
+
+  // Comandi secchi
+  if (weakSoloCmdRe.test(s)) return true;
+  if (soloCmdStrongRe.test(s)) return true;
+
+  // Frase: serve azione forte + (contesto o cue data)
+  return strongActionRe.test(s) && (ctxRe.test(s) || dateCueRe.test(s));
+}
 // Estrai “topic” informativo minimale dalla frase (per guidare il prompt QA)
 function extractInfoTopic(text) {
   const s = norm(text || "");
   if (/\bhenne|henn[eè]\b/.test(s)) return "henné";
-  if (/\ballerg\w*/.test(s)) return "allergie";
   if (/\bprezz|costo|tariff\w*/.test(s)) return "prezzo";
   if (/\bdurat|quanto\s+dura\b/.test(s)) return "durata";
   if (/\bcontroindic|effetti\b/.test(s)) return "controindicazioni";
@@ -968,6 +1128,26 @@ function baseCandidates() {
 }
 
 // ============== QA Adapter (Ollama/injection) ==============
+/**
+ * The function `askQA` is an asynchronous function that interacts with an AI model to generate
+ * responses based on a given prompt and context.
+ * @param prompt - The `prompt` parameter in the `askQA` function represents the question or prompt
+ * that you want to ask the AI model. This prompt is used to generate a response from the AI model
+ * based on the context provided. You can pass a string containing the question or prompt that you want
+ * the AI model
+ * @param context - The `context` parameter in the `askQA` function represents the context or
+ * background information that you want to provide to the AI model when asking a question. It can
+ * include any relevant details, previous conversation history, or additional information that might
+ * help the model generate a more accurate response. This context helps
+ * @param client - The `client` parameter in the `askQA` function is typically used to interact with a
+ * messaging client or service. It allows the function to send messages, receive responses, and perform
+ * other actions related to communication with users. The specific implementation of the `client`
+ * parameter will depend on the messaging platform
+ * @returns The function `askQA` is returning the response from the Ollama AI model after processing
+ * the provided prompt and context. The response is obtained by making a POST request to the Ollama API
+ * endpoint (`/api/chat` or `/api/generate`) with the necessary parameters such as model, messages,
+ * prompt, keep_alive, and options. The function then parses the output JSON response and returns
+ */
 export async function askQA(prompt, context, client) {
   log(
     "info",
@@ -980,8 +1160,8 @@ export async function askQA(prompt, context, client) {
     (lvl === "error"
       ? console.error
       : lvl === "warn"
-      ? console.warn
-      : console.log)(msg, payload || "");
+        ? console.warn
+        : console.log)(msg, payload || "");
   };
 
   const parseKeepAlive = () => {
@@ -1010,6 +1190,50 @@ export async function askQA(prompt, context, client) {
     }
     return url;
   };
+  async function startEditDate(client, chatId) {
+    const phone = phoneFromChatId(chatId);
+    const bookings = getUserActiveBookingsAll(phone);
+
+    if (!bookings.length) {
+      return reply(
+        client,
+        chatId,
+        "Non ho trovato prenotazioni future col tuo numero."
+      );
+    }
+
+    async function openDateForBooking(booking) {
+      const s = pending.get(chatId) || getState(chatId);
+      _editSnapshotStateFromBooking(s, booking);
+      s.step = "edit_reschedule_date";
+      s.edit = { target: booking };
+      s.collected = s.collected || {};
+      pending.set(chatId, s);
+
+      const line = _fmtBookingLine
+        ? _fmtBookingLine(booking)
+        : `${fmtDate(booking.startTime || booking.day || new Date())} — ${booking.service || ""}`;
+
+      await reply(
+        client,
+        chatId,
+        `Vuoi cambiare la data di:\n${line}\n\nDimmi la nuova data (GG/MM, "oggi" o "domani").`
+      );
+
+    };
+
+    if (bookings.length === 1) {
+      return openDateForBooking(bookings[0]);
+    }
+
+    // Più prenotazioni: scelgo quale, poi passo a edit_reschedule_date
+    return startEditChooseBooking(
+      client,
+      chatId,
+      bookings,
+      "edit_reschedule_date"
+    );
+  }
 
   const normalizePrompt = (built) => {
     if (Array.isArray(built)) return { type: "chat", messages: built };
@@ -1024,9 +1248,8 @@ export async function askQA(prompt, context, client) {
   const makeStringPrompt = (q, ctx) => {
     const qq = String(q ?? "").trim();
     const cc = String(ctx ?? "").trim();
-    return `${
-      cc ? cc + "\n\n" : ""
-    }DOMANDA: ${qq}\n\nRISPOSTA breve, chiara, amichevole:`;
+    return `${cc ? cc + "\n\n" : ""
+      }DOMANDA: ${qq}\n\nRISPOSTA breve, chiara, amichevole:`;
   };
 
   // sostituisci la tua postJSON con questa (retry + timeout più lunghi)
@@ -1074,6 +1297,7 @@ export async function askQA(prompt, context, client) {
           status: "fetch_error",
           body: String(e?.message || e),
         });
+
         if (i < timeouts.length - 1) continue;
         return null;
       } finally {
@@ -1177,7 +1401,7 @@ export async function warmOllama() {
         log?.("info", `Ollama warm (generate) @ ${base}`, { model });
         return;
       }
-    } catch {}
+    } catch { }
 
     // 2) fallback /api/chat (scalda anche il percorso chat)
     try {
@@ -1196,7 +1420,7 @@ export async function warmOllama() {
         log?.("info", `Ollama warm (chat) @ ${base}`, { model });
         return;
       }
-    } catch {}
+    } catch { }
   }
 
   // se nessuna base è andata, logga ma non bloccare l’avvio
@@ -1221,10 +1445,10 @@ async function classifyIntent(userText) {
 Rispondi con UNA sola etichetta (minuscola): appointment | info | price | greeting | other
 Regole:
 - Solo la label, senza spiegazioni, niente <think>, niente punteggiatura.
-- Se chiede info e vuole anche prenotare → appointment.
-- Prezzi/listino/tariffe/sconti → price.
-- Solo saluti/small talk senza richiesta concreta → greeting.
-- Dubbi o fuori tema → other.`;
+- Se chiede info e vuole anche prenotare -> appointment.
+- Prezzi/listino/tariffe/sconti -> price.
+- Solo saluti/small talk senza richiesta concreta -> greeting.
+- Dubbi o fuori tema -> other.`;
   const promptIT = `Messaggio: """${String(userText || "").trim()}"""
 Rispondi solo con una delle etichette: appointment | info | price | greeting | other`;
   const build = (msg) => ({
@@ -1237,6 +1461,7 @@ Rispondi solo con una delle etichette: appointment | info | price | greeting | o
       repeat_penalty: 1.1,
       keep_alive: keepAlive,
       stop: ["\n"],
+
     },
   });
   for (const base of bases) {
@@ -1255,7 +1480,7 @@ Rispondi solo con una delle etichette: appointment | info | price | greeting | o
           let body = "";
           try {
             body = await res.text();
-          } catch {}
+          } catch { }
           log("warn", "ollama qa not ok", { base, status: res.status, body });
           continue;
         }
@@ -1282,8 +1507,53 @@ function now() {
 }
 
 function lockBooking(state) {
-  state.context.lock = { type: "appointment", until: now() + BOOKING_LOCK_MS };
+  if (!state) return;
+  ensureContext(state);
+  const now = Date.now();
+  state.context.lock = {
+    active: true,
+    ts: now,
+    ttl: BOOKING_LOCK_MS,
+    type: "appointment"
+  };
 }
+// === Controllo compatibilità tra professionista e servizio ===
+function validateProfessionalForService(serviceName, professionalEmail) {
+  try {
+    if (!serviceName) return { ok: false, reason: "Servizio non specificato." };
+    const svc = (config && config.services && config.services[serviceName]) || null;
+    if (!svc) return { ok: false, reason: "Servizio non configurato." };
+
+    const allowed = Array.isArray(svc.professionals) ? svc.professionals : [];
+    if (!allowed.length) return { ok: true }; // servizio aperto a tutti i pro
+
+    if (!professionalEmail) {
+      // se non è stato scelto un pro specifico, permetti la scelta (verifica più tardi)
+      return { ok: true };
+    }
+
+    if (!allowed.includes(professionalEmail)) {
+      const proName =
+        (config && config.professionals && config.professionals[professionalEmail] && config.professionals[professionalEmail].name) ||
+        professionalEmail ||
+        "professionista";
+      const allowedNames = allowed
+        .map((em) => (config && config.professionals && config.professionals[em] && config.professionals[em].name) || em)
+        .filter(Boolean)
+        .join(", ");
+      return {
+        ok: false,
+        reason: `❌ ${proName} non esegue “${serviceName}”.\nDisponibili: ${allowedNames || "nessuno"}.`,
+      };
+    }
+    return { ok: true };
+  } catch (e) {
+    log("error", "validateProfessionalForService failed", e?.stack || e?.message || e);
+    return { ok: false, reason: "Errore di validazione. Riprova." };
+  }
+}
+
+
 
 function ensureContext(st) {
   if (!st) return;
@@ -1295,32 +1565,78 @@ function ensureContext(st) {
   }
 }
 
-function isBookingLocked(st) {
-  if (!st?.context?.lock) return false;
-  const { active, ts, ttl } = st.context.lock;
-  if (!active) return false;
-  if (!ts || Date.now() - ts > (ttl || 300000)) {
-    st.context.lock.active = false; // scaduto → sblocca
-    return false;
+/**
+ * Ritorna true se la prenotazione è attualmente lockata e il lock è ancora valido.
+ * Se il lock è corrotto o scaduto lo resetta in automatico e ritorna false.
+ */
+function isBookingLocked(st, nowTs) {
+  if (!st || !st.context || !st.context.lock) return false;
+  let lock = st.context.lock;
+  // Se il lock è nel vecchio formato {type, until}, lo converto
+  if (lock.type && typeof lock.until === "number") {
+    const nowConv = typeof nowTs === "number" ? nowTs : Date.now();
+    if (nowConv < lock.until) {
+      // Lock ancora valido: imposto un nuovo lock con campo active/ts/ttl
+      const remaining = lock.until - nowConv;
+      st.context.lock = { active: true, ts: nowConv, ttl: remaining, type: lock.type };
+      lock = st.context.lock;
+    } else {
+      // Lock scaduto: resetto lo stato
+      st.context.lock = { active: false, ts: 0, ttl: 0 };
+      return false;
+    }
   }
-  return true;
+  if (!lock.active) return false;
+  const now = typeof nowTs === "number" ? nowTs : Date.now();
+  // (resto del codice invariato...)
 }
 
-function bumpBookingLock(st) {
+/**
+ * Aggiorna/crea il lock sulla prenotazione.
+ * Puoi passare opzionalmente un oggetto meta (es. { owner: chatId, reason: 'booking' }).
+ */
+function bumpBookingLock(st, ttlMs = 2 * 60 * 1000, meta) {
   if (!st) return;
   ensureContext(st);
-  st.context.lock.active = true;
-  st.context.lock.ts = Date.now();
+
+  const rawTtl = Number(ttlMs);
+  const ttl = Number.isFinite(rawTtl) && rawTtl > 0 ? rawTtl : 2 * 60 * 1000;
+  const now = Date.now();
+
+  const prev = st.context.lock || {};
+  // Filtra dal meta eventuali chiavi riservate (active, ts, ttl)
+  const { active: _, ts: __, ttl: ___, ...metaFiltered } = meta || {};
+  st.context.lock = {
+    ...prev,          // mantengo vecchi metadati
+    active: true,
+    ts: now,
+    ttl: ttl,
+    ...metaFiltered   // aggiungo nuovi metadati filtrati
+  };
+
 }
 
-function unlockBooking(st) {
-  try {
-    if (st?.context?.lock) {
-      st.context.lock.active = false;
-      st.context.lock.ts = 0;
-    }
-  } catch {}
+/**
+ * Sblocca esplicitamente la prenotazione.
+ * Puoi passare un motivo per debugging (reason).
+ */
+function unlockBooking(st, reason) {
+  if (!st || !st.context) return;
+
+  const now = Date.now();
+  const prev = st.context.lock || {};
+  const { active: _, ts: __, ttl: ___, ...prevFiltered } = prev;
+  st.context.lock = {
+    ...prevFiltered,  // mantengo vecchi metadati (owner, reason, ecc.)
+    active: false,
+    ts: 0,
+    ttl: 0,
+    releasedAt: now,
+    releaseReason: reason || "manual",
+  };
+
 }
+
 
 function isBookingFlowActive(state, col) {
   return !!(state && state.step && state.step !== "collect");
@@ -1345,6 +1661,136 @@ function timeToMinutes(hhmm) {
   const h = Number(parts[0] || 0);
   const m = Number(parts[1] || 0);
   return h * 60 + (m || 0);
+}
+// Ritorna true se il professionista è OFF per tutta la giornata (da config.unavailability)
+function isProfessionalOffFullDay({ professionalEmail, day }) {
+  if (!professionalEmail || !day) return false;
+
+  const D = day instanceof Date ? day : new Date(day);
+  if (!(D instanceof Date) || isNaN(D)) return false;
+
+  const toYMD = (d) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
+      d.getDate()
+    ).padStart(2, "0")}`;
+
+  const dayKey = isoWeekday(D);
+  const dayStart = new Date(D);
+  dayStart.setHours(0, 0, 0, 0);
+  const dayEnd = new Date(D);
+  dayEnd.setHours(23, 59, 59, 999);
+
+  const unav = config.unavailability || {};
+  const rules = Array.isArray(unav[professionalEmail])
+    ? unav[professionalEmail]
+    : [];
+  if (!rules.length) return false;
+
+  const IT2NUM = {
+    lun: "1",
+    lunedi: "1",
+    lunedì: "1",
+    mar: "2",
+    martedi: "2",
+    martedì: "2",
+    mer: "3",
+    mercoledi: "3",
+    mercoledì: "3",
+    gio: "4",
+    giovedi: "4",
+    giovedì: "4",
+    ven: "5",
+    venerdi: "5",
+    venerdì: "5",
+    sab: "6",
+    sabato: "6",
+    dom: "7",
+    domenica: "7",
+  };
+  const EN2NUM = {
+    mon: "1",
+    monday: "1",
+    tue: "2",
+    tuesday: "2",
+    wed: "3",
+    wednesday: "3",
+    thu: "4",
+    thursday: "4",
+    fri: "5",
+    friday: "5",
+    sat: "6",
+    saturday: "6",
+    sun: "7",
+    sunday: "7",
+  };
+
+  const normDayKey = (v) => {
+    if (v == null) return null;
+    const s = String(v).trim().toLowerCase();
+    if (/^[1-7]$/.test(s)) return s;
+    if (IT2NUM[s]) return IT2NUM[s];
+    if (EN2NUM[s]) return EN2NUM[s];
+    if (s.startsWith("lun")) return "1";
+    if (s.startsWith("mar")) return "2";
+    if (s.startsWith("mer") || s.startsWith("wed")) return "3";
+    if (s.startsWith("gio") || s.startsWith("thu")) return "4";
+    if (s.startsWith("ven") || s.startsWith("fri")) return "5";
+    if (s.startsWith("sab") || s.startsWith("sat")) return "6";
+    if (s.startsWith("dom") || s.startsWith("sun")) return "7";
+    return null;
+  };
+
+  const daysMatch = (ruleDays) => {
+    if (!Array.isArray(ruleDays) || ruleDays.length === 0) return true;
+    const set = new Set(ruleDays.map(normDayKey).filter(Boolean));
+    return set.has(String(dayKey));
+  };
+
+  const inRange = (from, to) => {
+    const s = from ? new Date(from).getTime() : -Infinity;
+    const e = to ? new Date(to).getTime() : Infinity;
+    return dayStart <= e && dayEnd > s;
+  };
+
+  for (const r of rules) {
+    if (!r || typeof r !== "object") continue;
+    const type = String(r.type || "").toLowerCase();
+
+    // Giorno fisso della settimana
+    if (type === "day" && Array.isArray(r.days)) {
+      if (daysMatch(r.days) && (!r.hours || r.fullDay === true)) {
+        return true;
+      }
+      continue;
+    }
+
+    // Data/e specifiche: date / dates
+    if (type === "date" || type === "dates") {
+      const dates = Array.isArray(r.dates) ? r.dates : r.date ? [r.date] : [];
+      if (dates.includes(toYMD(D)) && (!r.hours || r.fullDay === true)) {
+        return true;
+      }
+      continue;
+    }
+
+    // Range di date (from/to)
+    if (type === "range") {
+      if (inRange(r.from, r.to) && daysMatch(r.days)) {
+        if (!r.hours || r.fullDay === true) return true;
+      }
+      continue;
+    }
+
+    // Ricorrenze (tipo: tutti i lun, mer, ecc.)
+    if (type === "recurrence") {
+      if (daysMatch(r.days) && (!r.hours || r.fullDay === true)) {
+        return true;
+      }
+      continue;
+    }
+  }
+
+  return false;
 }
 
 function minutesToHHMM(min) {
@@ -1466,10 +1912,32 @@ function parseNaturalTime(s = "") {
 
   return null;
 }
+// ---- NEW: interpreta "11/12", "11-12" come intervallo orario se il contesto sembra tempo ----
+function parseTimeRangeFallback(s = "") {
+  if (!s) return null;
+  // attiva fallback solo se ci sono indizi di tempo (evita di sovrascrivere date reali)
+  if (!/\b(verso|intorn(o|a)|circa|intorno|ore|alle|mattin|pomerigg|sera|tarda)\b/i.test(s))
+    return null;
 
-function parseTimeSmart(s = "") {
-  return parseHHMM(s) || parseNaturalTime(s);
+  // cerca pattern tipo "11/12" oppure "11-12" oppure "11 / 12"
+  const m = String(s).match(/\b([01]?\d|2[0-3])\s*[\/\-\–]\s*([01]?\d|2[0-3])\b/);
+  if (!m) return null;
+
+  const a = Number(m[1]), b = Number(m[2]);
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
+
+  // se sono due ore adiacenti (11 e 12) scegli la mezz'ora; altrimenti scegli la minore
+  const hh = Math.min(a, b);
+  const mm = Math.abs(a - b) === 1 ? 30 : 0;
+  return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
 }
+
+// modifica parseTimeSmart per provare anche il fallback degli intervalli
+function parseTimeSmart(s = "") {
+  return parseHHMM(s) || parseNaturalTime(s) || parseTimeRangeFallback(s);
+}
+
+
 
 function parseHHMM(s) {
   const t = (s || "")
@@ -1568,114 +2036,6 @@ function isPast(date) {
   return date.getTime() < Date.now();
 }
 
-function parseRelativeDay(s) {
-  const t = norm(s);
-  const base = new Date();
-
-  if (/\boggi\b/.test(t)) return atNoon(base);
-  if (/\bdomani\b/.test(t)) {
-    const d = new Date(base);
-    d.setDate(d.getDate() + 1);
-    return atNoon(d);
-  }
-  if (/\bdopodomani\b/.test(t)) {
-    const d = new Date(base);
-    d.setDate(d.getDate() + 2);
-    return atNoon(d);
-  }
-
-  // "tra 2 giorni" / "fra 3 giorni"
-  {
-    const m = t.match(/\b(fr|tr)a\s+(\d+)\s+giorn/i);
-    if (m) {
-      const add = parseInt(m[2], 10);
-      if (!isNaN(add)) {
-        const d = new Date(base);
-        d.setDate(d.getDate() + add);
-        return atNoon(d);
-      }
-    }
-  }
-
-  // "prossimo lunedi" / "lunedì prossimo"
-  {
-    const m =
-      t.match(
-        /\b(prossim[oa])\s+(lunedi|martedi|mercoledi|giovedi|venerdi|sabato|domenica)\b/i
-      ) ||
-      t.match(
-        /\b(lunedi|martedi|mercoledi|giovedi|venerdi|sabato|domenica)\s+prossim[oa]\b/i
-      );
-    if (m) {
-      const word = (m[2] || m[1]).toLowerCase();
-      const map = {
-        lunedi: 1,
-        martedi: 2,
-        mercoledi: 3,
-        giovedi: 4,
-        venerdi: 5,
-        sabato: 6,
-        domenica: 0,
-      };
-      const target = map[word] ?? null;
-      if (target !== null) {
-        const cand = atNoon(base);
-        const nowDow = cand.getDay();
-        let diff = (target + 7 - nowDow) % 7;
-        if (diff === 0) diff = 7;
-        cand.setDate(cand.getDate() + diff);
-        return cand;
-      }
-    }
-  }
-
-  // "weekend" -> sabato
-  if (/\bweekend\b/.test(t)) {
-    const d = new Date(base);
-    const dow = d.getDay();
-    const diff = (6 + 7 - dow) % 7;
-    d.setDate(d.getDate() + diff);
-    return atNoon(d);
-  }
-
-  // GG/MM, GG-MM, GG.MM (anno opzionale)
-  const m1 = t.match(/\b(\d{1,2})[\/\.\-](\d{1,2})(?:[\/\.\-](\d{2,4}))?\b/);
-  if (m1) {
-    const dd = +m1[1],
-      mm = +m1[2],
-      yy = m1[3] ? +m1[3] : new Date().getFullYear();
-    return new Date(yy, mm - 1, dd, 12, 0, 0, 0);
-  }
-
-  // Giorni della settimana (accenti inclusi)
-  const map = {
-    lunedì: 1,
-    lunedi: 1,
-    martedì: 2,
-    martedi: 2,
-    mercoledì: 3,
-    mercoledi: 3,
-    giovedì: 4,
-    giovedi: 4,
-    venerdì: 5,
-    venerdi: 5,
-    sabato: 6,
-    domenica: 0,
-  };
-  for (const [k, v] of Object.entries(map)) {
-    if (new RegExp(`\\b${k}\\b`, "i").test(t)) {
-      const now = new Date(base);
-      const cand = atNoon(now);
-      const nowDow = now.getDay();
-      let diff = (v + 7 - nowDow) % 7;
-      if (diff === 0) diff = 7;
-      cand.setDate(cand.getDate() + diff);
-      return cand;
-    }
-  }
-  return null;
-}
-
 // ===== Helpers giorno IT estesi (lunedi prossimo, tra X settimane, ecc.) =====
 const DOW_IT = {
   domenica: 0,
@@ -1743,63 +2103,7 @@ function _toInt(tok) {
   if (!Number.isNaN(n) && n >= 0) return n;
   return INT_IT[_norm(tok)] ?? null;
 }
-/** Ritorna {date} oppure {askDow:true} oppure null */
-function resolveDayishText(text, base = new Date()) {
-  const t = _norm(text).replace(/\s+/g, " ").trim();
 
-  // tra|fra X settimane [<dow>]
-  {
-    const m = t.match(
-      /\b(tr|fr)a\s+(\d+|[a-z]+)\s+settimane?(?:\s+(?:il|di)?\s*([a-zì]+))?\b/
-    );
-    if (m) {
-      const weeks = _toInt(m[2]);
-      const dayTok = m[3] || "";
-      if (weeks == null) return null;
-      if (!dayTok) return { askDow: true };
-      const dow = DOW_IT[dayTok] ?? DOW_IT[_norm(dayTok)];
-      if (dow == null) return { askDow: true };
-      return { date: _dateForDow(base, dow, weeks) };
-    }
-  }
-  // (la) settimana prossima [<dow>] / prossimo settimana [<dow>]
-  {
-    const m =
-      t.match(
-        /\b(?:la\s+)?settimana\s+prossima(?:\s+(?:il|di)?\s*([a-zì]+))?\b/
-      ) || t.match(/\bprossima\s+settimana(?:\s+(?:il|di)?\s*([a-zì]+))?\b/);
-    if (m) {
-      const dayTok = m[1] || "";
-      if (!dayTok) return { askDow: true };
-      const dow = DOW_IT[dayTok] ?? DOW_IT[_norm(dayTok)];
-      if (dow == null) return { askDow: true };
-      return { date: _dateForDow(base, dow, 1) };
-    }
-  }
-  // "<dow> prossimo" o "prossimo <dow>"
-  {
-    const m1 = t.match(/\b([a-zì]+)\s+prossim[oa]\b/);
-    const m2 = t.match(/\bprossim[oa]\s+([a-zì]+)\b/);
-    const dayTok = (m1 && m1[1]) || (m2 && m2[1]);
-    if (dayTok) {
-      const dow = DOW_IT[dayTok] ?? DOW_IT[_norm(dayTok)];
-      if (dow != null) return { date: _dateForDow(base, dow, 1) };
-    }
-  }
-  // "<dow> tra|fra X settimane"
-  {
-    const m = t.match(/\b([a-zì]+)\s+(?:tr|fr)a\s+(\d+|[a-z]+)\s+settimane?\b/);
-    if (m) {
-      const dow = DOW_IT[m[1]] ?? DOW_IT[_norm(m[1])];
-      const weeks = _toInt(m[2]);
-      if (dow != null && weeks != null)
-        return { date: _dateForDow(base, dow, weeks) };
-    }
-  }
-  if (/\b(tr|fr)a\s+(\d+|[a-z]+)\s+settimane?\b/.test(t))
-    return { askDow: true };
-  return null;
-}
 
 function norm(text) {
   return String(text || "")
@@ -2046,9 +2350,16 @@ export async function fetchSlotsForProfessional({
   // Durata (servizio -> durataMin) o fallback 30'
   let durMin = Number(duration);
   if (!Number.isFinite(durMin) || durMin <= 0) {
-    const svc0 = service && (config.services?.[service] || null);
-    durMin = Number(svc0?.durationMin || svc0?.duration || 0) || 30;
+    if (service && professional) {
+      durMin = getServiceDurationForPro(service, professional);
+    } else if (service) {
+      const svc0 = config.services?.[service] || null;
+      durMin = Number(svc0?.durationMin || svc0?.duration || 0) || 30;
+    } else {
+      durMin = 30;
+    }
   }
+
   const durMs = durMin * 60_000;
   const stepMs = durMs;
 
@@ -2075,8 +2386,8 @@ export async function fetchSlotsForProfessional({
   const closedDates = Array.isArray(config.holidays)
     ? config.holidays
     : Array.isArray(config.closedDates)
-    ? config.closedDates
-    : [];
+      ? config.closedDates
+      : [];
   if (closedDates.includes(toYMD(D))) return [];
   const hours =
     config.businessHours && config.businessHours[dayKey]
@@ -2314,9 +2625,18 @@ async function fetchSlots({
 
   let durMin = Number(duration);
   if (!Number.isFinite(durMin) || durMin <= 0) {
-    const svc0 = service && (config.services?.[service] || null);
-    durMin = Number(svc0?.durationMin || svc0?.duration || 0) || 30;
+    if (service && professional) {
+      // Usa durata specifica per questo professionista
+      durMin = getServiceDurationForPro(service, professional);
+    } else if (service) {
+      // Fallback: durata generica del servizio
+      const svc0 = config.services?.[service] || null;
+      durMin = Number(svc0?.durationMin || svc0?.duration || 0) || 30;
+    } else {
+      durMin = 30; // fallback assoluto
+    }
   }
+
   const durMs = durMin * 60_000;
   const stepMs = durMs;
 
@@ -2324,8 +2644,8 @@ async function fetchSlots({
   const closedDates = Array.isArray(config.holidays)
     ? config.holidays
     : Array.isArray(config.closedDates)
-    ? config.closedDates
-    : [];
+      ? config.closedDates
+      : [];
   const isClosedDate = closedDates.includes(toYMD(D));
   const closedDays = config.closedDays || config.daysOff || {};
   const closedDayKeys = Array.isArray(closedDays)
@@ -2380,8 +2700,8 @@ async function fetchSlots({
     professional && professional.includes("@")
       ? professional
       : professional
-      ? proEmailByName(professional)
-      : null;
+        ? proEmailByName(professional)
+        : null;
   const candidatePros = proEmail ? [proEmail] : prosBase;
 
   // ===== UNAVAILABILITY =====
@@ -2456,8 +2776,11 @@ async function fetchSlots({
         partialBusyByPro.set(email, mergeIntervals(partialBusy));
     }
   }
+  if (filteredPros.length === 0) {
+    return wantDetail ? [] : [];
+  }
 
-  const pros = filteredPros.length ? filteredPros : candidatePros.map(toEmail);
+  const pros = filteredPros.length ? filteredPros : candidatePros;
 
   // Calcola intervalli occupati per ciascun pro
   const busyByPro = new Map();
@@ -2554,8 +2877,8 @@ export async function fetchSlotsWithPros({
   const closedDates = Array.isArray(config.holidays)
     ? config.holidays
     : Array.isArray(config.closedDates)
-    ? config.closedDates
-    : [];
+      ? config.closedDates
+      : [];
   if (closedDates.includes(toYMD(D))) return { times: [], map: {} };
 
   const closedDays = config.closedDays || config.daysOff || {};
@@ -2607,8 +2930,8 @@ export async function fetchSlotsWithPros({
     professional && professional.includes("@")
       ? professional
       : professional
-      ? proEmailByName(professional)
-      : null;
+        ? proEmailByName(professional)
+        : null;
   const candidatePros = proEmail ? [proEmail] : prosBase;
 
   const unav = config.unavailability || {};
@@ -2704,67 +3027,72 @@ export async function fetchSlotsWithPros({
         partialBusyByPro.set(email, mergeIntervals(partialBusy));
     }
   }
-
-  const pros = filteredPros.length ? filteredPros : candidatePros;
-  const busyByPro = new Map();
-  for (const email of pros) {
-    const booked = getBusyIntervalsForDay(D, email) || [];
-    const extra = partialBusyByPro.get(email) || [];
-    const merged = [...booked, ...extra].sort((a, b) => a[0] - b[0]);
-    const merged2 = [];
-    for (const iv of merged) {
-      if (!merged2.length || iv[0] > merged2[merged2.length - 1][1])
-        merged2.push(iv);
-      else if (iv[1] > merged2[merged2.length - 1][1])
-        merged2[merged2.length - 1][1] = iv[1];
-    }
-    busyByPro.set(email, merged2);
+  if (filteredPros.length === 0) {
+    return { times: [], map: {} };
   }
 
-  const nowTs = Date.now();
-  const map = {};
-  const times = [];
-  const overlaps = (a0, a1, b0, b1) => a0 < b1 && b0 < a1;
+  const pros = filteredPros.length ? filteredPros : candidatePros;
+  const slotsByPro = new Map();
+  const busyByPro = new Map();
+  for (const email of pros) {
+    // Durata specifica per questo professionista
+    const durMin = service
+      ? getServiceDurationForPro(service, email)
+      : Number(duration) || 30;
+    const durMs = durMin * 60_000;
+    const stepMs = durMs;
 
-  for (const [winS, winE] of openIntervals) {
-    let cursor = winS;
-    const mod = (cursor - dayStart) % stepMs;
-    if (mod !== 0) cursor += stepMs - mod;
+    const busy = busyByPro.get(email) || [];
+    const freeTimes = new Set();
 
-    while (cursor + durMs <= winE) {
-      if (cursor < nowTs) {
-        cursor += stepMs;
-        continue;
-      }
-      const freeNow = [];
-      for (const email of pros) {
-        const busy = busyByPro.get(email) || [];
+    for (const [winS, winE] of openIntervals) {
+      let cursor = winS;
+      const mod = (cursor - dayStart) % stepMs;
+      if (mod !== 0) cursor += stepMs - mod;
+
+      while (cursor + durMs <= winE) {
+        if (cursor < nowTs) {
+          cursor += stepMs;
+          continue;
+        }
+
         let clash = false;
         for (const [bs, be] of busy) {
-          if (overlaps(cursor, cursor + durMs, bs, be)) {
+          if (cursor < be && bs < cursor + durMs) {
             clash = true;
             break;
           }
           if (bs >= cursor + durMs) break;
         }
-        if (!clash) freeNow.push(email);
+
+        if (!clash) {
+          const d = new Date(cursor);
+          const key = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+          freeTimes.add(key);
+        }
+
+        cursor += stepMs;
       }
-      if (freeNow.length) {
-        const d = new Date(cursor);
-        const hh = String(d.getHours()).padStart(2, "0");
-        const mm = String(d.getMinutes()).padStart(2, "0");
-        const key = `${hh}:${mm}`;
-        times.push(key);
-        map[key] = freeNow;
-      }
-      cursor += stepMs;
+    }
+
+    slotsByPro.set(email, freeTimes);
+  }
+
+  // Costruisci mappa finale: time -> lista professionisti liberi
+  const map = {};
+  const allTimes = new Set();
+
+  for (const [email, times] of slotsByPro) {
+    for (const t of times) {
+      allTimes.add(t);
+      if (!map[t]) map[t] = [];
+      map[t].push(email);
     }
   }
 
-  times.sort((a, b) => a.localeCompare(b));
+  const times = Array.from(allTimes).sort((a, b) => a.localeCompare(b));
   return { times, map };
 }
-
 // ============== Allergie ==============
 function extractAllergensFromText(text, list) {
   const hits = new Set();
@@ -2799,16 +3127,6 @@ function parseAllergyInfo(text, service) {
   return hits.size ? { has: true, list: Array.from(hits) } : null;
 }
 
-function askAllergies(service) {
-  const list = getAllergens(service);
-  if (!list.length) return null;
-  const opts = ["0) Nessuna allergia"].concat(
-    list.map((a, i) => `${i + 1}) ${a}`)
-  );
-  return `Hai allergie per "${service}"?\n${opts.join("\n")}\n(0-${
-    list.length
-  })\nSe ne hai più di una, invia i numeri separati da virgola.`;
-}
 
 // ============== Saluti & affini ==============
 function wantsAffectionReply(t) {
@@ -2858,7 +3176,7 @@ function getDaypartBoundaries() {
         sera: pick2(["sera", "evening"], def.sera),
       };
     }
-  } catch (_) {}
+  } catch (_) { }
   return def;
 }
 function groupSlotsByDaypart(slots) {
@@ -2932,26 +3250,76 @@ function proEmailByName(name) {
   }
   return null;
 }
-function extractCustomerName(input) {
-  if (!input) return null;
+function extractCustomerName(input, returnFallback = false) {
+  const FALLBACK = "Nome non fornito";
+
+  // Validazione input
+  if (!input || typeof input !== 'string' && typeof input !== 'number') {
+    return returnFallback ? FALLBACK : null;
+  }
+
   let s = String(input).trim();
-  s = s.replace(/^(ciao|buongiorno|buonasera|hey|ehi|salve)[,!\s]*/i, "");
+
+  // Rimuovi saluti comuni (case insensitive, più completo)
+  s = s.replace(/^(ciao|buongiorno|buonasera|buona\s+sera|buon\s+giorno|hey|ehi|salve|salut|ciao\s+a\s+tutti)[,!\s]+/i, '');
+  // ✅ PATCH: Rimuovi "per una mia amica/amico/collega/mamma/papà" ecc.
+  s = s.replace(/\b(?:per|a\s+nome\s+di)\s+(?:un(?:a)?\s+)?(?:mi(?:a|o)?\s+)?(?:amica?|collega|sorella|fratello|mamma|papà|fidanzat[ao]|partner|moglie|marito|ragazza|ragazzo)\b/gi, '');
+
+  // Rimuovi frasi introduttive per il nome (più pattern) - con word boundary
   s = s.replace(
-    /^(mi\s+chiamo|io\s+mi\s+chiamo|io\s+sono|sono|il\s+mio\s+nome\s+è|nome\s*[:=]?|nome\s+e\s+cognome\s*[:=]?|cognome\s*[:=]?)[\s,]*/i,
-    ""
+    /^(mi\s+chiamo|io\s+mi\s+chiamo|io\s+sono|sono\s+|il\s+mio\s+nome\s+è|il\s+mio\s+nome\s+e|mi\s+presento|nome\s*[:=]\s*|nome\s+e\s+cognome\s*[:=]\s*|cognome\s*[:=]\s*|mi\s+chiamano)\s*/i,
+    ''
   );
+
+  // Rimuovi emoji e caratteri non validi per nomi
   s = s
-    .replace(/[\p{Emoji_Presentation}\p{Extended_Pictographic}]/gu, "")
-    .replace(/[^\p{L}\s'-]/gu, " ")
-    .replace(/\s+/g, " ")
+    .replace(/[\p{Emoji_Presentation}\p{Extended_Pictographic}]/gu, '')
+    .replace(/[^\p{L}\s'-]/gu, ' ')
+    .replace(/\s+/g, ' ')
     .trim();
-  if (!s) return null;
-  const tokens = s.split(" ").filter(Boolean);
-  const letters = s.replace(/[^A-Za-zÀ-ÖØ-öø-ÿ]/g, "");
-  if (letters.length < 2) return null;
-  const name = tokens
-    .map((t) => (t ? t[0].toUpperCase() + t.slice(1).toLowerCase() : t))
-    .join(" ");
+
+  if (!s) return returnFallback ? FALLBACK : null;
+
+  // Tokenizza e filtra
+  const tokens = s.split(/\s+/).filter(Boolean);
+
+  // Validazione lunghezza minima
+  const letters = s.replace(/[^A-Za-zÀ-ÖØ-öø-ÿ]/g, '');
+  if (letters.length < 2) return returnFallback ? FALLBACK : null;
+
+  // Valida che non ci siano troppi token (evita frasi intere)
+  if (tokens.length > 4) return returnFallback ? FALLBACK : null;
+
+  // Filtra token troppo corti o troppo lunghi
+  const validTokens = tokens.filter(t => {
+    const letterCount = t.replace(/[^A-Za-zÀ-ÖØ-öø-ÿ]/g, '').length;
+    return letterCount >= 1 && letterCount <= 25;
+  });
+
+  if (validTokens.length === 0) return returnFallback ? FALLBACK : null;
+
+  // Capitalizza correttamente (gestisce apostrofi e trattini)
+  const capitalize = (word) => {
+    // Gestisce casi come "D'Angelo" o "O'Brien"
+    if (word.includes("'")) {
+      return word.split("'").map((part, i) => {
+        if (i === 0 && part.length === 1) {
+          return part.toUpperCase();
+        }
+        return part ? part[0].toUpperCase() + part.slice(1).toLowerCase() : part;
+      }).join("'");
+    }
+    // Gestisce casi come "Marie-Claire"
+    if (word.includes('-')) {
+      return word.split('-').map(part =>
+        part ? part[0].toUpperCase() + part.slice(1).toLowerCase() : part
+      ).join('-');
+    }
+    return word[0].toUpperCase() + word.slice(1).toLowerCase();
+  };
+
+  const name = validTokens.map(capitalize).join(' ');
+
   return name || null;
 }
 
@@ -2982,10 +3350,9 @@ async function makeEvent({
   durationMin,
   notes = null, // <— verrà rimappato a serviceDetails
   price = null,
-  allergies = null, // array o stringa
-  allergic = null, // boolean
   reminders = [{ method: "popup", minutes: 1440 }],
 }) {
+  let allergies = null;
   const payload = {
     serviceName,
     professionalEmail,
@@ -2995,9 +3362,8 @@ async function makeEvent({
     startTime, // Date o ISO, gcal fa new Date(...)
     durationMin,
     price,
-    serviceDetails: notes, // <— mapping
+    serviceDetails: notes,
     allergies,
-    allergic,
     reminders,
   };
   try {
@@ -3028,10 +3394,14 @@ async function updateEventSafe(args) {
 async function cancelEventSafe(eventId) {
   try {
     if (!eventId) return false;
+
+    // nuova API "pulita"
     if (typeof GCAL.cancelCalendarEvent === "function") {
-      await GCAL.cancelCalendarEvent({ eventId });
+      await GCAL.cancelCalendarEvent(eventId); // <— QUI: passa la stringa, NON l’oggetto
       return true;
     }
+
+    // compat vecchie API object-based
     if (typeof GCAL.deleteEvent === "function") {
       await GCAL.deleteEvent({ eventId });
       return true;
@@ -3047,11 +3417,347 @@ async function cancelEventSafe(eventId) {
 }
 
 // ========================= EDIT HELPERS (incolla SOPRA a handleMessage) =========================
+function _editParseNewDate(raw) {
+  const original = String(raw ?? "");
+  const base = new Date();
+  base.setHours(0, 0, 0, 0);
+
+  const stripDiacritics = (s) =>
+    s.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+
+  const normalize = (s) => {
+    let t = stripDiacritics(String(s ?? "").toLowerCase().trim());
+    t = t.replace(/[“”"']/g, "");
+    t = t.replace(/\s+/g, " ").trim();
+    // toglie punteggiatura ai bordi (così "domani?" funziona)
+    t = t.replace(/^[?!.,;:()\[\]{}<>]+/g, "").replace(/[?!.,;:()\[\]{}<>]+$/g, "").trim();
+    return t;
+  };
+
+  const txt = normalize(original);
+
+  const isValidDate = (d, y, m, day) =>
+    d instanceof Date &&
+    !Number.isNaN(d.getTime()) &&
+    d.getFullYear() === y &&
+    d.getMonth() === m &&
+    d.getDate() === day;
+
+  const makeDate = (y, m, day) => {
+    const d = new Date(y, m, day, 0, 0, 0, 0);
+    return isValidDate(d, y, m, day) ? d : null;
+  };
+
+  const normalizeYear = (yy) => {
+    if (yy == null) return null;
+    const n = parseInt(String(yy), 10);
+    if (Number.isNaN(n)) return null;
+    if (n < 100) return 2000 + n; // 25 -> 2025
+    return n;
+  };
+
+  const rollFutureIfMissingYear = (d) => {
+    if (d && d < base) d.setFullYear(d.getFullYear() + 1);
+    return d;
+  };
+
+  const addDays = (n) => {
+    const d = new Date(base);
+    d.setDate(d.getDate() + n);
+    d.setHours(0, 0, 0, 0);
+    return d;
+  };
+
+  const wordToNumber = (w) => {
+    const map = {
+      un: 1, uno: 1, una: 1,
+      due: 2, tre: 3, quattro: 4, cinque: 5, sei: 6, sette: 7, otto: 8, nove: 9, dieci: 10,
+      undici: 11, dodici: 12, tredici: 13, quattordici: 14, quindici: 15, sedici: 16,
+      diciassette: 17, diciotto: 18, diciannove: 19, venti: 20,
+      ventuno: 21, ventidue: 22, ventitre: 23, ventiquattro: 24, venticinque: 25,
+      ventisei: 26, ventisette: 27, ventotto: 28, ventinove: 29, trenta: 30, trentuno: 31
+    };
+    if (w == null) return null;
+    const s = String(w).toLowerCase().trim();
+    if (/^\d+$/.test(s)) return parseInt(s, 10);
+    return map[s] ?? null;
+  };
+
+  const monthMap = {
+    gennaio: 0, gen: 0,
+    febbraio: 1, feb: 1,
+    marzo: 2, mar: 2,
+    aprile: 3, apr: 3,
+    maggio: 4, mag: 4,
+    giugno: 5, giu: 5,
+    luglio: 6, lug: 6,
+    agosto: 7, ago: 7,
+    settembre: 8, set: 8, sett: 8,
+    ottobre: 9, ott: 9,
+    novembre: 10, nov: 10,
+    dicembre: 11, dic: 11
+  };
+
+  const weekdayMap = {
+    lunedi: 1, lun: 1,
+    martedi: 2, mar: 2,
+    mercoledi: 3, mer: 3,
+    giovedi: 4, gio: 4,
+    venerdi: 5, ven: 5,
+    sabato: 6, sab: 6,
+    domenica: 0, dom: 0
+  };
+
+  const nextWeekday = (targetDow, forceNextWeek) => {
+    const d = new Date(base);
+    const current = d.getDay();
+    let diff = (targetDow - current + 7) % 7;
+    if (diff === 0 && forceNextWeek) diff = 7;
+    d.setDate(d.getDate() + diff);
+    d.setHours(0, 0, 0, 0);
+    return d;
+  };
+
+  // --- Relativi (anche dentro frasi tipo "domani?" / "domani pomeriggio") ---
+  if (/\boggi\b/.test(txt)) return new Date(base);
+
+  if (/\bdopodomani\b/.test(txt)) return addDays(2);
+
+  if (/\bdomani\b/.test(txt)) return addDays(1);
+
+  // "tra/fra X giorni|settimane|mesi|anni" (X numero o parola)
+  {
+    const rel = txt.match(/\b(tra|fra)\s+([a-z0-9]+)\s*(giorno|giorni|g|gg|settimana|settimane|sett|mese|mesi|anno|anni)\b/);
+    if (rel) {
+      const n = wordToNumber(rel[2]);
+      const unit = rel[3];
+      if (n != null && n >= 0) {
+        const d = new Date(base);
+        if (unit === "giorno" || unit === "giorni" || unit === "g" || unit === "gg") {
+          d.setDate(d.getDate() + n);
+          d.setHours(0, 0, 0, 0);
+          return d;
+        }
+        if (unit === "settimana" || unit === "settimane" || unit === "sett") {
+          d.setDate(d.getDate() + n * 7);
+          d.setHours(0, 0, 0, 0);
+          return d;
+        }
+        if (unit === "mese" || unit === "mesi") {
+          d.setMonth(d.getMonth() + n);
+          d.setHours(0, 0, 0, 0);
+          return d;
+        }
+        if (unit === "anno" || unit === "anni") {
+          d.setFullYear(d.getFullYear() + n);
+          d.setHours(0, 0, 0, 0);
+          return d;
+        }
+      }
+    }
+  }
+
+  // --- Giorni della settimana: "lunedi", "lunedi prossimo", "venerdi settimana prossima" ---
+  {
+    const w = txt.match(/\b(lunedi|lun|martedi|mar|mercoledi|mer|giovedi|gio|venerdi|ven|sabato|sab|domenica|dom)\b/);
+    if (w) {
+      const key = w[1];
+      const forceNextWeek =
+        /\bprossim[oa]\b/.test(txt) || /\bsettimana prossima\b/.test(txt) || /\bprox\b/.test(txt);
+
+      return nextWeekday(weekdayMap[key], forceNextWeek);
+    }
+    if (/\bsettimana prossima\b/.test(txt)) return addDays(7);
+  }
+
+  // --- Date numeriche: ISO (YYYY-MM-DD / YYYY/MM/DD / YYYY.MM.DD) dentro la frase ---
+  {
+    const iso = txt.match(/\b(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})\b/);
+    if (iso) {
+      const y = parseInt(iso[1], 10);
+      const m = parseInt(iso[2], 10) - 1;
+      const day = parseInt(iso[3], 10);
+      const d = makeDate(y, m, day);
+      if (d) return d;
+    }
+  }
+
+  // --- Date numeriche: D/M(/Y) con / - . anche dentro la frase (gestisce swap se mese>12) ---
+  {
+    const dmy = txt.match(/\b(\d{1,2})[\/\-.](\d{1,2})(?:[\/\-.](\d{2,4}))?\b/);
+    if (dmy) {
+      let a = parseInt(dmy[1], 10);
+      let b = parseInt(dmy[2], 10);
+      const yOpt = normalizeYear(dmy[3]) ?? base.getFullYear();
+
+      // Italia: preferenza D/M. Se mese invalido ma l'altro senso è valido, swappa.
+      let dd = a, mm = b - 1;
+      let d = makeDate(yOpt, mm, dd);
+
+      if (!d) {
+        // prova swap (M/D) se sembra plausibile
+        dd = b; mm = a - 1;
+        d = makeDate(yOpt, mm, dd);
+      }
+
+      if (d) {
+        if (dmy[3] == null) d = rollFutureIfMissingYear(d);
+        return d;
+      }
+    }
+  }
+
+  // --- Date con spazi: "15 12 2025" / "15 12" ---
+  {
+    const spaced = txt.match(/\b(\d{1,2})\s+(\d{1,2})(?:\s+(\d{2,4}))?\b/);
+    if (spaced) {
+      const a = parseInt(spaced[1], 10);
+      const b = parseInt(spaced[2], 10);
+      const yOpt = normalizeYear(spaced[3]) ?? base.getFullYear();
+
+      // evita collisioni con orari tipo "alle 15 30" (non perfetto ma riduce falsi positivi)
+      if (!/\balle\b|\bdalle\b|\bore\b/.test(txt)) {
+        let d = makeDate(yOpt, b - 1, a);
+        if (!d) d = makeDate(yOpt, a - 1, b); // swap se necessario
+        if (d) {
+          if (spaced[3] == null) d = rollFutureIfMissingYear(d);
+          return d;
+        }
+      }
+    }
+  }
+
+  // --- "15 dicembre" / "15 dic 2025" / "dicembre 15" ---
+  {
+    const monthKeys = Object.keys(monthMap).sort((a, b) => b.length - a.length).join("|");
+
+    // giorno + mese (+ anno)
+    const dm = txt.match(new RegExp(`\\b(\\d{1,2})(?:\\s*(?:°|º))?\\s*(?:di\\s*)?(${monthKeys})\\b(?:\\s+(\\d{2,4}))?`, "i"));
+    if (dm) {
+      const day = parseInt(dm[1], 10);
+      const mKey = dm[2].toLowerCase();
+      const mm = monthMap[mKey];
+      const yOpt = normalizeYear(dm[3]) ?? base.getFullYear();
+      let d = makeDate(yOpt, mm, day);
+      if (d) {
+        if (dm[3] == null) d = rollFutureIfMissingYear(d);
+        return d;
+      }
+    }
+
+    // mese + giorno (+ anno)
+    const md = txt.match(new RegExp(`\\b(${monthKeys})\\s+(\\d{1,2})(?:\\s*(?:°|º))?\\b(?:\\s+(\\d{2,4}))?`, "i"));
+    if (md) {
+      const mKey = md[1].toLowerCase();
+      const day = parseInt(md[2], 10);
+      const mm = monthMap[mKey];
+      const yOpt = normalizeYear(md[3]) ?? base.getFullYear();
+      let d = makeDate(yOpt, mm, day);
+      if (d) {
+        if (md[3] == null) d = rollFutureIfMissingYear(d);
+        return d;
+      }
+    }
+  }
+
+  // --- Solo giorno: "15" / "il 15" (mese corrente se futuro, altrimenti mese prossimo) ---
+  {
+    const onlyDay = txt.match(/^(?:il\s+)?(\d{1,2})(?:\s*(?:°|º))?$/);
+    if (onlyDay) {
+      const day = parseInt(onlyDay[1], 10);
+      let y = base.getFullYear();
+      let m = base.getMonth();
+
+      let d = makeDate(y, m, day);
+      if (!d) return null;
+
+      if (d < base) {
+        m += 1;
+        if (m > 11) {
+          m = 0;
+          y += 1;
+        }
+        d = makeDate(y, m, day);
+        if (!d) return null;
+      }
+      return d;
+    }
+  }
+
+  // --- Fallback: parser esterno se presente ---
+  if (typeof parseDaySmart === "function") {
+    const d = parseDaySmart(original, { baseDate: base });
+    if (d && !Number.isNaN(d.getTime())) {
+      d.setHours(0, 0, 0, 0);
+      return d;
+    }
+  }
+
+  return null;
+}
+
+async function startEditDate(client, chatId) {
+  const phone = phoneFromChatId(chatId);
+  const bookings = getUserActiveBookingsAll(phone);
+
+  if (!bookings.length) {
+    return reply(
+      client,
+      chatId,
+      "Non ho trovato prenotazioni future col tuo numero."
+    );
+  }
+
+  const openDateForBooking = async (booking) => {
+    const s = pending.get(chatId) || getState(chatId);
+    _editSnapshotStateFromBooking(s, booking);
+    s.step = "edit_reschedule_date";
+    s.edit = { target: booking };
+    s.collected = s.collected || {};
+    pending.set(chatId, s);
+
+    const line = _fmtBookingLine
+      ? _fmtBookingLine(booking)
+      : `${fmtDate(booking.startTime || booking.day || new Date())} — ${booking.service || ""
+      }`;
+
+    return reply(
+      client,
+      chatId,
+      `Vuoi cambiare la data di:\n${line}\n\nDimmi la nuova data (GG/MM, "oggi" o "domani").`
+    );
+  };
+
+  if (bookings.length === 1) {
+    return openDateForBooking(bookings[0]);
+  }
+
+  // Più prenotazioni: scelgo quale, poi passo a edit_reschedule_date
+  return startEditChooseBooking(
+    client,
+    chatId,
+    bookings,
+    "edit_reschedule_date"
+  );
+}
 
 // Durata del servizio con fallback a 30'
 function _editDuration(booking) {
+  if (!booking) return 30;
+
+  const svc = booking.service || booking.serviceName;
+  const proEmail = booking.professionalEmail;
+
+  // ✅ Se abbiamo servizio e professionista, usa durata specifica
+  if (svc && proEmail) {
+    return getServiceDurationForPro(svc, proEmail);
+  }
+
+  // Fallback: durata dal booking o da config
   return (
-    Number(booking?.durationMin) || cfgServiceDuration(booking?.service) || 30
+    Number(booking.durationMin) ||
+    cfgServiceDuration(svc) ||
+    30
   );
 }
 
@@ -3072,9 +3778,75 @@ function _editDayFromBooking(booking) {
   return d;
 }
 
+// Copia i dati base della prenotazione dentro state.collected
+function _editSnapshotStateFromBooking(state, booking) {
+  if (!state || !booking) return;
+  const col = state.collected || (state.collected = {});
+
+  // servizio
+  if (!col.service) {
+    col.service = booking.service || col.service || null;
+  }
+
+  // nome cliente
+  if (booking.customerName && !col.customerName) {
+    col.customerName = booking.customerName;
+  }
+
+  // professionista
+  const proEmail = booking.professionalEmail || null;
+  const proName =
+    booking.professionalName ||
+    (proEmail && typeof proNameByEmail === "function"
+      ? proNameByEmail(proEmail)
+      : null);
+
+  if (proEmail) col.professionalEmail = proEmail;
+  if (proName) col.professionalName = proName;
+
+  if (!proEmail && !proName) {
+    // nessuna preferenza esplicita: se non è già impostato, considero "qualunque"
+    if (typeof col.professionalAny !== "boolean") {
+      col.professionalAny = true;
+    }
+  } else {
+    col.professionalAny = false;
+  }
+
+  // data + orario
+  if (booking.startTime && !col.when) {
+    const d = new Date(booking.startTime);
+    if (!Number.isNaN(d.getTime())) {
+      const day = new Date(d);
+      day.setHours(12, 0, 0, 0);
+      col.when = day;
+      const hh = String(d.getHours()).padStart(2, "0");
+      const mm = String(d.getMinutes()).padStart(2, "0");
+      col.time = `${hh}:${mm}`;
+    }
+  }
+}
+
 // Formattare lista orari numerata
 function _editFormatTimeList(times) {
   return (times || []).map((t, i) => `${i + 1}) ${t}`).join("\n");
+}
+
+// Render slot list numerata (supporta oggetti {time, pros:[{name}]} oppure stringhe 'HH:MM')
+function renderSlotsList(slots = []) {
+  return (slots || [])
+    .map((slot, i) => {
+      if (typeof slot === "string") return `${i + 1}) ${slot}`;
+      const time = slot?.time || slot?.hhmm || "";
+      const prosNames =
+        slot?.pros && slot.pros.length
+          ? ` (${slot.pros.map((p) => p.name).join(", ")})`
+          : slot?.professionalName
+            ? ` (${slot.professionalName})`
+            : "";
+      return `${i + 1}) ${time}${prosNames}`.trim();
+    })
+    .join("\n");
 }
 
 // ISO helper: usa toISOStringLocal se presente, altrimenti ISO standard
@@ -3112,51 +3884,161 @@ function _editComputeNewNotes(oldNotes, newName) {
 
 /*
  * Applica un aggiornamento all'evento (Calendar) e al bookings.json.
- * - newStartISO: ISO string nuova data/ora (se null → non cambia)
- * - newProEmail: email nuovo professionista (se null → non cambia)
- * - newName: nuovo nome cliente (se null → non cambia)
+ * - newStartISO: ISO string nuova data/ora (se null -> non cambia)
+ * - newProEmail: email nuovo professionista (se null -> non cambia)
+ * - newName: nuovo nome cliente (se null -> non cambia)
  */
 async function _editApplyUpdate({
   booking,
   newStartISO = null,
   newProEmail = null,
   newName = null,
+  forceRecreate = false, // true = cancella vecchio evento e ne crea uno nuovo
 }) {
   if (!booking?.eventId) return false;
 
-  // Prepara campi da inviare a Calendar
-  const nextStart = newStartISO || booking.startTime;
-  const nextPro = newProEmail ?? booking.professionalEmail;
+  const prev = {
+    startTime: booking.startTime,
+    professionalEmail: booking.professionalEmail || null,
+    professionalName: booking.professionalName || null,
+    customerName: booking.customerName || null,
+  };
 
-  // Note (aggiorna il Nome se necessario)
+  const nextStartISO = newStartISO || booking.startTime;
+  const nextProEmail = newProEmail ?? booking.professionalEmail;
+
   const nextNotes =
     typeof booking.notes !== "undefined" || newName
       ? _editComputeNewNotes(booking.notes, newName)
       : booking.notes;
 
-  const ok = await updateEventSafe({
-    eventId: booking.eventId,
-    serviceName: booking.service, // il servizio non si cambia in edit
-    professionalEmail: nextPro || booking.professionalEmail,
-    clientPhone: booking.clientPhone,
-    startTime: nextStart,
-    durationMin: booking.durationMin || cfgServiceDuration(booking.service),
-    notes: nextNotes,
-  });
+  const nextDuration = _editDuration(booking);
+  const nextProName =
+    (nextProEmail &&
+      typeof proNameByEmail === "function" &&
+      proNameByEmail(nextProEmail)) ||
+    booking.professionalName ||
+    null;
+  const nextClientName = newName || booking.customerName || null;
 
-  if (!ok) return false;
-
-  // Aggiorna il record locale bookings.json
   const patch = {};
-  if (newStartISO) patch.startTime = newStartISO;
+  if (newStartISO) patch.startTime = nextStartISO;
   if (newProEmail) {
     patch.professionalEmail = newProEmail;
-    patch.professionalName = proNameByEmail(newProEmail);
+    patch.professionalName = nextProName;
   }
   if (newName) patch.customerName = newName;
   if (typeof nextNotes !== "undefined") patch.notes = nextNotes;
 
+  const shouldRecreate = !!(forceRecreate && newStartISO);
+
+  // ——— CASO 1: cambio data/ora con ricreazione evento (no duplicati) ———
+  if (shouldRecreate) {
+    let newEventId = booking.eventId;
+
+    // Cancella l'evento vecchio (se esiste ancora)
+    try {
+      await cancelEventSafe(booking.eventId);
+    } catch (e) {
+      try {
+        log("warn", "[EDIT] cancelEventSafe failed", e?.message || e);
+      } catch { }
+      // anche se fallisce la cancellazione, provo comunque a creare il nuovo evento
+    }
+
+    try {
+      const ev = await makeEvent({
+        serviceName: booking.service,
+        professionalEmail: nextProEmail,
+        professionalName: nextProName,
+        clientPhone: booking.clientPhone,
+        customerName: nextClientName,
+        startTime: nextStartISO,
+        durationMin: nextDuration,
+        notes: nextNotes,
+        price:
+          typeof cfgServicePriceText === "function"
+            ? cfgServicePriceText(booking.service)
+            : booking.price || null,
+        allergic: booking.allergic ?? null,
+        reminders: booking.reminders || [{ method: "popup", minutes: 1440 }],
+      });
+
+      newEventId = (ev && (ev.id || ev.eventId)) || booking.eventId;
+    } catch (e) {
+      try {
+        log("warn", "[EDIT] makeEvent failed", e?.message || e);
+      } catch { }
+      return false;
+    }
+
+    if (newEventId && newEventId !== booking.eventId) {
+      patch.eventId = newEventId;
+    }
+
+    updateBookingByEventId(booking.eventId, patch);
+
+    try {
+      const after = {
+        startTime: patch.startTime || prev.startTime,
+        professionalEmail: patch.professionalEmail || prev.professionalEmail,
+        professionalName: patch.professionalName || prev.professionalName,
+        customerName: patch.customerName || prev.customerName,
+      };
+      log("info", "[EDIT] booking updated (recreate)", {
+        oldEventId: booking.eventId,
+        newEventId,
+        before: prev,
+        after,
+      });
+    } catch { }
+
+    return true;
+  }
+
+  // ——— CASO 2: cambio solo pro/nome -> patch sullo stesso eventId ———
+  const ok = await updateEventSafe({
+    eventId: booking.eventId,
+    serviceName: booking.service,
+    professionalEmail: nextProEmail,
+    professionalName: nextProName,
+    clientPhone: booking.clientPhone,
+    clientName: nextClientName,
+    startTime: nextStartISO,
+    durationMin: nextDuration,
+    price: booking.price || null,
+    serviceDetails: nextNotes,
+    allergic: booking.allergic ?? null,
+    reminders: booking.reminders || [{ method: "popup", minutes: 1440 }],
+  });
+
+  if (!ok) {
+    try {
+      log("warn", "[EDIT] updateEventSafe failed", {
+        eventId: booking.eventId,
+        startTime: nextStartISO,
+        professionalEmail: nextProEmail || booking.professionalEmail,
+      });
+    } catch { }
+    return false;
+  }
+
   updateBookingByEventId(booking.eventId, patch);
+
+  try {
+    const after = {
+      startTime: patch.startTime || prev.startTime,
+      professionalEmail: patch.professionalEmail || prev.professionalEmail,
+      professionalName: patch.professionalName || prev.professionalName,
+      customerName: patch.customerName || prev.customerName,
+    };
+    log("info", "[EDIT] booking updated", {
+      eventId: booking.eventId,
+      before: prev,
+      after,
+    });
+  } catch { }
+
   return true;
 }
 
@@ -3182,7 +4064,6 @@ function isInCriticalStep(step) {
     "choose_day", // <--- AGGIUNTO
     "pick_time",
     "pick_professional",
-    "ask_allergies",
     "ask_name",
     "confirm_booking",
     "price_select_service",
@@ -3190,132 +4071,158 @@ function isInCriticalStep(step) {
   ].includes(step);
 }
 
-async function startEditDate(client, chatId) {
-  const booking = getUpcomingBookingByPhone(phoneFromChatId(chatId));
-  if (!booking)
-    return reply(
-      client,
-      chatId,
-      "Non ho trovato prenotazioni future col tuo numero."
-    );
-  const s = pending.get(chatId) || getState(chatId);
-  s.step = "edit_reschedule_date";
-  s.edit = { target: booking };
-  pending.set(chatId, s);
-  return reply(
-    client,
-    chatId,
-    `Hai un appuntamento per *${fmtDate(
-      booking.startTime
-    )} ${booking.startTime.slice(
-      11,
-      16
-    )}*.\n📅 Per quando vuoi spostarlo? (GG/MM o “domani”)`
-  );
-}
-
 async function startEditTime(client, chatId) {
-  const booking = getUpcomingBookingByPhone(phoneFromChatId(chatId));
-  if (!booking)
+  const phone = phoneFromChatId(chatId);
+  const bookings = getUserActiveBookingsAll(phone);
+  if (!bookings.length) {
     return reply(
       client,
       chatId,
       "Non ho trovato prenotazioni future col tuo numero."
     );
-  const s = pending.get(chatId) || getState(chatId);
-  s.step = "edit_reschedule_time";
-  s.edit = { target: booking, day: new Date(booking.startTime) };
-  const duration =
-    Number(booking.durationMin) || cfgServiceDuration(booking.service);
-  const slots = (
-    await fetchSlots({
-      service: booking.service,
-      day: s.edit.day,
-      duration,
-      professional: booking.professionalEmail || booking.professionalName,
-      wantDetail: true,
-    })
-  ).map((x) => (x.time ? x : { time: x, pros: [] }));
-  if (!slots.length)
+  }
+
+  const openTimeForBooking = async (booking) => {
+    const s = pending.get(chatId) || getState(chatId);
+    _editSnapshotStateFromBooking(s, booking); // << mente locale
+    const day = _editDayFromBooking(booking);
+    const duration = _editDuration(booking);
+    const pro = booking.professionalEmail || null;
+
+    try {
+      releaseSoftHoldByChat(chatId);
+    } catch { }
+
+    const slots = normalizeSlotsDetail(
+      await fetchSlots({
+        service: booking.service,
+        day,
+        duration,
+        professional: pro,
+        wantDetail: true,
+      })
+    );
+
+    if (!slots.length) {
+      const dateStr = typeof formatDateWithWeekdayIT === "function"
+        ? formatDateWithWeekdayIT(day)
+        : (typeof fmtDate === "function" ? fmtDate(day) : day.toLocaleDateString());
+      return reply(
+        client,
+        chatId,
+        `Non vedo orari liberi per ${dateStr} con il professionista attuale. Puoi cambiare data o professionista dal menu di modifica.`
+      );
+    }
+
+
+    s.step = "edit_reschedule_time";
+    s.edit = { target: booking, day };
+    s.collected = s.collected || {};
+    s.collected.options = slots;
+    pending.set(chatId, s);
+
+    // PATCH: rimosso elenco numerato degli orari, l'utente sceglie l'orario direttamente
+    const dateStr = typeof formatDateWithWeekdayIT === "function"
+      ? formatDateWithWeekdayIT(day)
+      : (typeof fmtDate === "function" ? fmtDate(day) : day.toLocaleDateString());
+    const lines = renderSlotsList(slots);
     return reply(
       client,
       chatId,
-      "Non vedo orari liberi in quel giorno. Vuoi cambiare data? Scrivi “modifica data”."
+      `Orari disponibili per ${dateStr} (tengo il professionista attuale):\n${lines}\n\nScrivi l'orario desiderato (es. "14:30") o tocca l'orario mostrato.`
     );
-  s.collected = s.collected || {};
-  s.collected.options = slots;
-  pending.set(chatId, s);
-  const lines = slots
-    .map(
-      (it, i) =>
-        `${i + 1}) ${it.time}${
-          it.pros?.length ? ` (${it.pros.map((p) => p.name).join(", ")})` : ""
-        }`
-    )
-    .join("\n");
-  return reply(
+  };
+
+  if (bookings.length === 1) {
+    return openTimeForBooking(bookings[0]);
+  }
+
+  // Più prenotazioni: scelgo quale, poi passo a edit_reschedule_time con quel booking
+  return startEditChooseBooking(
     client,
     chatId,
-    `Orari disponibili per ${fmtDate(s.edit.day)}:\n${lines}\n(1-${
-      slots.length
-    })`
+    bookings,
+    "edit_reschedule_time"
   );
 }
 
 async function startEditProfessional(client, chatId) {
-  const booking = getUpcomingBookingByPhone(phoneFromChatId(chatId));
-  if (!booking)
+  const phone = phoneFromChatId(chatId);
+  const bookings = getUserActiveBookingsAll(phone);
+  if (!bookings.length)
     return reply(
       client,
       chatId,
       "Non ho trovato prenotazioni future col tuo numero."
     );
-  const pros = cfgServiceProfessionals(booking.service)
-    .map((x) => x.name)
-    .filter(Boolean);
-  if (!pros.length)
+
+  if (bookings.length === 1) {
+    const booking = bookings[0];
+    const pros = cfgServiceProfessionals(booking.service)
+      .map((x) => x.name)
+      .filter(Boolean);
+    if (!pros.length)
+      return reply(
+        client,
+        chatId,
+        "Non ho professionisti associati a questo servizio."
+      );
+    const s = pending.get(chatId) || getState(chatId);
+    _editSnapshotStateFromBooking(s, booking); // << mente locale
+    s.step = "edit_pick_professional";
+    s.edit = { target: booking, proOptions: pros };
+    pending.set(chatId, s);
+
+    const list =
+      "0) Non mi interessa\n" + pros.map((p, i) => `${i + 1}) ${p}`).join("\n");
     return reply(
       client,
       chatId,
-      "Non ho professionisti associati a questo servizio."
+      `Scegli il professionista:\n${list}\n(0-${pros.length})`
     );
-  const s = pending.get(chatId) || getState(chatId);
-  s.step = "edit_pick_professional";
-  s.edit = { target: booking, proOptions: pros };
-  pending.set(chatId, s);
-  const list = pros.map((p, i) => `${i + 1}) ${p}`).join("\n");
-  return reply(
+  }
+
+  return startEditChooseBooking(
     client,
     chatId,
-    `Scegli il professionista:\n${list}\n(1-${pros.length})`
+    bookings,
+    "edit_pick_professional"
   );
 }
 
 async function startEditName(client, chatId) {
-  const booking = getUpcomingBookingByPhone(phoneFromChatId(chatId));
-  if (!booking)
+  const phone = phoneFromChatId(chatId);
+  const bookings = getUserActiveBookingsAll(phone);
+  if (!bookings.length)
     return reply(
       client,
       chatId,
       "Non ho trovato prenotazioni future col tuo numero."
     );
-  const s = pending.get(chatId) || getState(chatId);
-  s.step = "edit_change_name";
-  s.edit = { target: booking };
-  pending.set(chatId, s);
-  return reply(
-    client,
-    chatId,
-    "Scrivi il nuovo nome e cognome per la prenotazione."
-  );
+
+  if (bookings.length === 1) {
+    const booking = bookings[0];
+    const s = pending.get(chatId) || getState(chatId);
+    _editSnapshotStateFromBooking(s, booking); // << mente locale
+    s.step = "edit_change_name";
+    s.edit = { target: booking };
+    pending.set(chatId, s);
+
+    return reply(
+      client,
+      chatId,
+      "Scrivi il nuovo nome e cognome per la prenotazione."
+    );
+  }
+
+  return startEditChooseBooking(client, chatId, bookings, "edit_change_name");
 }
 
 // ========= Heuristics di intent (semplici ma robusti) =========
 function hasBookingVerb(s) {
   s = norm(s || "");
-  return /\b(prenot|appunt|fiss|riserv|disponibil|spost|cancell|modific)\w*/i.test(
-    s
-  );
+  return /\b(prenot|appunt|fiss|riserv|disponibil|spost|cancell|modific|posto|quando\s+(?:avete|hai|c'e))\w*/i.test(s);
+  // ✅ Aggiunto: "posto", "quando avete", "quando hai"
 }
 function hasDateOrTime(s) {
   s = String(s || "");
@@ -3344,7 +4251,7 @@ function scoreBookingIntent(txt) {
   if (hasBookingVerb(s)) score += 2;
   if (hasDateOrTime(s)) score += 1;
   if (parseHHMM(s)) score += 1;
-  if (parseRelativeDay(s)) score += 1;
+  if (safeParseDateWithLock(s)) score += 1;
   return score;
 }
 function primaryIntent(txt) {
@@ -3352,7 +4259,7 @@ function primaryIntent(txt) {
   const sb = scoreBookingIntent(txt);
   if (si >= sb + 1) return "info";
   if (sb >= si + 1) return "appointment";
-  if (si === sb && /[?？]/.test(txt)) return "info"; // pareggio: domanda → info
+  if (si === sb && /[?？]/.test(txt)) return "info"; // pareggio: domanda -> info
   return null;
 }
 
@@ -3363,7 +4270,7 @@ function parseAvailabilityRequest(text) {
 
   // giorno singolo: oggi/domani/dopodomani
   if (/\boggi\b/.test(t) || /\bdomani\b/.test(t) || /\bdopodomani\b/.test(t)) {
-    const d = parseRelativeDay(t);
+    const d = safeParseDateWithLock(t);
     if (d) {
       out.kind = "day";
       out.date = d;
@@ -3432,7 +4339,7 @@ function parseAvailabilityRequest(text) {
       if (idx != null) {
         const now = new Date();
         let year = now.getFullYear();
-        if (idx < now.getMonth()) year++; // se è già passato → anno prossimo
+        if (idx < now.getMonth()) year++; // se è già passato -> anno prossimo
         out.kind = "month";
         out.year = year;
         out.monthIdx = idx;
@@ -3452,8 +4359,8 @@ function parseAvailabilityRequest(text) {
         afterM[1].length === 1
           ? `0${afterM[1]}:00`
           : afterM[1].includes(":")
-          ? afterM[1]
-          : `${afterM[1]}:00`;
+            ? afterM[1]
+            : `${afterM[1]}:00`;
     const beforeM = t.match(
       /\b(?:prima|entro)\s+(?:le\s*)?([0-2]?\d(?::[0-5]\d)?)\b/
     );
@@ -3462,8 +4369,8 @@ function parseAvailabilityRequest(text) {
         beforeM[1].length === 1
           ? `0${beforeM[1]}:00`
           : beforeM[1].includes(":")
-          ? beforeM[1]
-          : `${beforeM[1]}:00`;
+            ? beforeM[1]
+            : `${beforeM[1]}:00`;
   }
 
   return out.kind ? out : null;
@@ -3539,7 +4446,7 @@ function fuzzyAny(text, phrases, opts) {
 
 // Segnali extra già presenti nel file
 function hasAnyDateOrTime(text) {
-  return hasDateOrTime(text) || !!parseHHMM(text) || !!parseRelativeDay(text);
+  return hasDateOrTime(text) || !!parseHHMM(text) || !!safeParseDateWithLock(text);
 }
 
 // -------------- INTENT PRINCIPALE (ibrido) ----------------
@@ -3563,7 +4470,7 @@ function intentByHybrid(t) {
   // Nota: i regex di edit/cancel già richiedono verbi d'azione, ma teniamo una rete di sicurezza.
   const onlyGenericAppWord =
     /\b(appuntamento|prenotazione|appunt|prenot)\w*\b/iu.test(text) &&
-    !/\b(modifica|sposta|cambia|posticipa|anticipa|aggiorna|annulla|cancella|disdici|disdire|elimina|togli|rimuovi)\b/iu.test(
+  !/\b(modifica|sposta|cambia|posticipa|anticipa|aggiorna|annulla|cancella|disdici|disdire|elimina|togli|rimuovi|annula)\b/iu.test(
       text
     ) &&
     !/\b(prenota|fissa|metti|blocca|mi\s+prenoti|vorrei\s+prenotare|voglio\s+prenotare)\b/iu.test(
@@ -3621,6 +4528,18 @@ function hasFutureBookingsForPhone(phone) {
 // === Drop-in helpers per etichette professionisti negli slot ===
 
 // "Melissa Granati" -> "Melissa G." / "Melissa" -> "Melissa"
+/**
+ * The function proShort takes a name as input, trims any whitespace, splits the name into parts, and
+ * returns the first part followed by the first letter of the last part with a period.
+ * @param name - The `proShort` function takes a `name` parameter as input. It processes the input name
+ * by trimming any leading or trailing whitespace, splitting it into parts based on whitespace, and
+ * then returning a shortened version of the name.
+ * @returns The function `proShort` takes a name as input, processes it, and returns a shortened
+ * version of the name. If the input is empty or only whitespace, an empty string is returned. If the
+ * input contains only one word, that word is returned. If the input contains multiple words, the
+ * function returns the first word followed by the first letter of the last word, capitalized, and a
+ * period
+ */
 function proShort(name) {
   const s = String(name || "").trim();
   if (!s) return "";
@@ -3629,6 +4548,91 @@ function proShort(name) {
   const last = parts[parts.length - 1];
   const iniz = last[0] ? last[0].toUpperCase() : "";
   return `${parts[0]} ${iniz}.`;
+}
+
+function normalizeSlotsDetail(raw) {
+  const list = Array.isArray(raw)
+    ? raw
+    : Array.isArray(raw?.slots)
+      ? raw.slots
+      : Array.isArray(raw?.times)
+        ? raw.times
+        : [];
+
+  const toHHMM = (v) => {
+    if (!v) return null;
+
+    if (v instanceof Date) {
+      const hh = String(v.getHours()).padStart(2, "0");
+      const mm = String(v.getMinutes()).padStart(2, "0");
+      return `${hh}:${mm}`;
+    }
+
+    const s = String(v).trim();
+    const m = s.match(/(\d{1,2})\s*[:.]\s*(\d{1,2})/);
+    if (!m) return null;
+
+    const hh = parseInt(m[1], 10);
+    const mm = parseInt(m[2], 10);
+    if (!Number.isFinite(hh) || !Number.isFinite(mm)) return null;
+    if (hh < 0 || hh > 23 || mm < 0 || mm > 59) return null;
+
+    return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
+  };
+
+  const normPro = (p) => {
+    if (!p) return null;
+    if (typeof p === "string") return { name: p, email: p };
+    if (typeof p !== "object") return null;
+
+    const name =
+      p.name || p.displayName || p.fullName || p.label || p.title || "";
+    const email = p.email || p.mail || p.id || p.value || null;
+
+    if (!name && !email) return null;
+    return { name: name || email || "—", email: email || null };
+  };
+
+  const byTime = new Map(); // "HH:MM" -> {time, pros:[]}
+
+  const add = (time, pros) => {
+    if (!time) return;
+    const cur = byTime.get(time) || { time, pros: [] };
+
+    if (Array.isArray(pros) && pros.length) {
+      const seen = new Set(
+        cur.pros.map((x) => String(x.email || x.name || "").toLowerCase())
+      );
+      for (const p of pros) {
+        const key = String(p.email || p.name || "").toLowerCase();
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        cur.pros.push(p);
+      }
+    }
+
+    byTime.set(time, cur);
+  };
+
+  for (const item of list) {
+    if (typeof item === "string") {
+      add(toHHMM(item), []);
+      continue;
+    }
+    if (item && typeof item === "object") {
+      const time = toHHMM(
+        item.time ?? item.hhmm ?? item.startTime ?? item.start ?? item.slot
+      );
+      let pros = item.pros ?? item.professionals ?? item.availablePros ?? [];
+      if (!Array.isArray(pros)) pros = [];
+      pros = pros.map(normPro).filter((p) => p && p.name);
+      add(time, pros);
+    }
+  }
+
+  return Array.from(byTime.values()).sort((a, b) =>
+    a.time.localeCompare(b.time)
+  );
 }
 
 // Normalizza oggetto professionista accettando stringhe o oggetti vari
@@ -3652,19 +4656,19 @@ function normalizePro(p) {
     email;
   return { name, email };
 }
-
-/*
- * Etichetta i professionisti liberi per uno slot.
- * - Se tutti i pro del servizio sono liberi in quello slot, ritorna "tutti".
- * - Altrimenti, ritorna una lista breve tipo "Melissa G., Sara B."
- *
- * @param {object} slot - Oggetto slot; accetta { time, pros } o { pros }.
- * @param {object} [opts]
- * @param {string|null} [opts.serviceName] - Nome del servizio per confrontare "tutti".
- * @param {object|array|null} [opts.professionalsOrConfig] - Config completa o lista di pro (fallback).
- * @returns {string}
+/**
+ * The function `labelProsForSlot` takes an item object, extracts an array of pros, shortens their
+ * names, and returns a formatted string with a summary of the pros.
+ * @param item - It looks like the `labelProsForSlot` function is designed to process an `item` object
+ * that contains a property called `pros`, which is expected to be an array of objects. The function
+ * checks if `item.pros` is an array, and if so, it extracts the names
+ * @returns The `labelProsForSlot` function returns a string that represents the pros of an item. If
+ * the item has pros, it will format and return them as a string. If there are more than 2 pros, it
+ * will display the first two pros followed by a count of the remaining pros. If there are no pros or
+ * an error occurs, an empty string will be returned.
  */
-/** Etichetta compatta dei professionisti di uno slot: "Melissa G., Anna P. +1" */
+
+
 function labelProsForSlot(item) {
   try {
     const pros = Array.isArray(item?.pros) ? item.pros : [];
@@ -3708,2692 +4712,2589 @@ function parseDurationEnv({
   return def;
 } //
 
-// ======================= Gestione messaggi (WhatsApp) =======================
+/**
+ * The function `creaEInviaSticker` asynchronously creates and sends a sticker using a provided image
+ * file in a specified chat.
+ * @param client - The `client` parameter in the `creaEInviaSticker` function is typically an instance
+ * of a WhatsApp client library that allows you to interact with the WhatsApp API programmatically.
+ * This client is used to send the sticker to a specific chat identified by `chatId`.
+ * @param chatId - The `chatId` parameter in the `creaEInviaSticker` function represents the unique
+ * identifier of the chat or conversation where you want to send the sticker. It is typically a string
+ * that identifies a specific chat or recipient within the messaging platform or application you are
+ * using.
+ * @param immagine - The `immagine` parameter in the `creaEInviaSticker` function represents the path
+ * to the image file that you want to convert and send as a sticker. It is the file path where the
+ * image is located on your filesystem. Make sure to provide the correct path to the image
+ */
+async function creaEInviaSticker(client, chatId, immagine) {
+
+  const mimeType = 'image/jpeg'; // Adatta il tipo MIME al tuo file (es. image/png)
+
+  // 2. Leggi il file e convertilo in Base64
+  const mediaData = fsSync.readFileSync(immagine);
+
+  // 3. Crea la stringa Data URI (fondamentale per wa-automate-nodejs)
+  const imageBase64 = `data:${mimeType};base64,${mediaData.toString('base64')}`;
+
+  // 4. (Opzionale) Definisci i metadati dello sticker
+  const opzioniSticker = {
+    author: 'synkris',      // Nome dell'autore
+    pack: 'stickers!!', // Nome del pacchetto
+    keepScale: true,           // Mantiene la scala originale (utile per non tagliarla)
+    // Se vuoi uno sticker circolare, usa: circle: true
+  };
+
+  // 5. Invia lo sticker
+  try {
+    await client.sendImageAsSticker(
+      chatId,
+      imageBase64,
+      opzioniSticker // Passa le opzioni
+    );
+    console.log(`Sticker inviato con successo a: ${chatId}`);
+  } catch (e) {
+    console.error('Errore durante l\'invio dello sticker:', e);
+  }
+}
+function ensureUI(state) {
+  if (!state) return;
+  state.ui = state.ui || {};
+}
+// ======================= Gestione messaggi (WhatsApp) =======================ì
+/**
+ * handleMessage - Gestione completa del flusso di prenotazione
+ * 
+ * Flusso principale:
+ * 1. Scelta professionista
+ * 2. Scelta servizio (filtrato per professionista)
+ * 3. Scelta giorno
+ * 4. Scelta orario
+ * 5. Raccolta nome
+ * 6. Conferma e creazione evento
+ * 
+ * @param {Object} client - Client WhatsApp
+ * @param {string} chatId - ID della chat
+ * @param {string} textRaw - Testo del messaggio utente
+ * @param {Object} tools - Tools aggiuntivi (opzionale)
+ * @returns {Promise<string>} - Risultato dell'operazione
+ */
 export async function handleMessage(client, chatId, textRaw, tools = {}) {
-  // serializza i messaggi per chat con watchdog anti-stallo
+  // Inizializzazione stato
+  let state = getState(chatId);
+  await greetIfReturningUser(chatId, client, state);
+
+  // ============================================================================
+  // SEZIONE 1: GESTIONE LISTINO PREZZI
+  // ============================================================================
+  try {
+    if (typeof textRaw === "string" && textRaw.trim()) {
+      const listinoRE = /\b(listin(?:o|i)|listino prezzi|prezzi|prezzo|costo|quanto (?:costa|costano)|tariff(?:a|e)|quali (?:sono|avete) (?:i )?(?:trattamenti|servizi)|che trattamenti avete|cosa offrite|mostrami i (?:trattamenti|servizi))\b/i;
+
+      if (listinoRE.test(textRaw) && !isInCriticalStep(state.step)) {
+        const svcs = cfgServices() || [];
+        if (!svcs.length) {
+          await reply(client, chatId, "⚠️ Nessun trattamento configurato. Contatta il salone.");
+          return "";
+        }
+
+        const lines = svcs.map((svc) => {
+          const item = cfgServiceItem(svc) || {};
+          const emoji = item.emoji || item.icon || item.emoticon || "";
+          const label = item.label || svc;
+          const price = cfgServicePriceText(svc);
+          const dur = cfgServiceDuration(svc);
+          return `${emoji ? emoji + " " : ""}${label}: ${price} (durata ${dur} min)`;
+        });
+
+        await reply(client, chatId, "💆‍♀️ Listino trattamenti:\n\n" + lines.join("\n"));
+        return "";
+      }
+    }
+  } catch (err) {
+    log("warn", "[LISTINO] Errore rilevamento listino", err?.message || err);
+  }
+
+  // ============================================================================
+  // SEZIONE 2: RISPOSTE RAPIDE (con return obbligatorio)
+  // ============================================================================
+
+  // Ringraziamenti
+  if (textRaw && /^(grazie|grazie mille|grazie infinite|ti ringrazio|grazie di tutto|thanks?|thank you|thx)[\s!.]*/i.test(textRaw.trim())) {
+    await reply(client, chatId, "Grazie a te per aver usato synkris! 😊");
+    return "";
+  }
+
+  // Saluti di apertura (solo se step iniziale)
+  if (textRaw && /^(ciao|buongiorno|buonasera|buon\s+giorno|buona\s+sera|salve|hey|ehi|hi|hello)[\s!.]*$/i.test(textRaw.trim()) && state.step === "collect") {
+    await reply(
+      client,
+      chatId,
+      'Ciao! 👋 Benvenuto da The Beautiful Room, sono _synkris_!\n\n' +
+      'Come posso aiutarti oggi?\n' +
+      '• Scrivi "_*prenota*_" per un nuovo appuntamento\n' +
+      '• Scrivi "_*modifica*_" per gestire una prenotazione esistente'
+    );
+    return "";
+  }
+
+  // Gestione saluto + intent di prenotazione (rimuovi saluto e continua)
+  const hasGreeting = /\b(ciao|buongiorno|buonasera|salve|hey|hi|hello)\b/i.test(textRaw);
+  const hasBookingIntent = /\b(prenot|appunt|fiss|riserv|disponibil|posto|quando\s+avete)\w*/i.test(textRaw);
+  if (hasGreeting && hasBookingIntent) {
+    textRaw = textRaw.replace(/^(ciao|buongiorno|buonasera|buon\s+giorno|buona\s+sera|salve|hey|ehi|hi|hello)[,!\s]*/i, '').trim();
+  }
+
+  // Scuse
+  if (textRaw && /^(scusa|scusami|mi scuso|perdon[ao]|sorry)[\s!.]*$/i.test(textRaw.trim())) {
+    const responses = ["Nessun problema! 😊", "Tranquillo/a, tutto ok! 👍", "Non ti preoccupare! 🙂"];
+    await reply(client, chatId, responses[Math.floor(Math.random() * responses.length)]);
+    return "";
+  }
+
+  // Complimenti
+  if (textRaw && /^(bravo|brava|ottimo|perfetto|fantastico|bene|ben fatto|complimenti)[\s!.]*$/i.test(textRaw.trim())) {
+    const responses = ["Grazie mille! 😊", "Sono felice di aiutarti! 🌟", "Grazie, è un piacere! ❤️"];
+    await reply(client, chatId, responses[Math.floor(Math.random() * responses.length)]);
+    return "";
+  }
+
+  // Frustrazione
+  if (textRaw && /^(boh|mah|non lo so|che palle|mannaggia)[\s!.]*/i.test(textRaw.trim())) {
+    await reply(client, chatId, 'Capisco che possa essere frustrante 😅\nSe hai dubbi, scrivi "aiuto" e ti guiderò passo passo!');
+    return "";
+  }
+
+  // Presenza
+  if (textRaw && /^(ci sei|ci sei\?|sei là|hello\?)[\s!.]*/i.test(textRaw.trim())) {
+    await reply(client, chatId, "Sì, sono qui! 👋 Come posso aiutarti?");
+    return "";
+  }
+
+  // Contatto diretto
+  if (textRaw && /^(numero|telefono|chiamare|contatto diretto|parlare con qualcuno)[\s!.]*/i.test(textRaw.trim())) {
+    await reply(client, chatId, '📞 Puoi chiamarci al numero: +393534043794\n\nOppure continua a chattare con me per prenotare! 😊');
+    return "";
+  }
+
+  // Conferma generica
+  if (textRaw && /^(okay|va bene|d'?accordo|perfetto|ok)[\s!.]*$/i.test(textRaw.trim())) {
+    await reply(client, chatId, "Perfetto! Se hai bisogno di altro, sono qui 😊");
+    return "";
+  }
+
+  // Aiuto
+  if (textRaw && /^(aiuto|help|non capisco|cosa posso fare|come funziona)[\s!.]*/i.test(textRaw.trim())) {
+    await reply(
+      client,
+      chatId,
+      'Certo! Ecco cosa posso fare per te:\n\n' +
+      '📅 Prenotazioni:\n' +
+      '• Scrivi "prenota" per fissare un appuntamento\n' +
+      '• Scrivi "modifica" per cambiare una prenotazione\n\n' +
+      '📍 Informazioni:\n' +
+      '• Chiedi l\'indirizzo o gli orari\n' +
+      '• Chiedi info sui trattamenti\n\n' +
+      'Come posso aiutarti? 😊'
+    );
+    return "";
+  }
+
+  // Saluti di chiusura
+  if (textRaw && /^(arrivederci|a presto|ci vediamo|buona giornata|buona serata|addio|bye|goodbye|see you)[\s!.]*$/i.test(textRaw.trim())) {
+    const responses = ["Ciao! A presto! 👋", "Arrivederci! 😊", "Buona giornata! 🌟", "A presto! 👋", "Ci vediamo! 😊"];
+    await reply(client, chatId, responses[Math.floor(Math.random() * responses.length)]);
+    return "";
+  }
+
+  // ============================================================================
+  // SEZIONE 3: LOCK GESTIONE CONCORRENZA
+  // ============================================================================
   while (__busyChats.has(chatId)) {
     const since = __busySince.get(chatId) || 0;
     if (since && Date.now() - since > BUSY_TTL_MS) {
-      log("warn", "[BUSY-STALL] for chat, force-release", {
-        chatId,
-        since,
-        ttl: BUSY_TTL_MS,
-      });
+      log("warn", "[BUSY-STALL] Force release", { chatId, since, ttl: BUSY_TTL_MS });
       __busyChats.delete(chatId);
       __busySince.delete(chatId);
       break;
     }
     await __delay(50);
   }
+
   __busyChats.add(chatId);
   __busySince.set(chatId, Date.now());
 
-  // === Stato: DICHIARO E ASSEGNO SUBITO (evita ReferenceError in ESM) ===
-  let state = getState(chatId);
-  state.collected ||= {};
-  state.context ||= {};
-  ensureContext(state);
-
-  // --- Normalizzazione SUBITO ---
-  const text = (textRaw ?? "").toString().trim();
-  const lower = text.toLowerCase();
-  const isCancel = lower === "annulla" || lower === "/annulla";
-
   try {
-    // --- Log in cronologia utente (una sola volta) ---
+    // Inizializzazione client inactivity
+    if (inactivityClient === null) {
+      inactivityClient = client;
+    }
+
+    const text = String(textRaw ?? "").trim();
+    const msg = text;
+    const lower = text.toLowerCase();
+    const t = norm(text);
+
+    // Recupera e inizializza stato
+    state = getState(chatId);
+    state.collected ||= {};
+    state.context ||= {};
+    ensureContext(state);
+
+    // Salva messaggio utente nella cronologia
     try {
       await appendUserMessage(chatId, text);
     } catch (e) {
-      log("warn", "appendUserMessage failed", e?.message || e);
+      log("warn", "[APPEND] Failed to save user message", e?.message || e);
     }
 
-    // ============ INLINE HELPERS (solo per questa funzione) =====================
-    const pureNumber = /^\s*\d+\s*[\).]?\s*$/; // accetta "2", "2)", "2."
-    const t = norm(text);
-    // === SHORT-CIRCUIT: numero da elenco (servizi, pro, orari, menu edit, giorno del mese) ===
-    if (pureNumber.test(text)) {
-      const col = state.collected || (state.collected = {});
-      const awaitingDay =
-        state?.availFlow && state.availFlow.awaiting === "day";
-      const inNumberedStep = [
-        "choose_service",
-        "pick_time",
-        "edit_menu",
-        "edit_reschedule_time",
-        "pick_professional",
-        "price_select_service",
-      ].includes(state.step);
-      const hasOptions = Array.isArray(col.options) && col.options.length > 0;
+    const pureNumber = /^\s*\d+\s*[\).]?\s*$/;
+    const phone = typeof phoneFromChatId === "function" ? phoneFromChatId(chatId) : chatId;
 
-      // 🔹 Nuovo: stai aspettando la scelta servizio anche se lo step è “collect”
-      const waitingService =
-        !col.service &&
-        (state.step === "choose_service" ||
-          (state.ui &&
-            Array.isArray(state.ui.lastServiceList) &&
-            state.ui.lastServiceList.length > 0) ||
-          (Array.isArray(col.svcOptions) && col.svcOptions.length > 0));
+    log("info", "[HANDLE] Message received", { chatId, text, step: state.step });
 
-      if (awaitingDay || inNumberedStep || hasOptions || waitingService) {
+    // ============================================================================
+    // SEZIONE 4: ROUTING EDIT FLOW
+    // ============================================================================
+    if (typeof state.step === "string" && state.step.startsWith("edit_")) {
+      const isCancelMsg = /^(annulla|annula|cancel|stop|fine)\b/i.test(text);
+      const isTextStep = state.step === "edit_reschedule_date" || state.step === "edit_change_name";
+
+      if (!isCancelMsg && !isTextStep) {
         return await handleNumericReply(client, chatId, text, tools);
       }
     }
 
-    // --- PATCH: fuzzy "safe" per evitare default al primo servizio quando il match è debole ---
-    const hasSvcToken = (q) => {
-      try {
-        const tokens = (cfgServices() || [])
-          .flatMap((s) => s.toLowerCase().split(/\W+/))
-          .filter((x) => x && x.length >= 4);
-        const nq = norm(q);
-        return tokens.some((tok) => nq.includes(norm(tok)));
-      } catch {
-        return false;
-      }
-    };
+    // ============================================================================
+    // SEZIONE 5: HELPER FUNCTIONS
+    // ============================================================================
 
+    /**
+     * Trova il servizio migliore basandosi su sinonimi configurati
+     */
+    function bestServiceBySynonyms(raw) {
+      try {
+        const svcs = (typeof cfgServices === "function" ? cfgServices() : []) || [];
+        if (!svcs.length) return null;
+
+        const N = (s) =>
+          (typeof norm === "function" ? norm(String(s || "")) : String(s || "").toLowerCase())
+            .replace(/[^\p{L}\p{N}\s]/gu, " ")
+            .replace(/\s+/g, " ")
+            .trim();
+
+        const msg = " " + N(raw) + " ";
+        let best = null, bestScore = 0;
+
+        for (const svc of svcs) {
+          const syns = (
+            typeof cfgServiceSynonyms === "function"
+              ? cfgServiceSynonyms(svc) || []
+              : (config?.services?.[svc]?.synonyms || [])
+          ).slice();
+          syns.unshift(svc);
+
+          let svcBest = 0;
+          for (const s of syns) {
+            const cand = N(s);
+            if (!cand || cand.length < 3) continue;
+
+            const wrapped = " " + cand + " ";
+            let score = 0;
+
+            if (msg.includes(wrapped)) {
+              score = 1.0 + Math.min(cand.length / 40, 0.25);
+            } else {
+              const toks = cand.split(" ").filter(Boolean);
+              let hit = 0;
+              for (const tk of toks) {
+                if (tk.length < 3) continue;
+                if (msg.includes(" " + tk + " ")) hit++;
+              }
+              const cover = hit / Math.max(1, toks.length);
+              const twoGram = toks.some((_, i) =>
+                i < toks.length - 1 && msg.includes(" " + toks[i] + " " + toks[i + 1] + " ")
+              );
+              const contBonus = twoGram ? 0.1 : 0;
+              const lenBonus = Math.min(cand.length / 50, 0.15);
+              score = Math.max(score, 0.65 * cover + contBonus + lenBonus);
+            }
+
+            if (/refill/.test(cand)) {
+              const longHint = /\b(lung|lungh|lunghe|lungo)\w*\b/i.test(raw);
+              const shortHint = /\b(cort|corte|corto)\w*\b/i.test(raw);
+              if (longHint && /lungh/i.test(N(svc))) score += 0.12;
+              if (shortHint && /cort/i.test(N(svc))) score += 0.12;
+            }
+
+            svcBest = Math.max(svcBest, score);
+          }
+
+          if (svcBest > bestScore) {
+            bestScore = svcBest;
+            best = svc;
+          }
+        }
+
+        return bestScore >= 0.45 ? best : null;
+      } catch {
+        return null;
+      }
+    }
+
+    /**
+     * Parsing intake: estrae servizio, data, orario, professionista da un singolo messaggio
+     */
+    function parseIntake(raw) {
+      if (!raw) return null;
+      const out = {};
+
+      // 1) Servizio
+      try {
+        out.service = bestServiceBySynonyms(raw) ||
+          (typeof fuzzyServiceSafe === "function" ? fuzzyServiceSafe(raw) : null) ||
+          undefined;
+      } catch { }
+
+      // 2) Data
+      try {
+        let d = (typeof safeParseDateWithLock === "function" ? safeParseDateWithLock(raw) : null) || null;
+        if (d) {
+          const at12 = typeof atNoon === "function" ? atNoon(d) : d;
+          if (!(typeof isPast === "function" && isPast(at12))) out.when = at12;
+        }
+      } catch { }
+
+      // 3) Orario
+      try {
+        const hhmm = (typeof parseTimeSmart === "function" ? parseTimeSmart(raw) : null) ||
+          (typeof parseHHMM === "function" ? parseHHMM(raw) : null);
+        if (hhmm) out.time = hhmm;
+      } catch { }
+
+      // 4) Professionista
+      try {
+        const anyRe = /\b(chiunque|qualsiasi|va\s*bene\s*chiunque|non\s*mi\s*interessa)\b/i;
+        if (anyRe.test(raw)) {
+          out.professionalAny = true;
+        } else {
+          const list = (out.service && typeof proCatalog === "function" ? proCatalog(out.service) : null) ||
+            Object.entries((config?.professionals || {})).map(([email, p]) => ({
+              email,
+              name: (p?.name) || email,
+            }));
+          const nrm = (typeof simpleNorm === "function" ? simpleNorm : (s) => String(s || "").toLowerCase())(raw);
+          let best = null, bestScore = 0;
+
+          for (const p of list) {
+            const nm = typeof simpleNorm === "function" ? simpleNorm(p.name) : String(p.name || "").toLowerCase();
+            if (!nm) continue;
+            if ((" " + nrm + " ").includes(" " + nm + " ")) {
+              best = p;
+              bestScore = 1;
+              break;
+            }
+            if (nrm.includes(nm)) {
+              best = p;
+              bestScore = Math.max(bestScore, 0.95);
+            }
+          }
+
+          if (best && bestScore >= 0.95) {
+            out.professionalName = best.name;
+            out.professionalEmail = best.email || null;
+            out.professionalAny = false;
+          }
+        }
+      } catch { }
+
+      return Object.keys(out).length ? out : null;
+    }
+
+    /**
+     * Fuzzy service matching sicuro (evita falsi positivi)
+     */
     const fuzzyServiceSafe = (q) => {
-      const hit = fuzzyService(q);
+      const hit = typeof fuzzyService === "function" ? fuzzyService(q) : null;
       if (!hit) return null;
-      const first =
-        typeof cfgServices === "function" && (cfgServices()[0] || null);
-      if (first && norm(hit) === norm(first) && !hasSvcToken(q)) return null;
+
+      const tokens = (cfgServices() || [])
+        .flatMap((s) => s.toLowerCase().split(/\W+/))
+        .filter((x) => x && x.length >= 4);
+      const nq = norm(q);
+      const hasSvcToken = tokens.some((tok) => nq.includes(norm(tok)));
+
+      const first = typeof cfgServices === "function" ? cfgServices()[0] || null : null;
+      if (first && norm(hit) === norm(first) && !hasSvcToken) return null;
+
       return hit;
     };
 
-    const phone = phoneFromChatId(chatId);
-    log("info", "[HANDLE]", { chatId, text });
+    /**
+     * Ottiene lista completa professionisti
+     */
+    const getAllProsList = () =>
+      Object.entries(config?.professionals || {}).map(([email, p]) => ({
+        email,
+        name: (p?.name) || email,
+      }));
 
-    // --- CANCELLAZIONE GLOBALE RAPIDA ---
-    if (/^(annulla|cancel|stop|fine)\b/i.test(t)) {
+    /**
+     * Nome professionista da email
+     */
+    const proNameByEmailSafe = (email) =>
+      (config?.professionals?.[email]?.name) ||
+      (typeof proNameByEmail === "function" ? proNameByEmail(email) : null) ||
+      email;
+
+    /**
+     * Email professionisti per un servizio
+     */
+    const serviceProsEmails = (svc) => {
+      try {
+        const item = (typeof cfgServiceItem === "function" ? cfgServiceItem(svc) : null) ||
+          (config?.services?.[svc] || {});
+        const arr = item.professionals || item.pros || [];
+        return Array.isArray(arr) ? arr.filter(Boolean) : [];
+      } catch {
+        return [];
+      }
+    };
+
+    /**
+     * Verifica se un servizio è disponibile per un professionista
+     */
+    const isServiceAvailableForPro = (svc, proEmail) => {
+      if (!proEmail) return true;
+
+      let pros = (typeof cfgServiceProfessionals === "function" ? (cfgServiceProfessionals(svc) || []) : null) || null;
+      if (!pros) pros = serviceProsEmails(svc);
+
+      const emails = (Array.isArray(pros) ? pros : [])
+        .map((x) => (typeof x === "string" ? x : (x?.email || x?.name || "")))
+        .filter(Boolean)
+        .map((s) => String(s).toLowerCase());
+
+      return emails.includes(String(proEmail).toLowerCase());
+    };
+
+    /**
+     * Durata servizio per professionista specifico
+     */
+    const getDurForPro = (svc, proEmail) => {
+      try {
+        if (typeof getServiceDurationForPro === "function" && proEmail) {
+          const d = getServiceDurationForPro(svc, proEmail);
+          if (Number.isFinite(+d) && +d > 0) return +d;
+        }
+      } catch { }
+
+      try {
+        const item = config?.services?.[svc] || {};
+        const pd = item.professionalDurations || {};
+        const d2 = proEmail && pd[proEmail];
+        if (Number.isFinite(+d2) && +d2 > 0) return +d2;
+        const d = item.duration;
+        if (Number.isFinite(+d) && +d > 0) return +d;
+      } catch { }
+
+      return (typeof cfgServiceDuration === "function" ? (cfgServiceDuration(svc) || 30) : 30);
+    };
+
+    /**
+     * Costruisce messaggio servizi disponibili per un professionista
+     */
+    const buildServicesMessageForPro = (proEmail) => {
+      const allSvcs = (typeof cfgServices === "function" ? (cfgServices() || []) : []) ||
+        Object.keys(config?.services || {});
+
+      const available = allSvcs.filter((svc) => isServiceAvailableForPro(svc, proEmail));
+      const unavailable = allSvcs.filter((svc) => !isServiceAvailableForPro(svc, proEmail));
+
+      const availableLines = available.map((svc, i) => {
+        const item = (typeof cfgServiceItem === "function" ? (cfgServiceItem(svc) || {}) : {}) ||
+          (config?.services?.[svc] || {});
+        const emoji = item.emoji || item.icon || item.emoticon || "";
+        const label = item.label || svc;
+        const price = (typeof cfgServicePriceText === "function" ? cfgServicePriceText(svc) : "") ||
+          (Number.isFinite(+item.price) ? `${item.price}€` : "");
+        const dur = getDurForPro(svc, proEmail);
+        const pricePart = price ? ` (_${price}_, _*${dur}*_ min)` : ` (_*${dur}*_ min)`;
+        return `${i + 1}) ${emoji ? emoji + " " : ""}${label}${pricePart}`;
+      });
+
+      const unavailableLines = unavailable.map((svc) => {
+        const emails = serviceProsEmails(svc);
+        const names = emails.map(proNameByEmailSafe).filter(Boolean);
+        const who = names.length ? names.join(", ") : "—";
+        return `* ${svc} (disponibile con: ${who})`;
+      });
+
+      const proName = proEmail ? proNameByEmailSafe(proEmail) : "qualsiasi professionista";
+      let msg = `🧖‍♀️ Trattamenti disponibili con *${proName}*:\n` +
+        (availableLines.length ? availableLines.join("\n") : "⚠️ Nessun trattamento disponibile con questo professionista.");
+
+
+      if (availableLines.length) msg += `\n(1-${availableLines.length})`;
+
+      if (unavailableLines.length) {
+        msg += `\n\n🚫 Non disponibili con *${proName}*:\n${unavailableLines.join("\n")}\n\n` +
+          `ℹ️ Se vuoi uno dei trattamenti non disponibili: digita "annulla" e prenota di nuovo scegliendo un professionista che lo esegue.`;
+      }
+
+      return { available, msg };
+    };
+
+    // ============================================================================
+    // SEZIONE 6: SHORT-CIRCUIT ROUTING
+    // ============================================================================
+
+    // Routing per numeri puri (elenchi numerati)
+    if (pureNumber.test(msg)) {
+      const col = state.collected || (state.collected = {});
+      const hasOptions = Array.isArray(col.options) && col.options.length > 0;
+      const waitingService = ["info_select_service", "price_select_service"].includes(state.step);
+      const isChoosingService = !col.service && state.step === "choose_service";
+      const awaitingDay = (state.availFlow && state.availFlow.awaiting === "day") || state.step === "choose_day";
+      const isEditFlow = typeof state.step === "string" && state.step.startsWith("edit_");
+      const inNumberedStep = ["pick_professional_for_time", "price_select_service"].includes(state.step);
+      const isPickProfessional = state.step === "pick_professional";
+
+      const shouldUseNumericHandler =
+        !isChoosingService &&
+        !isPickProfessional &&
+        (awaitingDay || hasOptions || waitingService || inNumberedStep || isEditFlow);
+
+      if (shouldUseNumericHandler) {
+        return await handleNumericReply(client, chatId, text, tools);
+      }
+    }
+
+    // Fast-path intake: parsing diretto da messaggio libero
+    if (!pureNumber.test(text)) {
+      const col = state.collected || (state.collected = {});
+      if (!/^edit_/.test(state.step || "")) {
+        const intake = parseIntake(t);
+        if (intake) {
+          if (intake.service) col.service = col.service || intake.service;
+          if (intake.when) col.when = col.when || intake.when;
+          if (intake.time) col.time = col.time || intake.time;
+          if (intake.professionalAny) col.professionalAny = true;
+          if (intake.professionalName) col.professionalName = intake.professionalName;
+          if (intake.professionalEmail) col.professionalEmail = intake.professionalEmail;
+
+          if (col.service && !state.step) {
+            if (!col.professionalAny && !col.professionalName && !col.professionalEmail) {
+              state.step = "pick_professional";
+            } else {
+              state.step = "choose_day";
+            }
+            pending.set(chatId, state);
+          }
+        }
+      }
+    }
+
+    // ============================================================================
+    // SEZIONE 7: CANCELLAZIONE GLOBALE
+    // ============================================================================
+    if (/^(annulla|annula|cancel|stop|fine|esci)\b/i.test(t)) {
       const st = pending.get(chatId);
+
       if (st && /^edit_/.test(st.step)) {
         pending.delete(chatId);
-        releaseSoftHoldByChat(chatId);
-        await reply(
-          client,
-          chatId,
-          "✅ Ho chiuso la gestione dell’appuntamento. Nessuna modifica applicata."
-        );
+        try {
+          releaseSoftHoldByChat(chatId);
+        } catch { }
+        await reply(client, chatId, "✅ Ho chiuso la gestione dell'appuntamento. Nessuna modifica applicata.");
         return "";
       }
+
       if (st) unlockBooking(st);
       pending.delete(chatId);
-      releaseSoftHoldByChat(chatId);
-      await reply(
-        client,
-        chatId,
-        '✅ Operazione annullata. Se vuoi ricominciare, scrivi "prenota" o "appuntamento".'
-      );
+
+      try {
+        releaseSoftHoldByChat(chatId);
+      } catch { }
+
+      const lang = getLang(chatId);
+      if (lang === "en") {
+        await reply(client, chatId, '✅ Operation canceled. If you want to start over, type "book" or "appointment".');
+      } else {
+        await reply(client, chatId, '✅ Operazione annullata. Se vuoi ricominciare, scrivi "prenota" o "appuntamento".');
+      }
       return "";
     }
 
-    // === PATCH: INFO RAPIDE (short-circuit) ===
-    const _st = pending.get(chatId);
+    // ============================================================================
+    // SEZIONE 8: RISPOSTE INFO RAPIDE (indirizzo, orari)
+    // ============================================================================
     if (!isInCriticalStep(state.step)) {
-      const RE_ADDR =
-        /(indirizz[oi]|dove\s+(siete|vi\s+trovate)|mappa|google\s*maps|come\s+raggiungerci|ubicazion[ei]|posizion[ei])/i;
-      const RE_HOURS =
-        /(orari?|apert[oi]|chius[oi]|quando\s+(siete|siamo)\s+aperti|fino\s+a\s+che\s+ora)/i;
+      const RE_ADDR = /(indirizz[oi]|dove\s+(siete|vi\s+trovate)|mappa|google\s*maps|come\s+raggiungerci|ubicazion[ei]|posizion[ei])/i;
+      const RE_HOURS = /(orari?|apert[oi]|chius[oi]|quando\s+(siete|siamo)\s+aperti|fino\s+a\s+che\s+ora)/i;
 
       if (RE_ADDR.test(t)) {
-        const addr = "Via Bosco, 44/a, 42019 Reggio Emilia RE".trim();
-        return reply(
-          client,
-          chatId,
-          addr
-            ? `Ci trovi qui:\n${addr}\n`
-            : `Siamo in Via Bosco, 44/a, 42019 Reggio Emilia RE.`
-        );
+        const addr = (config?.address || config?.addr || "Via Bosco, 44/a, 42019 Reggio Emilia RE").trim();
+        await reply(client, chatId, addr ? `Ci trovi qui:\n${addr}\n` : `Siamo in Via Bosco, 44/a, 42019 Reggio Emilia RE.`);
+        return "";
       }
 
       if (RE_HOURS.test(t)) {
         const hours = (config?.openingHours || config?.hours || "").trim();
-        return reply(
-          client,
-          chatId,
-          hours
-            ? `Orari di apertura:\n${hours}`
-            : `Orari tipici: Lun–Ven 9–19, Sab 9–13 (chiuso Dom).`
-        );
+        await reply(client, chatId, hours ? `Orari di apertura:\n${hours}` : `Orari tipici: Lun–Ven 9–19, Sab 9–13 (chiuso Dom).`);
+        return "";
       }
     }
-    ensureContext(state);
-    // --- Guard lock: blocca solo NUOVI intenti, non gli step del flusso ---
-    if (isBookingLocked(state) && !isCancel) {
+
+    // Guard: booking bloccato
+    if (isBookingLocked(state) && !/^(annula|annulla|cancel|stop|fine|esci)\b/i.test(t)) {
       if (!isInCriticalStep(state.step) && state.step !== "collect") {
         await safeSend(
           client,
           chatId,
-          '❌ Se non vuoi più prenotare, digita "annulla".',
+          '❌ Se non vuoi più prenotare, digita "annulla"\nHo sbagliato a capire qualche info? Non temere! puoi sempre modificare digitando "_annulla_" per ripartire *da capo!*',
           { noFooter: true }
         );
-        return { ok: true, ignored: true };
+        return "";
       }
     }
 
-    const col = state.collected || (state.collected = {});
+    let col = state.collected || (state.collected = {});
 
-    function setAndPersist() {
-      return pending.set(chatId, state);
+    // ============================================================================
+    // SEZIONE 9: PATCH INTERPRETAZIONE "N" COME "N:00"
+    // ============================================================================
+    if (Array.isArray(col?.options) && col.options.length) {
+      const optionsLookLikeTimes = col.options.every(opt => {
+        const t = typeof opt === "string" ? opt : opt?.time || "";
+        return typeof t === "string" && (/^\s*\d{1,2}[:.]\d{2}\s*$/.test(t.trim()) || /^\s*\d{1,2}\s*$/.test(t.trim()));
+      });
+
+      if (optionsLookLikeTimes && pureNumber.test(msg)) {
+        const hour = parseInt(String(msg).replace(/\D/g, ""), 10);
+
+        if (!Number.isFinite(hour) || hour < 0 || hour > 23) {
+          await safeSend(client, chatId, "Orario non valido. Scrivi un orario nel formato 9 o 9:00 o 09:00.");
+          return "";
+        }
+
+        const normalized = col.options.map((opt, i) => {
+          const raw = typeof opt === "string" ? opt : (opt?.time || "");
+          const clean = String(raw).trim().replace(".", ":");
+          if (/^\d{1,2}$/.test(clean)) return { time: `${String(clean).padStart(2, "0")}:00`, idx: i };
+          if (/^\d{1,2}:\d{2}$/.test(clean)) {
+            const parts = clean.split(":");
+            return { time: `${String(parts[0]).padStart(2, "0")}:${parts[1]}`, idx: i };
+          }
+          return { time: null, idx: i };
+        }).filter(x => x.time);
+
+        const match = normalized.find(x => {
+          const [h, m] = x.time.split(":").map(Number);
+          return h === hour && m === 0;
+        });
+
+        if (!match) {
+          await safeSend(
+            client,
+            chatId,
+            `Non ho trovato disponibilità esatta per ${String(hour).padStart(2, "0")}:00. Scrivi l'orario completo (es. "10:00") o scegli un altro orario disponibile.`
+          );
+          return "";
+        }
+
+        let item = col.options[match.idx];
+        let time = match.time;
+        col.time = time;
+        col.selectedOptionIndex = match.idx;
+        pending.set(chatId, state);
+
+        if (typeof scheduleReenter === "function") {
+          await scheduleReenter(client, chatId, `ok ${time}`, tools);
+          return "";
+        }
+        return "";
+      }
     }
 
-    // --- COMANDI VELOCI DI MODIFICA ---
-    if (
-      /^(modifica|cambia)\s+(data|giorno)\b/i.test(t) ||
-      /^\/data\b/i.test(t)
-    ) {
+    // ============================================================================
+    // SEZIONE 10: COMANDI VELOCI MODIFICA
+    // ============================================================================
+    if (/^(modifica|cambia)\s+(data|giorno)\b/i.test(t) || /^\/data\b/i.test(t)) {
       await startEditDate(client, chatId);
       return "";
     }
-    if (
-      /^(modifica|cambia)\s+(ora|orario)\b/i.test(t) ||
-      /^\/orario\b/i.test(t)
-    ) {
+
+    // Reset forzato se utente vuole nuova prenotazione durante edit
+    if (state.step && state.step.startsWith("edit_")) {
+      const newBookingIndicators = /\b(avresti\s+posto|prenotare|prenota|appuntamento|disponibilità)\b/i;
+
+      if (newBookingIndicators.test(t) && !wantsEditMenu(t)) {
+        log("info", "[RESET] Utente esce dal menu edit per nuova prenotazione", { chatId, text });
+        pending.delete(chatId);
+
+        try {
+          releaseSoftHoldByChat(chatId);
+        } catch { }
+
+        state.step = "collect";
+        state.collected = {};
+        state.edit = null;
+        pending.set(chatId, state);
+      }
+    }
+
+    if (/^(modifica|cambia)\s+(ora|orario)\b/i.test(t) || /^\/orario\b/i.test(t)) {
       await startEditTime(client, chatId);
       return "";
     }
-    if (
-      /^(modifica|cambia)\s+(professionista|operatrice|operatore)\b/i.test(t) ||
-      /^\/pro(f)?\b/i.test(t)
-    ) {
+
+    if (/^(modifica|cambia)\s+(professionista|operatrice|operatore)\b/i.test(t) || /^\/pro(f)?\b/i.test(t)) {
       await startEditProfessional(client, chatId);
       return "";
     }
-    if (
-      /^(modifica|cambia)\s+(nome|intestazione)\b/i.test(t) ||
-      /^\/nome\b/i.test(t)
-    ) {
+
+    if (/^(modifica|cambia)\s+(nome|intestazione)\b/i.test(t) || /^\/nome\b/i.test(t)) {
       await startEditName(client, chatId);
       return "";
     }
 
-    // --- MENU GENERICO /modifica ---
-    if (/^\/?modifica\b/i.test(t)) {
-      const booking = getUpcomingBookingByPhone(phone);
-      if (booking) {
-        state.step = "edit_menu";
-        state.edit = { target: booking };
-        setAndPersist();
-        await reply(client, chatId, showEditMenu(booking));
-      } else {
-        await reply(
-          client,
-          chatId,
-          "Non ho trovato prenotazioni future col tuo numero."
-        );
-      }
-      return "";
-    }
+    if (/^\/?modifica\b/i.test(t) || wantsEditMenu(t)) {
+      const phone = phoneFromChatId(chatId);
+      const bookings = getUserActiveBookingsAll(phone);
 
-    function renderSlotsList(slots) {
-      if (!Array.isArray(slots) || !slots.length) return "";
-      const isObj = typeof slots[0] === "object" && slots[0] && slots[0].time;
-      if (!isObj) {
-        return slots.map((h, i) => `${i + 1}) ${h}`).join("\n");
-      }
-      return slots
-        .map((it, i) => {
-          const prosLbl = labelProsForSlot(it);
-          return `${i + 1}) ${it.time}${prosLbl ? ` (${prosLbl})` : ""}`;
-        })
-        .join("\n");
-    }
-
-    // ——— PRO LABELING ———
-    function proShort(name) {
-      const s = String(name || "").trim();
-      if (!s) return "";
-      const parts = s.split(/\s+/);
-      if (parts.length === 1) return parts[0]; // es. "Melissa"
-      const cognome = parts[parts.length - 1];
-      const iniz = cognome[0] ? cognome[0].toUpperCase() : "";
-      return `${parts[0]} ${iniz}.`; // "Melissa G."
-    }
-
-    function proKey(p) {
-      const email = (p?.email || "").toLowerCase().trim();
-      if (email) return email;
-      const nm = (p?.name || p || "").toString();
-      return norm(nm);
-    }
-
-    /** Normalizza: accetta ["10:00","11:00"] o [{time,pros}] → [{time,pros:[]}] */
-    function normalizeSlotsDetail(slots) {
-      if (!Array.isArray(slots)) return [];
-      if (slots.length && typeof slots[0] === "object" && slots[0]?.time)
-        return slots;
-      return slots.map((h) => ({ time: h, pros: [] }));
-    }
-
-    // ===================== Debounce duplicati =====================
-    if (!global.__lastMessages) global.__lastMessages = new Map();
-    const lastMsg = global.__lastMessages.get(phone);
-    if (lastMsg && lastMsg.text === text && Date.now() - lastMsg.ts < 800)
-      return "";
-    global.__lastMessages.set(phone, { text, ts: Date.now() });
-    {
-      // ===== VIEW-ONLY AVAILABILITY — MINI-FLOW =====
-      // Usa: state.availFlow = { mode:'month'|'week', year, monthIdx, days:[Date], awaiting:'day' }
-
-      // 1) Se sto aspettando il giorno (dopo "dicembre?" o "settimana prossima?")
-      if (state.availFlow && state.availFlow.awaiting === "day") {
-        if (/\b(annulla|indietro|esci|stop)\b/i.test(t)) {
-          state.availFlow = null;
-          setAndPersist();
-          return reply(
-            client,
-            chatId,
-            "Ok, annullato. Dimmi pure un’altra data."
-          );
-        }
-
-        // prendi un numero 1..31 o "il 21"
-        const m = String(text).match(/\b([1-9]|[12]\d|3[01])\b/);
-        if (!m)
-          return reply(
-            client,
-            chatId,
-            'Dimmi il *giorno* in numero (es. "21").'
-          );
-        const dayNum = parseInt(m[1], 10);
-
-        let targetDay = null;
-
-        if (state.availFlow.mode === "month") {
-          const { year, monthIdx } = state.availFlow;
-          const max = daysInMonth(year, monthIdx);
-          if (dayNum < 1 || dayNum > max) {
-            return reply(
-              client,
-              chatId,
-              `Giorno non valido per ${monthLabelIT(
-                monthIdx
-              )} (${max} giorni). Riprova con 1-${max}.`
-            );
-          }
-          targetDay = new Date(year, monthIdx, dayNum, 12, 0, 0, 0);
-        } else if (state.availFlow.mode === "week") {
-          const arr = state.availFlow.days || [];
-          // Se l’utente ha scritto 1..7 senza "il/di", prendilo come indice; altrimenti prova match sul giorno del mese
-          if (
-            dayNum >= 1 &&
-            dayNum <= arr.length &&
-            !/\b(il|del|di)\b/i.test(t)
-          ) {
-            targetDay = arr[dayNum - 1];
-          } else {
-            targetDay = arr.find((d) => d.getDate() === dayNum) || null;
-            if (!targetDay) {
-              const lines = arr
-                .map(
-                  (d, i) =>
-                    `${i + 1}) ${String(d.getDate()).padStart(
-                      2,
-                      "0"
-                    )} ${itaWeekdayName(d)}`
-                )
-                .join("\n");
-              return reply(
-                client,
-                chatId,
-                `Scegli un numero (1-${arr.length}) o un giorno del mese presente nella lista:\n${lines}`
-              );
-            }
-          }
-        }
-
-        state.availFlow = null;
-        setAndPersist();
-        const msgOut = await buildAvailabilityMessage({
-          day: atNoon(targetDay),
-          service: col.service || null,
-          duration: col.service ? cfgServiceDuration(col.service) : null,
-          professional: col.professionalEmail || col.professionalName || null,
-        });
-        return reply(client, chatId, msgOut);
-      }
-
-      // 2) Nuova richiesta di disponibilità (giorno / settimana / mese)
-      {
-        const req = parseAvailabilityRequest(text);
-        if (req) {
-          const svcCtx = col.service || fuzzyServiceSafe(text) || null;
-          const durCtx = svcCtx ? cfgServiceDuration(svcCtx) : null;
-
-          if (req.kind === "day") {
-            const msg = await buildAvailabilityMessage({
-              day: atNoon(req.date),
-              service: svcCtx,
-              duration: durCtx,
-              professional:
-                col.professionalEmail || col.professionalName || null,
-              window: req.window || null,
-              after: req.after || null,
-              before: req.before || null,
-            });
-            return reply(client, chatId, msg);
-          }
-
-          if (req.kind === "next_week") {
-            const days = listNextWeekDays();
-            state.availFlow = { mode: "week", days, awaiting: "day" };
-            setAndPersist();
-            const lines = days
-              .map(
-                (d, i) =>
-                  `${i + 1}) ${String(d.getDate()).padStart(
-                    2,
-                    "0"
-                  )} ${itaWeekdayName(d)}`
-              )
-              .join("\n");
-            return reply(
-              client,
-              chatId,
-              `Settimana prossima è troppo ampia: scegli un giorno.\n${lines}\nRispondi con *1-${
-                days.length
-              }* oppure con il *giorno* (es. "${String(
-                days[0].getDate()
-              ).padStart(2, "0")}").`
-            );
-          }
-
-          if (req.kind === "month") {
-            const { year, monthIdx } = req;
-            state.availFlow = {
-              mode: "month",
-              year,
-              monthIdx,
-              awaiting: "day",
-            };
-            setAndPersist();
-            return reply(
-              client,
-              chatId,
-              buildAskDayOfMonthPrompt(year, monthIdx)
-            );
-          }
-        }
-      }
-    }
-    // === MODALITÀ DISPONIBILITÀ (explorer) ===
-    async function showDayAvailability(day, svcCtx, proCtx) {
-      const duration = svcCtx ? cfgServiceDuration(svcCtx) : null;
-      const slotsDetail = normalizeSlotsDetail(
-        await fetchSlots({
-          service: svcCtx || null,
-          day: atNoon(day),
-          duration,
-          professional: proCtx || null,
-          wantDetail: true,
-        })
-      );
-      state.availFlow = {
-        active: true,
-        day: atNoon(day),
-        service: svcCtx || null,
-        professional: proCtx || null,
-        slots: slotsDetail,
-      };
-      pending.set(chatId, state);
-
-      if (!slotsDetail.length) {
-        return reply(
-          client,
-          chatId,
-          `😕 Nessun orario libero per ${fmtDate(day)}${
-            svcCtx ? ` (${svcCtx})` : ""
-          }.\nScrivi un’altra *data* (es. "domani" o "21/10") oppure *annulla* per uscire.`
-        );
-      }
-
-      const list = slotsDetail
-        .map((it, i) => {
-          const prosLbl = labelProsForSlot(it);
-          return `${i + 1}) ${it.time}${prosLbl ? ` (${prosLbl})` : ""}`;
-        })
-        .join("\n");
-
-      return reply(
-        client,
-        chatId,
-        `📅 Disponibilità ${fmtDate(day)}${
-          svcCtx ? ` • ${svcCtx}` : ""
-        }\n${list}\n(1-${
-          slotsDetail.length
-        })\n\nPuoi:\n• Rispondere con *numero* o *HH:MM* per scegliere\n• Scrivere un’altra *data* per cambiare giorno\n• Scrivere *annulla* per uscire`
-      );
-    }
-
-    // — gestione interazioni in modalità disponibilità —
-    if (state.availFlow && state.availFlow.active) {
-      if (/\b(annulla|esci|stop|indietro)\b/i.test(t)) {
-        state.availFlow = null;
-        pending.set(chatId, state);
-        await reply(
-          client,
-          chatId,
-          "Ok, uscita dalla ricerca di disponibilità."
-        );
-        // NON return: continuiamo col resto se serve
-      } else {
-        // 1) Numero da lista -> prenota
-        if (/^\s*\d+\s*$/.test(text)) {
-          const n = parseInt(text, 10);
-          const opts = state.availFlow.slots || [];
-          if (n >= 1 && n <= opts.length) {
-            const picked = opts[n - 1];
-            col.when = new Date(state.availFlow.day);
-            col.time = picked.time;
-            // auto-pro se un solo pro nello slot
-            if (
-              !col.professionalAny &&
-              !col.professionalEmail &&
-              !col.professionalName &&
-              picked?.pros?.length === 1
-            ) {
-              col.professionalEmail = picked.pros[0].email;
-              col.professionalName = picked.pros[0].name;
-            }
-            if (!col.service && state.availFlow.service)
-              col.service = state.availFlow.service;
-            state.step = "collect";
-            bumpBookingLock(state);
-            pending.set(chatId, state);
-            return await advanceAppointment(false);
-          }
-        }
-
-        // 2) Orario HH:MM -> prenota
-        {
-          const hhmm = parseTimeSmart(text);
-          if (hhmm) {
-            col.when = new Date(state.availFlow.day);
-            col.time = hhmm;
-            if (!col.service && state.availFlow.service)
-              col.service = state.availFlow.service;
-            state.step = "collect";
-            bumpBookingLock(state);
-            pending.set(chatId, state);
-            return await advanceAppointment(false);
-          }
-        }
-
-        // 3) Altra data -> ricarica disponibilità
-        {
-          const newDay = parseRelativeDay(text);
-          if (newDay) {
-            const svcCtx =
-              state.availFlow.service ||
-              col.service ||
-              fuzzyServiceSafe(text) ||
-              null;
-            const proCtx =
-              col.professionalEmail || col.professionalName || null;
-            return await showDayAvailability(newDay, svcCtx, proCtx);
-          }
-        }
-        // se non riconosco niente, spiego come fare
-        return reply(
-          client,
-          chatId,
-          "Scrivi *un numero*, un orario *HH:MM* o un’altra *data*. Per uscire scrivi *annulla*."
-        );
-      }
-    }
-    // === Conferma giorno alternativo quando il selezionato è chiuso ===
-    if (state.step === "confirm_alt_day") {
-      const tyes = /\b(s[iì]|si|ok|va ?bene|perfetto)\b/i.test(t);
-      const tno = /\b(no|cambia|altra|diversa|non)\b/i.test(t);
-      const iso = state.context?.altDaySuggest;
-      const alt = iso ? new Date(iso) : null;
-
-      if (tyes && alt) {
-        state.collected.when = alt;
-        state.step = "collect";
-        bumpBookingLock(state);
-        pending.set(chatId, state);
-        const r = await gotoPickTime(atNoon(state.collected.when));
-        if (r) return r;
-        return reply(
-          client,
-          chatId,
-          "Per quel giorno non ho orari liberi. Vuoi indicare un’altra data?"
-        );
-      }
-      if (tno) {
-        state.step = "collect";
-        state.context.altDaySuggest = null;
-        pending.set(chatId, state);
-        return reply(
-          client,
-          chatId,
-          'Ok, dimmi un’altra data (GG/MM o "domani").'
-        );
-      }
-      return reply(
-        client,
-        chatId,
-        "Rispondi **sì** per confermare o **no** per cambiare data."
-      );
-    }
-
-    // === TIME OVERRIDE ROBUSTO: se scrivo un orario, usalo nel flow corrente ===
-    {
-      const hhmm = parseTimeSmart(text); // (il tuo parser: 18:30 / 18.30 / 1830 / "18 e 30")
-      if (hhmm) {
-        const col = state.collected || (state.collected = {});
-        const inBooking =
-          isBookingFlowActive(state, col) ||
-          [
-            "collect",
-            "choose_service",
-            "pick_time",
-            "ask_allergies",
-            "ask_name",
-          ].includes(String(state.step || "")) ||
-          !!col.service ||
-          !!col.when ||
-          !!state.availFlow?.active;
-
-        if (inBooking) {
-          // Se provengo dalla modalità disponibilità, prendo CONTEX da lì
-          if (state.availFlow && state.availFlow.active) {
-            // data del giorno mostrato
-            if (!col.when && state.availFlow.day) {
-              col.when = new Date(state.availFlow.day);
-            }
-            // servizio di contesto (se c'era)
-            if (!col.service && state.availFlow.service) {
-              col.service = state.availFlow.service;
-            }
-            // se lo slot scelto esiste ed ha 1 solo pro, auto-assegna
-            if (
-              !col.professionalAny &&
-              !col.professionalEmail &&
-              !col.professionalName
-            ) {
-              const slot = (state.availFlow.slots || []).find(
-                (s) => s.time === hhmm
-              );
-              if (slot?.pros?.length === 1) {
-                col.professionalEmail = slot.pros[0].email;
-                col.professionalName = slot.pros[0].name;
-              }
-            }
-            // esci dalla availability mode
-            state.availFlow = null;
-          }
-
-          // imposta l'orario e avanza nel flow
-          col.time = hhmm;
-          state.step = "collect";
-          bumpBookingLock(state);
-          pending.set(chatId, state);
-
-          const r = await advanceAppointment(false);
-          if (r) return r;
-          // se manca ancora qualcosa (es. data o nome) il flow lo chiederà qui sotto
-        }
-      }
-    }
-
-    // — TRIGGER MODALITÀ DISPONIBILITÀ — SOLO SE ESPRESSA E MAI DURANTE IL BOOKING
-    {
-      const inBooking =
-        isInCriticalStep(state.step) ||
-        isBookingFlowActive(state, state.collected);
-      if (!inBooking) {
-        // chiedono esplicitamente disponibilità / posti / orari liberi
-        const explicitAvailRe =
-          /\b(?:avete\s+posto|c[’'`]?\s?è\s+posto|posti?\s+liber[oi]|disponibil(?:ità|ita)|orari?\s+liber[oi]|slot|quando\s+(?:siete|siamo)\s+liber[oi])\b/i;
-        // indizi “periodo” (settimana/mese) senza orario specifico
-        const weekHintRe = /\b(?:questa\s+settimana|settimana\s+prossima)\b/i;
-        const monthHintRe = /\b(?:questo\s+mese|prossimo\s+mese)\b/i;
-
-        const askedAvail = explicitAvailRe.test(t);
-        const askedWeek = weekHintRe.test(t);
-        const askedMonth = monthHintRe.test(t);
-
-        // Se hai un parser alto livello, usalo come extra-segnale
-        const req =
-          typeof parseAvailabilityRequest === "function"
-            ? parseAvailabilityRequest(text)
-            : null;
-
-        if (askedAvail || askedWeek || askedMonth || req) {
-          const col = state.collected || (state.collected = {});
-          const svcCtx =
-            col.service ||
-            (typeof fuzzyServiceSafe === "function" &&
-              fuzzyServiceSafe(text)) ||
-            null;
-          const proCtx = col.professionalEmail || col.professionalName || null;
-
-          // — SETTIMANA (lista giorni → l’utente sceglie)
-          if (askedWeek || (req && req.kind === "next_week")) {
-            const days = listNextWeekDays();
-            state.availFlow = { mode: "week", days, awaiting: "day" };
-            pending.set(chatId, state);
-            const lines = days
-              .map(
-                (d, i) =>
-                  `${i + 1}) ${String(d.getDate()).padStart(
-                    2,
-                    "0"
-                  )} ${itaWeekdayName(d)}`
-              )
-              .join("\n");
-            await reply(
-              client,
-              chatId,
-              `🔎 Modalità disponibilità (settimana prossima).\n` +
-                `Scegli un giorno:\n${lines}\n` +
-                `Rispondi con **1-${
-                  days.length
-                }** oppure scrivi il **giorno** (es. "${String(
-                  days[0].getDate()
-                ).padStart(2, "0")}")`
-            );
-            return "";
-          }
-
-          // — MESE (scegli il giorno del mese indicato)
-          if (askedMonth || (req && req.kind === "month")) {
-            const base = new Date();
-            const next = /\bprossim/i.test(t) || (req && req.shift === 1);
-            if (next) {
-              base.setMonth(base.getMonth() + 1);
-            }
-            const year = base.getFullYear();
-            const monthIdx = base.getMonth(); // 0..11
-            state.availFlow = {
-              mode: "month",
-              year,
-              monthIdx,
-              awaiting: "day",
-            };
-            pending.set(chatId, state);
-            await reply(
-              client,
-              chatId,
-              buildAskDayOfMonthPrompt(year, monthIdx)
-            );
-            return "";
-          }
-
-          // — GIORNO SINGOLO (default)
-          const day =
-            (req && req.kind === "day" && req.date) ||
-            parseRelativeDay(text) ||
-            (col.when ? atNoon(col.when) : nextOpenDay(new Date()));
-
-          await reply(
-            client,
-            chatId,
-            "🔎 Modalità disponibilità attiva. Per uscire scrivi **annulla**."
-          );
-          return await showDayAvailability(day, svcCtx, proCtx);
-        }
-      }
-    }
-
-    // ===================== PRIORITÀ INFO (prima di qualsiasi lock) =====================
-    if (looksLikeInfoQuestion(text) && !isInCriticalStep(state.step)) {
-      const svcCtx =
-        resolveServiceFromText(text) ||
-        fuzzyServiceSafe(text) ||
-        col.service ||
-        getLastService(chatId);
-
-      const topic = extractInfoTopic(text); // <<--- MANCAVA
-
-      if (svcCtx) rememberService(chatId, svcCtx);
-      if (topic) rememberInfoTopic(chatId, topic);
-
-      const prompt = buildQAPromptWithMemory(
-        chatId,
-        composeInfoPrompt(svcCtx, topic)
-      );
-      let answer = (await askQA(prompt, tools, client)).trim();
-
-      if (!answer) {
-        if (svcCtx) {
-          answer = `• ${svcCtx}: ${cfgServicePriceText(
-            svcCtx
-          )} (durata ${cfgServiceDuration(svcCtx)} min)`;
-        } else {
-          return await askInfoWhichService(client, chatId, state, col);
-        }
-      }
-      return reply(client, chatId, answer);
-    }
-
-    // ===================== Booking lock SOLO ora (se flusso attivo o messaggio sembra prenotazione) =====================
-    if (isBookingFlowActive(state, col) || looksLikeBooking(text))
-      bumpBookingLock(state);
-
-    // ===================== Menu gestione prenotazione =====================
-    if (
-      (typeof wantsEditMenu === "function" && wantsEditMenu(t)) ||
-      /\b(modifica|cancella|annulla)\b.*\b(appunt|prenot)\b/i.test(t) ||
-      /\b(appunt|prenot)\b.*\b(modifica|cancella|annulla)\b/i.test(t)
-    ) {
-      const booking = getUpcomingBookingByPhone(phone);
-      if (booking) {
-        state.step = "edit_menu";
-        state.edit = { target: booking };
-        setAndPersist();
-        return reply(client, chatId, showEditMenu(booking));
-      }
-      return reply(
-        client,
-        chatId,
-        "Non ho trovato prenotazioni future col tuo numero."
-      );
-    }
-
-    // === Gestione scelte del menu di editing ===
-    if (state.step === "edit_menu") {
-      const booking = state.edit && state.edit.target;
-      if (!booking) {
+      if (!bookings.length) {
+        if (state) unlockBooking(state);
         pending.delete(chatId);
-        return reply(
-          client,
-          chatId,
-          "Sessione scaduta. Scrivi “modifica appuntamento” per ripartire."
-        );
-      }
-
-      if (!/^\s*[0-4]\s*$/.test(t)) {
-        return reply(client, chatId, "Scegli un numero valido (0-4).");
-      }
-      const n = parseInt(t, 10);
-
-      // 0) Cancella → chiedi conferma
-      if (n === 0) {
-        state.step = "edit_cancel_confirm";
-        setAndPersist();
-        const d = new Date(booking.startTime);
-        const dd = String(d.getDate()).padStart(2, "0");
-        const mm = String(d.getMonth() + 1).padStart(2, "0");
-        const hh = String(d.getHours()).padStart(2, "0");
-        const mi = String(d.getMinutes()).padStart(2, "0");
-        return reply(
-          client,
-          chatId,
-          `Confermi di annullare l’appuntamento del ${dd}/${mm} alle ${hh}:${mi}? (sì/no)`
-        );
-      }
-
-      // 1) Modifica data → chiedi nuova data
-      if (n === 1) {
-        state.step = "edit_reschedule_date";
-        setAndPersist();
-        return reply(
-          client,
-          chatId,
-          "📅 Scrivi la *nuova data* (GG/MM o “domani”)."
-        );
-      }
-
-      // 2) Modifica orario → mostra slot del giorno attuale della prenotazione
-      if (n === 2) {
-        const day = new Date(booking.startTime);
-        const duration =
-          Number(booking.durationMin) || cfgServiceDuration(booking.service);
-        const slots = normalizeSlotsDetail(
-          await fetchSlots({
-            service: booking.service,
-            day,
-            duration,
-            professional:
-              booking.professionalEmail || booking.professionalName || null,
-            wantDetail: true,
-          })
-        );
-        if (!slots.length)
-          return reply(
-            client,
-            chatId,
-            `Nessun orario libero per ${fmtDate(day)}.`
-          );
-        col.options = slots;
-        state.edit.day = day;
-        state.step = "edit_reschedule_time";
-        setAndPersist();
-        return reply(
-          client,
-          chatId,
-          `Orari disponibili per ${fmtDate(day)}:\n${renderSlotsList(
-            slots
-          )}\n(1-${slots.length})`
-        );
-      }
-
-      // 3) Modifica professionista
-      if (n === 3) {
-        const pros = (cfgServiceProfessionals(booking.service) || []).map(
-          (p) => p.name
-        );
-        if (!pros.length)
-          return reply(
-            client,
-            chatId,
-            "Non ho professionisti configurati per questo servizio."
-          );
-        col.proOptions = pros;
-        state.step = "edit_pick_professional";
-        setAndPersist();
-        return reply(
-          client,
-          chatId,
-          `Preferisci un professionista in particolare?\n0) Non mi interessa\n${pros
-            .map((p, i) => `${i + 1}) ${p}`)
-            .join("\n")}\n(0-${pros.length})`
-        );
-      }
-
-      // 4) Modifica nome
-      if (n === 4) {
-        state.step = "edit_change_name";
-        setAndPersist();
-        return reply(
-          client,
-          chatId,
-          "Scrivi *nome e cognome* corretti (es. “Giulia Bianchi”)."
-        );
-      }
-      return "";
-    }
-    if (state.step === "edit_cancel_confirm") {
-      const booking = state.edit && state.edit.target;
-      if (!booking) {
-        pending.delete(chatId);
-        return reply(client, chatId, "Sessione scaduta.");
-      }
-
-      const yes = /\b(s[iì]|yes|y|ok|va bene|confermo|1)\b/i.test(t);
-      const no = /\b(no|n|annulla|indietro|2)\b/i.test(t);
-
-      if (yes) {
-        await cancelEventSafe(booking.eventId);
-        updateBookingByEventId(booking.eventId, {
-          status: "cancelled",
-          cancelledAt: new Date().toISOString(),
-        });
-        pending.delete(chatId);
-        return reply(
-          client,
-          chatId,
-          `✅ Prenotazione del ${fmtDate(booking.startTime)} annullata.`
-        );
-      }
-      if (no) {
-        state.step = "edit_menu";
-        setAndPersist();
-        return reply(client, chatId, showEditMenu(booking));
-      }
-      return reply(client, chatId, "Rispondi *sì* o *no*.");
-    }
-    if (state.step === "edit_reschedule_time") {
-      const booking = state.edit && state.edit.target;
-      const options = col.options || [];
-      if (!booking || !options.length) {
-        pending.delete(chatId);
-        return reply(
-          client,
-          chatId,
-          "Sessione scaduta. Scrivi “modifica appuntamento” per ripartire."
-        );
-      }
-
-      // Numero da lista
-      if (pureNumber.test(text)) {
-        const n = parseInt(text, 10);
-        if (n < 1 || n > options.length) {
-          return reply(
-            client,
-            chatId,
-            `Scegli un numero valido (1-${options.length}).`
-          );
-        }
-        const item = options[n - 1];
-        const chosen = typeof item === "string" ? item : item.time;
-
-        const day = state.edit?.day
-          ? new Date(state.edit.day)
-          : new Date(booking.startTime);
-        const newStart = setTime(day, chosen);
-        const duration =
-          Number(booking.durationMin) || cfgServiceDuration(booking.service);
-
-        // Mantieni lo stesso pro se possibile, altrimenti il primo libero nello slot
-        let newProEmail = booking.professionalEmail;
-        let newProName = booking.professionalName;
-        const pros = typeof item === "object" && item?.pros ? item.pros : [];
-        if (pros.length) {
-          const same = pros.find(
-            (p) => p.email && p.email === booking.professionalEmail
-          );
-          const pick = same || pros[0];
-          newProEmail = pick.email || newProEmail;
-          newProName = pick.name || newProName;
-        }
-
-        const ok = await updateEventSafe({
-          eventId: booking.eventId,
-          serviceName: booking.service,
-          professionalEmail: newProEmail,
-          clientPhone: booking.clientPhone,
-          startTime: toISOStringLocal(newStart),
-          durationMin: duration,
-        });
-
-        if (ok) {
-          updateBookingByEventId(booking.eventId, {
-            startTime: toISOStringLocal(newStart),
-            professionalEmail: newProEmail,
-            professionalName: newProName || proNameByEmail(newProEmail),
-          });
-          pending.delete(chatId);
-          return reply(
-            client,
-            chatId,
-            `✅ Appuntamento spostato a ${fmtDate(newStart)} alle ${chosen}.`
-          );
-        }
-        return reply(
-          client,
-          chatId,
-          "❌ Non sono riuscito a spostare l’appuntamento. Riprova tra poco."
-        );
-      }
-
-      // Orario libero HH:MM
-      let hhmm = parseHHMM(text);
-      if (!hhmm) hhmm = parseNaturalTime(text);
-      if (hhmm) {
-        const day = state.edit?.day
-          ? new Date(state.edit.day)
-          : new Date(booking.startTime);
-        const newStart = setTime(day, hhmm);
-        const duration =
-          Number(booking.durationMin) || cfgServiceDuration(booking.service);
-
-        const ok = await updateEventSafe({
-          eventId: booking.eventId,
-          serviceName: booking.service,
-          professionalEmail: booking.professionalEmail,
-          clientPhone: booking.clientPhone,
-          startTime: toISOStringLocal(newStart),
-          durationMin: duration,
-        });
-        if (ok) {
-          updateBookingByEventId(booking.eventId, {
-            startTime: toISOStringLocal(newStart),
-          });
-          pending.delete(chatId);
-          return reply(
-            client,
-            chatId,
-            `✅ Appuntamento spostato a ${fmtDate(newStart)} alle ${hhmm}.`
-          );
-        }
-        return reply(
-          client,
-          chatId,
-          "❌ Non sono riuscito a spostare l’appuntamento. Riprova."
-        );
-      }
-
-      return reply(
-        client,
-        chatId,
-        `Scegli un numero (1-${options.length}) o scrivi un orario *HH:MM*.`
-      );
-    }
-
-    // ===================== Shortcut “edit_*” (data / pro / nome) =====================
-    // Cambio data → chiedi nuova data e poi proponi orari (con pros)
-    if (state.step === "edit_reschedule_date") {
-      const chosenTimeEdit =
-        (typeof parseTimeSmart === "function" && parseTimeSmart(text)) ||
-        (typeof parseHHMM === "function" && parseHHMM(text)) ||
-        null;
-      if (chosenTimeEdit) {
-        // memorizza nelle collected (riusiamo lo stesso campo)
-        const col = state.collected || (state.collected = {});
-        col.pendingTime = chosenTimeEdit;
-        setAndPersist();
-        await reply(
-          client,
-          chatId,
-          `Segno *${chosenTimeEdit}*. Ora dimmi la data (es. "domani" o "23/10").`
-        );
+        await reply(client, chatId, "🤔 Non risulta alcuna prenotazione futura da modificare.");
         return "";
       }
 
-      const booking = state.edit && state.edit.target;
+      if (bookings.length === 1) {
+        const booking = bookings[0];
+        _editSnapshotStateFromBooking(state, booking);
+        state.step = "edit_menu";
+        state.edit = { target: booking };
+        pending.set(chatId, state);
+        await reply(client, chatId, showEditMenu(booking));
+        return "";
+      }
+
+      await startEditChooseBooking(client, chatId, bookings, null);
+      return "";
+    }
+
+    // ============================================================================
+    // SEZIONE 11: EDIT FLOW - MODIFICA DATA
+    // ============================================================================
+    if (state.step === "edit_reschedule_date") {
+      const booking = state.edit?.target;
       if (!booking) {
         pending.delete(chatId);
-        return reply(
-          client,
-          chatId,
-          "Sessione scaduta. Scrivi “modifica appuntamento” per ripartire."
-        );
+        await reply(client, chatId, 'Sessione scaduta. Scrivi "modifica" per ripartire.');
+        return "";
       }
-      const day = parseRelativeDay(t);
-      if (!day)
-        return reply(
-          client,
-          chatId,
-          "Formato data non riconosciuto. Scrivi GG/MM o “domani”."
-        );
+
+      let newDay = null;
+      try {
+        newDay = _editParseNewDate ? _editParseNewDate(msg) : parseUnifiedDate(msg);
+      } catch (parseErr) {
+        log('error', '[EDIT_DATE] Parsing fallito', { input: msg, err: parseErr?.message });
+      }
+
+      if (!newDay) {
+        await reply(client, chatId, 'Non ho capito la data. Scrivi "oggi", "domani", "tra 7 giorni" oppure in formato GG/MM.');
+        return "";
+      }
+
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const dayNormalized = new Date(newDay);
+      dayNormalized.setHours(0, 0, 0, 0);
+
+      if (dayNormalized < today) {
+        await reply(client, chatId, 'Quella data è già passata. Scrivi una data valida (es. "domani" o "12/12").');
+        return "";
+      }
+
+      const duration = _editDuration ? _editDuration(booking) : null;
+      const pro = booking.professionalEmail || null;
+
+      try {
+        releaseSoftHoldByChat(chatId);
+      } catch (e) { }
+
+      const rawSlots = await fetchSlots({
+        service: booking.service,
+        day: typeof atNoon === "function" ? atNoon(dayNormalized) : dayNormalized,
+        duration,
+        professional: pro,
+        wantDetail: true,
+      });
+
+      const slots = (typeof normalizeSlotsDetail === "function" ? normalizeSlotsDetail(rawSlots) : rawSlots) || [];
+
+      if (!slots.length) {
+        const dateStr = typeof formatDateWithWeekdayIT === "function"
+          ? formatDateWithWeekdayIT(dayNormalized)
+          : (typeof fmtDate === "function" ? fmtDate(dayNormalized) : dayNormalized.toLocaleDateString());
+        pending.set(chatId, state);
+        await reply(client, chatId, `Non ci sono orari liberi per ${dateStr}. Prova un altro giorno.`);
+        return "";
+      }
 
       state.step = "edit_reschedule_time";
-      state.edit.day = day;
-      setAndPersist();
-
-      const duration =
-        Number(booking.durationMin) || cfgServiceDuration(booking.service);
-      const slots = normalizeSlotsDetail(
-        await fetchSlots({
-          service: booking.service,
-          day,
-          duration,
-          professional:
-            booking.professionalEmail || booking.professionalName || null,
-          wantDetail: true,
-        })
-      );
-      if (!slots.length) {
-        return reply(
-          client,
-          chatId,
-          `Non vedo orari liberi per ${fmtDate(day)}. Prova un altro giorno.`
-        );
-      }
-      col.options = slots;
-      setAndPersist();
-      return reply(
-        client,
-        chatId,
-        `Orari disponibili per ${fmtDate(day)}:\n${renderSlotsList(
-          slots
-        )}\n(1-${slots.length})`
-      );
-    }
-
-    // Cambio professionista
-    if (state.step === "edit_pick_professional") {
-      const booking = state.edit && state.edit.target;
-      const pros = (state.edit && state.edit.proOptions) || [];
-      const n = parseInt(t, 10);
-      if (isNaN(n) || n < 1 || n > pros.length) {
-        return reply(
-          client,
-          chatId,
-          `Scegli un numero valido (1-${pros.length}).`
-        );
-      }
-      const newProName = pros[n - 1];
-      const newProEmail = proEmailByName(newProName);
-
-      const currentDate = new Date(booking.startTime);
-      const duration =
-        Number(booking.durationMin) || cfgServiceDuration(booking.service);
-      const slots = normalizeSlotsDetail(
-        await fetchSlots({
-          service: booking.service,
-          day: currentDate,
-          duration,
-          professional: newProEmail || newProName,
-          wantDetail: true,
-        })
-      );
-      const hhmm = booking.startTime.slice(11, 16);
-      const times = slots.map((x) => x.time);
-      if (!times.includes(hhmm)) {
-        state.step = "edit_reschedule_time";
-        state.edit.day = currentDate;
-        col.options = slots;
-        setAndPersist();
-        return reply(
-          client,
-          chatId,
-          `A quell'ora ${newProName} non è libero. Ecco gli orari disponibili per ${fmtDate(
-            currentDate
-          )}:\n${renderSlotsList(slots)}\n(1-${slots.length})`
-        );
-      }
-      const startISO = toISOStringLocal(currentDate);
-      const ok = await updateEventSafe({
-        eventId: booking.eventId,
-        serviceName: booking.service,
-        professionalEmail: newProEmail || booking.professionalEmail,
-        clientPhone: booking.clientPhone,
-        startTime: startISO,
-        durationMin: booking.durationMin,
-      });
-      if (ok) {
-        updateBookingByEventId(booking.eventId, {
-          professionalEmail: newProEmail,
-          professionalName: newProName,
-        });
-        pending.delete(chatId);
-        return reply(
-          client,
-          chatId,
-          `✅ Professionista aggiornato: ${newProName}.`
-        );
-      }
-      return reply(
-        client,
-        chatId,
-        "❌ Non sono riuscito a modificare il professionista."
-      );
-    }
-
-    // Cambio nome
-    if (state.step === "edit_change_name") {
-      const booking = state.edit && state.edit.target;
-      const name = extractCustomerName(text) || t;
-      if (!booking || !name || name.split(" ").length < 2) {
-        return reply(
-          client,
-          chatId,
-          "Scrivi nome e cognome (es. “Giulia Bianchi”)."
-        );
-      }
-      const ok = await updateEventSafe({
-        eventId: booking.eventId,
-        serviceName: booking.service,
-        professionalEmail: booking.professionalEmail,
-        clientPhone: booking.clientPhone,
-        startTime: booking.startTime,
-        durationMin: booking.durationMin,
-        notes:
-          (booking.notes || "").replace(/Nome:\s*.*$/im, "").trim() +
-          `\nNome: ${name}`,
-      });
-      if (ok) {
-        updateBookingByEventId(booking.eventId, { customerName: name });
-        pending.delete(chatId);
-        return reply(client, chatId, `✅ Nome aggiornato: ${name}.`);
-      }
-      return reply(
-        client,
-        chatId,
-        "❌ Non sono riuscito a modificare il nome."
-      );
-    }
-
-    // ===================== Reset conversazione =====================
-    if (/^\s*(annulla|reset|stop|cancella|ricomincia)\s*$/i.test(t)) {
-      if (state) unlockBooking(state);
-      pending.delete(chatId);
-      releaseSoftHoldByChat(chatId);
-
-      return reply(
-        client,
-        chatId,
-        "👍 Ok, procedura annullata. Dimmi pure come posso aiutarti."
-      );
-    }
-
-    // ===================== Anti-loop: se "qualsiasi professionista" già scelto =====================
-    if (state.step === "pick_professional" && col.professionalAny === true) {
-      state.step = "collect";
-      setAndPersist();
-    }
-
-    // ===================== Shortcut gestione cancellazione/spostamento =====================
-    const manageCancelPattern =
-      /\b(?:annull|cancell|disd)\w*.*\b(?:appunt|prenot)\w*/i;
-    const manageModifyPattern =
-      /\b(?:modif|spost|camb)\w*.*\b(?:appunt|prenot)\w*/i;
-
-    if (manageCancelPattern.test(t)) {
-      const booking = getUpcomingBookingByPhone(phone);
-      if (!booking)
-        return reply(
-          client,
-          chatId,
-          "🤔 Non risulta alcuna prenotazione da annullare."
-        );
-      const startTs = new Date(booking.startTime).getTime();
-      if (startTs - Date.now() < CANCEL_POLICY_HOURS * 3600 * 1000) {
-        return reply(
-          client,
-          chatId,
-          `Mancano meno di ${CANCEL_POLICY_HOURS} ore: non posso annullare automaticamente. Contatta il salone.`
-        );
-      }
-      await cancelEventSafe(booking.eventId);
-      updateBookingByEventId(booking.eventId, {
-        status: "cancelled",
-        cancelledAt: new Date().toISOString(),
-      });
-      pending.delete(chatId);
-      return reply(
-        client,
-        chatId,
-        `✅ Prenotazione del ${fmtDate(
-          booking.startTime
-        )} alle ${booking.startTime.slice(11, 16)} annullata.`
-      );
-    }
-
-    if (manageModifyPattern.test(t)) {
-      const booking = getUpcomingBookingByPhone(phone);
-      if (!booking)
-        return reply(
-          client,
-          chatId,
-          "🤔 Non risulta alcuna prenotazione da modificare."
-        );
-      if (state) unlockBooking(state);
-      pending.delete(chatId);
-      state = {
-        step: "collect",
-        collected: {
-          service: booking.service,
-          when: null,
-          time: null,
-          professionalAny: false,
-          professionalName:
-            booking.professionalName ||
-            proNameByEmail(booking.professionalEmail),
-          professionalEmail: booking.professionalEmail,
-          customerName: booking.customerName,
-          allergies: booking.allergies || null,
-          options: [],
-          proOptions: null,
-          daypartWindow: null,
-          infoOptions: null,
-          pendingTime: null,
-          allSlotsMode: false,
-          eventId: booking.eventId,
-        },
-        context: { lastService: null, lastInfoTopic: null, lock: null },
-      };
-      ensureContext(state);
+      state.edit = state.edit || {};
+      state.edit.target = booking;
+      state.edit.day = dayNormalized;
+      state.collected = state.collected || {};
+      state.collected.options = slots;
       pending.set(chatId, state);
+
+      const dateStr = typeof formatDateWithWeekdayIT === "function"
+        ? formatDateWithWeekdayIT(dayNormalized)
+        : (typeof fmtDate === "function" ? fmtDate(dayNormalized) : dayNormalized.toLocaleDateString());
+      const lines = typeof renderSlotsList === "function" ? renderSlotsList(slots) : (slots || []).join("\n");
+
       await reply(
         client,
         chatId,
-        `Hai un appuntamento per *${booking.service}* il *${fmtDate(
-          booking.startTime
-        )}* alle *${booking.startTime.slice(
-          11,
-          16
-        )}*.\n📅 Per quando vuoi spostarlo? (Indica una nuova data)`
+        `📅 Disponibilità per ${dateStr}:\n${lines}\n\n💬 Scrivi l'orario desiderato (es. "14:30", "14.30" oppure "alle 14").\nSe vuoi cambiare ancora giorno, scrivi la nuova data. Digita "annulla" per uscire.`
       );
       return "";
     }
 
-    // ===================== Helpers inline per avanzamento =====================
-    async function gotoPickTime(day) {
-      const duration = cfgServiceDuration(col.service);
-      const proEmail = col.professionalAny
-        ? null
-        : col.professionalEmail ||
-          (col.professionalName ? proEmailByName(col.professionalName) : null);
-
-      const slotsRaw = await fetchSlots({
-        service: col.service,
-        day,
-        duration,
-        professional: proEmail || null,
-        wantDetail: true, // chiedi dettaglio pros per slot
-      });
-      const slotsDetail = normalizeSlotsDetail(slotsRaw);
-      let filtered = filterSlotsByWindow(
-        slotsDetail.map((s) => s.time),
-        col.daypartWindow || null
-      )
-        .map((h) => slotsDetail.find((s) => s.time === h))
-        .filter(Boolean);
-
-      if (!filtered.length) return null;
-
-      col.options = filtered;
-      state.step = "pick_time";
-      bumpBookingLock(state);
-      setAndPersist();
-
-      // Raggruppo per daypart renderizzando pros
-      const grouped = groupSlotsByDaypart(filtered.map((s) => s.time));
-      const mk = (title, arr) => {
-        if (!arr.length) return "";
-        const lines = arr
-          .map((h) => {
-            const item = filtered.find((x) => x.time === h) || { pros: [] };
-            const prosLbl = labelProsForSlot(item);
-            return `• ${h}${prosLbl ? ` (${prosLbl})` : ""}`;
-          })
-          .join("\n");
-        return `${title}\n${lines}`;
-      };
-      const listText = [
-        mk("Mattina:", grouped.mattina),
-        mk("Pomeriggio:", grouped.pomeriggio),
-        mk("Sera:", grouped.sera),
-      ]
-        .filter(Boolean)
-        .join("\n");
-
-      const allergBanner = getAllergens(col.service).length
-        ? `\nAllergeni monitorati: ${getAllergens(col.service).join(", ")}`
-        : "";
-
-      const header = proEmail
-        ? `📅 Disponibilità per il ${fmtDate(day)} (solo ${
-            col.professionalName || proNameByEmail(proEmail)
-          }):`
-        : `📅 Disponibilità per il ${fmtDate(day)} (tutti i professionisti):`;
-
-      const extra = proEmail ? `\n0) Vedi tutti gli slot disponibili` : ``;
-      const range = proEmail
-        ? `(0-${col.options.length})`
-        : `(1-${col.options.length})`;
-      return reply(
-        client,
-        chatId,
-        `${header}${allergBanner}\n${listText}${extra}\n${range}`
-      );
-    }
-
-    function askNameIfMissing() {
-      if (!col.customerName) {
-        state.step = "ask_name";
-        bumpBookingLock(state);
-        setAndPersist();
-        return reply(client, chatId, "Per favore, il tuo nome e cognome? 😊");
+    // ============================================================================
+    // SEZIONE 12: EDIT FLOW - MODIFICA NOME
+    // ============================================================================
+    if (state.step === "edit_change_name") {
+      const booking = state.edit?.target;
+      if (!booking) {
+        pending.delete(chatId);
+        await reply(client, chatId, 'Sessione scaduta. Scrivi "modifica appuntamento" per ripartire.');
+        return "";
       }
-      return null;
+
+      const newNameRaw = String(msg || "").trim();
+      const newName = extractCustomerName(newNameRaw) || newNameRaw;
+
+      if (!newName) {
+        await reply(client, chatId, "Scrivi il nuovo nome e cognome per la prenotazione.");
+        return "";
+      }
+
+      const ok = await _editApplyUpdate({ booking, newName });
+      if (!ok) {
+        await reply(client, chatId, "❌ Non sono riuscito ad aggiornare il nome. Riprova tra poco.");
+        return "";
+      }
+
+      state.step = "edit_menu";
+      let updated = booking;
+      try {
+        const all = getUserActiveBookingsAll(booking.clientPhone) || [];
+        const match = all.find((b) => b.eventId === booking.eventId);
+        if (match) updated = match;
+      } catch { }
+
+      state.edit = { target: updated };
+      pending.set(chatId, state);
+
+      await reply(client, chatId, `✅ Nome aggiornato.\n\n${showEditMenu(updated)}`);
+      return "";
     }
 
-    function askProfessionalIfNeeded() {
-      if (
-        !col.professionalAny &&
-        !col.professionalName &&
-        !col.professionalEmail
-      ) {
-        const prosSpec = cfgServiceProfessionals(col.service);
-        const names = prosSpec.length
-          ? prosSpec.map((p) => p.name)
-          : Object.values(config.professionals || {}).map((p) => p.name);
+    // ============================================================================
+    // SEZIONE 13: STEP 1 - SCELTA PROFESSIONISTA
+    // ============================================================================
+    const inEditFlowGlobal = state.step && typeof state.step === "string" && state.step.startsWith("edit_");
+    const needPro = (!col.professionalEmail && !col.professionalName && !col.professionalAny);
+    const alreadyAskingPro = (state.step === "pick_professional");
+    const isInitialState = !state.step || state.step === "collect" || state.step === "start";
+    const awaitingName = !!(state?.context?.awaitingName);
+    const hasService = !!(col?.service);
 
-        // Se ci sono professionisti, chiedi SEMPRE; niente auto-assegnazione
-        if (names.length >= 1) {
-          col.proOptions = names; // SOLO nomi
-          state.step = "pick_professional";
-          bumpBookingLock(state);
-          setAndPersist();
-          const list = names.map((n, i) => `${i + 1}) ${n}`).join("\n");
-          return reply(
-            client,
-            chatId,
-            `Preferisci un professionista in particolare?\n0) Non mi interessa\n${list}\n(0-${names.length})`
-          );
-        }
+    if (!inEditFlowGlobal && needPro && !alreadyAskingPro && isInitialState && !awaitingName) {
+      if (hasService) {
+        ensureContext(state);
+        state.context.preferredService = col.service;
+        col.service = null;
+      }
 
-        // Nessun pro noto -> chiedi testo libero
+      state.step = "pick_professional";
+      const pros = getAllProsList();
+
+      if (!pros.length) {
+        await reply(client, chatId, "⚠️ Nessun professionista configurato. Contatta il salone.");
+        return "";
+      }
+
+      const list =
+        `👩‍🔧 prima di tutto scegli *con chi vuoi effettuare il trattamento*:\n` +
+        `0) Non mi interessa\n` +
+        pros.map((p, i) => `${i + 1}) ${p.name}`).join("\n") +
+        `\n(0-${pros.length})`;
+
+      pending.set(chatId, state);
+      await reply(client, chatId, list);
+      return "";
+    }
+
+    // Gestione risposta scelta professionista
+    if (!inEditFlowGlobal && state.step === "pick_professional") {
+      const pros = getAllProsList();
+      const txt = String(text || "").trim();
+
+      if (!pros.length) {
+        await reply(client, chatId, "⚠️ Nessun professionista configurato. Contatta il salone.");
         state.step = "collect";
-        bumpBookingLock(state);
-        setAndPersist();
-        return reply(
-          client,
-          chatId,
-          "Preferisci un professionista in particolare? (scrivi il nome)"
-        );
+        pending.set(chatId, state);
+        return "";
       }
-      return null;
-    }
 
-    function gateAllergiesIfNeeded() {
-      const allergyPrompt = askAllergies(col.service);
-      if (
-        col.service &&
-        allergyPrompt &&
-        (!col.allergies || typeof col.allergies.has !== "boolean")
-      ) {
-        state.step = "ask_allergies";
-        bumpBookingLock(state);
-        setAndPersist();
-        return reply(client, chatId, allergyPrompt);
-      }
-      return null;
-    }
+      const preSvc = state?.context?.preferredService;
+      const isAny = txt === "0" || /\b(non mi interessa|chiunque|qualsiasi|indifferente)\b/i.test(txt);
 
-    async function advanceAppointment(useIntakeFromText) {
-      if (useIntakeFromText) {
-        const intake = parseIntake(text);
-        if (pureNumber.test(text)) delete intake.time; // evita 2 -> 02:00
-        Object.assign(col, intake);
+      // Opzione 0: Non mi interessa
+      if (isAny) {
+        col.professionalAny = true;
+        col.professionalEmail = null;
+        col.professionalName = null;
+        col.proOptions = null;
 
-        // Scelta servizio numerica
-        if (!col.service && pureNumber.test(text)) {
-          const svcs = cfgServices();
-          const idx = parseInt(text, 10);
-          if (!isNaN(idx) && svcs[idx - 1]) {
-            col.service = svcs[idx - 1];
-            col.time = null;
+        if (preSvc) {
+          // Se l'utente ha scelto "Non mi interessa" e il servizio era già stato capito prima,
+          // assegna subito un professionista random tra quelli che lo svolgono.
+          // (Evita stati "senza pro" e rende coerente la disponibilità mostrata.)
+          try {
+            const prosForSvc =
+              (typeof cfgServiceProfessionals === "function" ? (cfgServiceProfessionals(preSvc) || []) : []) || [];
+            const emails = prosForSvc.map((p) => p?.email).filter(Boolean);
+
+            if (emails.length) {
+              const chosenEmail = emails[Math.floor(Math.random() * emails.length)];
+              col.professionalAny = false;
+              col.professionalEmail = chosenEmail;
+              col.professionalName =
+                (config?.professionals?.[chosenEmail]?.name) ||
+                (prosForSvc.find((p) => p?.email === chosenEmail)?.name) ||
+                chosenEmail;
+            }
+          } catch (e) {
+            log("warn", "[RANDOM_PRO] failed (pick_professional preSvc)", { err: String(e?.message || e) });
           }
+
+          col.service = preSvc;
+          state.context.preferredService = null;
+          state.step = "choose_day";
+          pending.set(chatId, state);
+          await reply(client, chatId, `Perfetto! Che giorno preferisci? (es. "domani", "lunedì prossimo", "tra 2 giorni", "23/10", "28 ottobre")`);
+          return "";
         }
 
-        if (col.service) {
-          rememberService(chatId, col.service);
-          const allergens = getAllergens(col.service);
-          if (allergens.length && !col._allergenAlertShown) {
-            await reply(
-              client,
-              chatId,
-              `⚠️ Attenzione allergeni per "${col.service}": ${allergens.join(
-                ", "
-              )}`
-            );
-            col._allergenAlertShown = true; // evita ripetizioni
-            pending.set(chatId, state);
-            setAndPersist();
-          }
-        }
-      }
-
-      // 1) Servizio
-      if (!col.service) {
-        // 🔹 salva che stiamo aspettando una scelta numerica 1..N
-        col.svcOptions = cfgServices();
+        const { available, msg: svcMsg } = buildServicesMessageForPro(null);
+        col.serviceOptions = available;
+        col.svcOptions = available;
+        ensureUI(state);
+        state.ui.lastServiceList = available;
         state.step = "choose_service";
         pending.set(chatId, state);
-
-        bumpBookingLock(state);
-        setAndPersist();
-        return reply(client, chatId, askService(state, chatId));
+        await reply(client, chatId, svcMsg);
+        return "";
       }
 
-      // 2) Allergie
-      {
-        const r = gateAllergiesIfNeeded();
-        if (r) return r;
-      }
+      // Numero 1..N
+      if (pureNumber.test(txt)) {
+        const idx = parseListIndex(txt, pros.length);
 
-      // 3) Professionista (se necessario)
-      {
-        const r = askProfessionalIfNeeded();
-        if (r) return r;
-      }
-
-      // 4) Data
-if (!col.when) {
-  // 👇 FIX: imposta lo step così il prossimo messaggio entra nel ramo choose_day
-  state.step = "choose_day";
-  // (facoltativo ma utile) piccolo segnale UI interno
-  state.ui ||= {};
-  state.ui.lastAsk = "date";
-
-  // persisti PRIMA di rispondere
-  pending.set(chatId, state);
-  bumpBookingLock(state);
-  setAndPersist();
-
-  return reply(
-    client,
-    chatId,
-    '📅 Per quale data vuoi prenotare? (giorno/mese o "domani")'
-  );
-}
-
-
-      // se la data è nel passato, vai al prossimo giorno utile
-      if (col.when && isPast(setTime(col.when, col.time || "23:59"))) {
-        col.when = nextOpenDay(new Date());
-      }
-
-      /* === QUI (PRIMA DI QUALSIASI ALTRO return reply O DI gotoPickTime) === */
-      // se il giorno scelto è chiuso, proponi il primo giorno utile e chiedi conferma
-      if (cfgClosedDay(col.when)) {
-        const altDay = nextOpenDay(col.when);
-        state.step = "confirm_alt_day";
-        state.context.altDaySuggest = atNoon(altDay).toISOString();
-        pending.set(chatId, state);
-        return reply(
-          client,
-          chatId,
-          `Il giorno ${fmtDate(col.when)} siamo chiusi. Ti va bene ${fmtDate(
-            altDay
-          )}? (sì/no)`
-        );
-      }
-
-      // 5) Orario
-      if (!col.time) {
-        const day = atNoon(col.when);
-        const resp = await gotoPickTime(day);
-        if (resp) return resp;
-
-        const altDay = nextOpenDay(day);
-        const altResp = await gotoPickTime(altDay);
-        if (altResp) {
-          col.when = altDay;
-          return altResp;
+        // ✅ FIX CRITICO: idx è null se invalido, oppure numero 1..N
+        if (idx == null || !Number.isFinite(idx)) {
+          pending.set(chatId, state);
+          await reply(client, chatId, `❌ Scelta non valida. Scrivi un numero tra 0 e ${pros.length}.`);
+          return "";
         }
-        bumpBookingLock(state);
-        setAndPersist();
-        return reply(
-          client,
-          chatId,
-          "😕 Non ho trovato disponibilità. Prova con un’altra data o un orario diverso."
-        );
-      }
 
-      // 6) Nome
-      {
-        const r = askNameIfMissing();
-        if (r) return r;
-      }
+        // ✅ FIX CRITICO: converti da 1-based a 0-based
+        const arrayIndex = idx - 1;
 
-      // 7) Verifica slot e conferma
-      const duration = cfgServiceDuration(col.service);
-      const start = setTime(col.when, col.time);
-
-      if (cfgClosedDay(start)) {
-        const altDay = nextOpenDay(start);
-        const altSlots = normalizeSlotsDetail(
-          await fetchSlots({
-            service: col.service,
-            day: altDay,
-            duration,
-            professional: col.professionalAny
-              ? null
-              : col.professionalEmail || col.professionalName || null,
-            wantDetail: true,
-          })
-        );
-        if (altSlots.length) {
-          col.when = altDay;
-          col.options = altSlots;
-          state.step = "pick_time";
-          bumpBookingLock(state);
-          setAndPersist();
-          return reply(
-            client,
-            chatId,
-            `Il giorno dopo (${fmtDate(
-              altDay
-            )}) ho questi orari disponibili:\n${renderSlotsList(
-              altSlots
-            )}\n(1-${altSlots.length})`
-          );
+        // ✅ Verifica bounds
+        if (arrayIndex < 0 || arrayIndex >= pros.length) {
+          pending.set(chatId, state);
+          await reply(client, chatId, `❌ Numero fuori range. Scrivi un numero tra 1 e ${pros.length}.`);
+          return "";
         }
-        bumpBookingLock(state);
-        setAndPersist();
-        return reply(
-          client,
-          chatId,
-          "🤔 Non ho trovato slot vicini. Vuoi cambiare data o fascia oraria?"
-        );
-      }
 
-      const daySlots = normalizeSlotsDetail(
-        await fetchSlots({
-          service: col.service,
-          day: atNoon(start),
-          duration,
-          professional: col.professionalAny
-            ? null
-            : col.professionalEmail || col.professionalName || null,
-          wantDetail: true,
-        })
-      );
-      const dayTimes = daySlots.map((x) => x.time);
+        const chosen = pros[arrayIndex];
 
-      if (dayTimes.includes(col.time)) {
-        // Se NON hai un pro e l’API GCAL lo richiede, scegli automaticamente il primo libero per quell’orario
-        if (
-          !col.professionalAny &&
-          !col.professionalEmail &&
-          !col.professionalName
-        ) {
-          const slotItem = daySlots.find((x) => x.time === col.time);
-          if (slotItem && slotItem.pros && slotItem.pros.length) {
-            col.professionalEmail = slotItem.pros[0].email;
-            col.professionalName = slotItem.pros[0].name;
-          }
+        // ✅ Validazione oggetto
+        if (!chosen || !chosen.name) {
+          pending.set(chatId, state);
+          await reply(client, chatId, `❌ Errore nel recupero del professionista. Riprova.`);
+          return "";
         }
-        try {
-          // === Risolvi pro per lo slot scelto (robusto) ===
-          const slot = daySlots.find((s) => s.time === col.time);
 
-          const pe = col.professionalAny
-            ? slot && slot.pros && slot.pros[0]
-              ? slot.pros[0].email
-              : null
-            : col.professionalEmail ||
-              (col.professionalName
-                ? proEmailByName(col.professionalName)
-                : null);
-
-          const pn = col.professionalAny
-            ? slot && slot.pros && slot.pros[0]
-              ? slot.pros[0].name
-              : null
-            : col.professionalName ||
-              proNameByEmail(col.professionalEmail) ||
-              null;
-
-          // Se manca l'email del pro, non chiamare GCal: chiedi di scegliere altro orario
-          if (!pe) {
-            state.step = "pick_time";
-            col.options = daySlots; // ripropone gli slot del giorno
-            bumpBookingLock(state);
-            setAndPersist();
-            return reply(
-              client,
-              chatId,
-              "⚠️ Nessun professionista libero per quell’orario. Scegli un altro orario o invia 0 per vedere tutti gli slot."
-            );
-          }
-
-          // === Titolo + note con marcatura allergie ===
-          const allergFlag =
-            col.allergies && col.allergies.has ? "⚠️ ALLERGENI " : "";
-          const baseTitle = `${allergFlag}${col.service}`;
-
-          const listed =
-            col.allergies && Array.isArray(col.allergies.list)
-              ? col.allergies.list.filter(Boolean)
-              : [];
-
-          const monitored = getAllergens(col.service);
-          const monitoredStr = monitored.length ? monitored.join(", ") : "—";
-
-          const notes =
-            col.allergies && col.allergies.has
-              ? `Cliente: ${col.customerName}. Allergie dichiarate${
-                  listed.length ? `: ${listed.join(", ")}` : ""
-                }. Allergeni (config): ${monitoredStr}. Contattare prima del trattamento.`
-              : `Cliente: ${col.customerName}. Allergeni (config): ${monitoredStr}.`;
-
-          // === Anti-doppio invio ===
-          const fingerprint = `${col.service}|${pe}|${new Date(
-            start
-          ).toISOString()}`;
-          if (state.txId && state.eventFingerprint === fingerprint) return "";
-          state.txId = Date.now();
-          state.eventFingerprint = fingerprint;
-
-          // === Soft-hold (5') per evitare race tra più utenti su stesso slot/pro
-          const holdOk = acquireSoftHold({
-            chatId,
-            professionalEmail: pe,
-            startTime: start,
-            durationMin: duration,
-          });
-          if (!holdOk) {
-            // lo slot è stato appena preso: proponi alternative
-            const freshSlots = normalizeSlotsDetail(
-              await fetchSlots({
-                service: col.service,
-                day: atNoon(start),
-                duration,
-                professional: col.professionalAny
-                  ? null
-                  : col.professionalEmail || col.professionalName || null,
-                wantDetail: true,
-              })
-            );
-            if (!freshSlots.length) {
-              return reply(
-                client,
-                chatId,
-                "Quel posto è appena stato occupato 😕. Non ho più disponibilità per quel giorno."
-              );
-            }
-            col.options = freshSlots;
-            state.step = "pick_time";
-            setAndPersist();
-            return reply(
-              client,
-              chatId,
-              `Quel posto è appena stato occupato 😕. Disponibili invece:\n${renderSlotsList(
-                freshSlots
-              )}\n(1-${freshSlots.length})`
-            );
-          }
-
-          // === Crea evento (passando anche i campi “umani”) ===
-          let eventData;
-          try {
-            eventData = await makeEvent({
-              serviceName: baseTitle,
-              professionalEmail: pe,
-              professionalName: pn,
-              customerName: col.customerName,
-              clientPhone: chatId,
-              startTime: start,
-              durationMin: duration,
-              notes,
-              allergic: !!(col.allergies && col.allergies.has),
-              allergies: listed.length
-                ? listed
-                : col.allergies && col.allergies.has
-                ? "sì (non specificate)"
-                : null,
-            });
-          } finally {
-            // rilascia sempre l'hold (successo o errore)
-            releaseSoftHoldByChat(chatId);
-          }
-
-          // === Persist booking con i dati risolti ===
-          persistBooking({
-            eventId: eventData.id || null,
-            service: col.service,
-            professionalEmail: pe,
-            professionalName: pn,
-            clientPhone: chatId,
-            customerName: col.customerName,
-            startTime: new Date(start).toISOString(),
-            durationMin: duration,
-            allergies: col.allergies || null,
-            status: "confirmed",
-            createdAt: new Date().toISOString(),
-          });
-
-          // === Chiudi flow ===
-          unlockBooking(state);
-          pending.delete(chatId);
-
-          const promos = (
-            Array.isArray(config.promotions) ? config.promotions : []
-          )
-            .filter((p) => norm(p.service || "") === norm(col.service))
-            .map((p) => p.text)
-            .filter(Boolean);
-
-          const allergyNote = (() => {
-            if (!askAllergies(col.service)) return "";
-            const allMonitored = getAllergens(col.service);
-            const monitoredText = allMonitored.length
-              ? `\nAllergeni (attenzione): ${allMonitored.join(", ")}`
-              : "";
-            if (col.allergies?.has) {
-              const listed2 =
-                col.allergies.list && col.allergies.list.length
-                  ? ` (${col.allergies.list.join(", ")})`
-                  : "";
-              return `\n⚠️ Allergie dichiarate${listed2}.${monitoredText}\nTi consigliamo di contattare il salone prima del trattamento.`;
-            }
-            return `\nAllergie: nessuna dichiarata.${monitoredText}`;
-          })();
-
-          const proLabel = pn || "operatore";
-
-          return reply(
-            client,
-            chatId,
-            `✅ Prenotazione confermata: ${
-              col.service
-            } con ${proLabel} il ${fmtDate(start)} alle ${col.time} a nome ${
-              col.customerName
-            }. Prezzo: ${cfgServicePriceText(col.service)}${
-              promos.length ? `\nPromo attive: ${promos.join(" • ")}` : ""
-            }${allergyNote}\nGrazie e a presto! 🎉
-    \n
-    Nota bene: per annullare o modificare l'appuntamento basta scrivere "modifica" o "annulla"!`
-          );
-        } catch (e) {
-          log("error", "createCalendarEvent", e?.message || e);
-          state.txId = null;
-          state.eventFingerprint = null;
-          bumpBookingLock(state);
-          setAndPersist();
-          return reply(
-            client,
-            chatId,
-            "❌ Errore durante la conferma. Riproviamo tra poco, per favore."
-          );
-        }
-      } else {
-        const nearTimes = nearestTimes(dayTimes, col.time, 3);
-        if (nearTimes.length) {
-          const nearDetail = daySlots.filter((x) => nearTimes.includes(x.time));
-          col.options = nearDetail;
-          state.step = "pick_time";
-          bumpBookingLock(state);
-          setAndPersist();
-          return reply(
-            client,
-            chatId,
-            `A quell'ora non c'è posto. Ti posso proporre questi orari vicini:\n${renderSlotsList(
-              nearDetail
-            )}\n(1-${nearDetail.length})`
-          );
-        }
-        const altDay = nextOpenDay(new Date(col.when.getTime() + 86400000));
-        const altSlots = normalizeSlotsDetail(
-          await fetchSlots({
-            service: col.service,
-            day: altDay,
-            duration,
-            professional: col.professionalAny
-              ? null
-              : col.professionalEmail || col.professionalName || null,
-            wantDetail: true,
-          })
-        );
-        if (altSlots.length) {
-          col.when = altDay;
-          col.options = altSlots;
-          state.step = "pick_time";
-          bumpBookingLock(state);
-          setAndPersist();
-          return reply(
-            client,
-            chatId,
-            `Il giorno dopo (${fmtDate(
-              altDay
-            )}) ho questi orari disponibili:\n${renderSlotsList(
-              altSlots
-            )}\n(1-${altSlots.length})`
-          );
-        }
-        bumpBookingLock(state);
-        setAndPersist();
-        return reply(
-          client,
-          chatId,
-          "🤔 Non ho trovato slot vicini. Cambiamo data o orario?"
-        );
-      }
-    }
-    // === FASTLANE: frase unica con servizio+data+ora ===
-    {
-      const intake = parseIntake(text);
-      const hasBookingWords =
-        /\b(prenot|appunt|riserv|posto|liber[oi])\w*/i.test(t);
-      if (hasBookingWords && (intake.service || intake.when || intake.time)) {
-        Object.assign(col, intake);
-        state.step = "collect";
-        bumpBookingLock(state);
-        pending.set(chatId, state);
-        const r = await advanceAppointment(false);
-        if (r) return r;
-      }
-    }
-
-    // ===================== FASTLANE: professionista dal testo =====================
-    if (
-      col.service &&
-      !col.professionalAny &&
-      !col.professionalName &&
-      !col.professionalEmail
-    ) {
-      const proHit = findProfessionalCandidatesByText(text, col.service);
-      if (proHit?.resolved) {
         col.professionalAny = false;
-        col.professionalName = proHit.resolved;
-        col.professionalEmail = proEmailByName(proHit.resolved);
-        state.step = "collect";
-        bumpBookingLock(state);
-        setAndPersist();
-        return advanceAppointment(true);
-      }
-      if (proHit?.ambiguous?.length) {
-        col.proOptions = proHit.ambiguous; // SOLO nomi
-        state.step = "pick_professional";
-        bumpBookingLock(state);
-        setAndPersist();
-        const list = proHit.ambiguous
-          .map((n, i) => `${i + 1}) ${n}`)
-          .join("\n");
-        return reply(
-          client,
-          chatId,
-          `Preferisci un professionista in particolare?\n0) Non mi interessa\n${list}\n(0-${proHit.ambiguous.length})`
-        );
-      }
-    }
+        col.professionalEmail = chosen.email || null;
+        col.professionalName = chosen.name || chosen.email || null;
+        col.proOptions = null;
 
-    // ===================== Step aperti =====================
-    if (state.step === "ask_name") {
-      const name = extractCustomerName(text);
-      if (name) {
-        col.customerName = name;
-        state.step = "collect";
-        bumpBookingLock(state);
-        setAndPersist();
-        return advanceAppointment(false);
-      }
-      return reply(
-        client,
-        chatId,
-        "Scrivi nome e cognome completi (es. “Giulia Bianchi”)."
-      );
-    }
+        if (preSvc) {
+          const ok = isServiceAvailableForPro(preSvc, col.professionalEmail);
+          if (ok) {
+            col.service = preSvc;
+            state.context.preferredService = null;
+            state.step = "choose_day";
+            pending.set(chatId, state);
+            await reply(client, chatId, `Perfetto! Che giorno preferisci? (es. "domani", "lunedì prossimo", "tra 2 giorni", "23/10", "28 ottobre")`);
+            return "";
+          } else {
+            state.context.preferredService = null;
+            col.service = null;
+            await reply(client, chatId, `⚠️ *${chosen.name}* non esegue *${preSvc}*.\nSeleziona un altro trattamento:`);
+          }
+        }
 
-    if (state.step === "price_select_service") {
-      if (pureNumber.test(text)) {
-        const list = col.infoOptions || [];
-        const idx = parseInt(text, 10) - 1;
-        const svc = list[idx];
-        if (!svc)
-          return reply(
-            client,
-            chatId,
-            `Scegli un numero valido (1-${list.length}).`
-          );
-        state.step = "collect";
-        col.infoOptions = null;
-        rememberService(chatId, svc);
-        setAndPersist();
-        return reply(
-          client,
-          chatId,
-          `• ${svc}: ${cfgServicePriceText(svc)} (durata ${cfgServiceDuration(
-            svc
-          )} min)`
-        );
-      }
-      const svcByText = fuzzyServiceSafe(text);
-
-      if (svcByText) {
-        state.step = "collect";
-        col.infoOptions = null;
-        rememberService(chatId, svcByText);
-        setAndPersist();
-        return reply(
-          client,
-          chatId,
-          `• ${svcByText}: ${cfgServicePriceText(
-            svcByText
-          )} (durata ${cfgServiceDuration(svcByText)} min)`
-        );
-      }
-    }
-
-    if (state.step === "info_select_service") {
-      if (pureNumber.test(text)) {
-        const list = col.infoOptions || [];
-        const idx = parseInt(text, 10) - 1;
-        const svc = list[idx];
-        if (!svc)
-          return reply(
-            client,
-            chatId,
-            `Scegli un numero valido (1-${list.length}).`
-          );
-        state.step = "collect";
-        col.infoOptions = null;
-        rememberService(chatId, svc);
-        setAndPersist();
-        const topic = getLastInfoTopic(chatId);
-        let a = (
-          await askQA(
-            buildQAPromptWithMemory(chatId, composeInfoPrompt(svc, topic)),
-            tools,
-            client
-          )
-        ).trim();
-        if (!a)
-          a = `• ${svc}: ${cfgServicePriceText(
-            svc
-          )} (durata ${cfgServiceDuration(svc)} min)`;
-        return reply(client, chatId, a);
-      }
-      const svcByText = fuzzyServiceSafe(text);
-
-      if (svcByText) {
-        state.step = "collect";
-        col.infoOptions = null;
-        rememberService(chatId, svcByText);
-        setAndPersist();
-        const topic = getLastInfoTopic(chatId);
-        let a = (
-          await askQA(
-            buildQAPromptWithMemory(
-              chatId,
-              composeInfoPrompt(svcByText, topic)
-            ),
-            tools,
-            client
-          )
-        ).trim();
-        if (!a)
-          a = `• ${svcByText}: ${cfgServicePriceText(
-            svcByText
-          )} (durata ${cfgServiceDuration(svcByText)} min)`;
-        return reply(client, chatId, a);
-      }
-    }
-    if (state.step === "choose_service") {
-      const list =
-        state.collected?.svcOptions ||
-        state.ui?.lastServiceList ||
-        cfgServices();
-
-      const n = parseListIndex(text, list.length);
-      if (Number.isFinite(n)) {
-        const svc = list[n - 1];
-        state.step = "collect";
-        state.collected.service = svc;
-        rememberService(chatId, svc);
-        bumpBookingLock(state);
+        const { available, msg: svcMsg } = buildServicesMessageForPro(col.professionalEmail);
+        col.serviceOptions = available;
+        col.svcOptions = available;
+        ensureUI(state);
+        state.ui.lastServiceList = available;
+        state.step = "choose_service";
         pending.set(chatId, state);
-        setAndPersist();
-        return advanceAppointment(false);
+        await reply(client, chatId, svcMsg);
+        return "";
       }
 
-      // oppure hanno scritto il nome del servizio
-      const svcByText = fuzzyServiceSafe(text);
-      if (svcByText) {
-        state.step = "collect";
-        state.collected.service = svcByText;
-        rememberService(chatId, svcByText);
-        bumpBookingLock(state);
+      // Match per nome
+      const norm = (s) => String(s || "").toLowerCase().trim();
+      const hit = pros.find((p) => norm(p.name) === norm(txt));
+
+      if (hit) {
+        col.professionalAny = false;
+        col.professionalEmail = hit.email || null;
+        col.professionalName = hit.name || hit.email || null;
+        col.proOptions = null;
+
+        if (preSvc) {
+          const ok = isServiceAvailableForPro(preSvc, col.professionalEmail);
+          if (ok) {
+            col.service = preSvc;
+            state.context.preferredService = null;
+            state.step = "choose_day";
+            pending.set(chatId, state);
+            await reply(client, chatId, `Perfetto! Che giorno preferisci? (es. "domani", "lunedì prossimo", "tra 2 giorni", "23/10", "28 ottobre")`);
+            return "";
+          } else {
+            state.context.preferredService = null;
+            col.service = null;
+            await reply(client, chatId, `⚠️ *${hit.name}* non esegue *${preSvc}*.\nSeleziona un altro trattamento:`);
+          }
+        }
+
+        const { available, msg: svcMsg } = buildServicesMessageForPro(col.professionalEmail);
+        col.serviceOptions = available;
+        col.svcOptions = available;
+        ensureUI(state);
+        state.ui.lastServiceList = available;
+        state.step = "choose_service";
         pending.set(chatId, state);
-        setAndPersist();
-        return advanceAppointment(false);
+        await reply(client, chatId, svcMsg);
+        return "";
       }
 
-      return reply(
-        client,
-        chatId,
-        `Scegli un numero valido (1-${list.length}).`
-      );
+      pending.set(chatId, state);
+      await reply(client, chatId, `Scrivi *0* oppure un numero da *1* a *${pros.length}* (oppure il nome del professionista).`);
+      return "";
     }
+    // ============================================================================
+    // SEZIONE 14: STEP 2 - SCELTA SERVIZIO
+    // ============================================================================
+    const inEditFlow = state.step && typeof state.step === "string" && state.step.startsWith("edit_");
 
-    // ==== Orari (prenotazione standard) ====
-    if (state.step === "pick_time") {
-      // Se abbiamo già day + time, non restare bloccati in pick_time
-if (col.when && col.time) {
-  state.step = "collect";
-  bumpBookingLock(state);
-  setAndPersist();
-  return await advanceAppointment(false);
-}
+    if (!inEditFlow && !col.service) {
+      const hasProfessional = col.professionalAny || col.professionalEmail || col.professionalName;
 
-      const opts = col && Array.isArray(col.options) ? col.options : [];
-      const toMin = (s) => {
-        const [H, M] = String(s).trim().split(":").map(Number);
-        return (Number.isFinite(H) ? H : 0) * 60 + (Number.isFinite(M) ? M : 0);
+      if (!hasProfessional) {
+        if (state.step !== "pick_professional") {
+          state.step = "pick_professional";
+          pending.set(chatId, state);
+          const pros = getAllProsList();
+          const list =
+            `0) Non mi interessa \n` +
+            pros.map((p, i) => `${i + 1}) ${p.name}`).join("\n") +
+            `\n(0-${pros.length})`;
+          await reply(client, chatId, `Prima scegli il professionista!\n${list}`);
+        }
+        return "";
+      }
+
+      const proEmail = col.professionalEmail ||
+        (typeof proEmailByName === "function" ? proEmailByName(col.professionalName) : null);
+      col.professionalEmail = proEmail;
+
+      const { available, msg: svcMsg } = buildServicesMessageForPro(proEmail);
+      col.serviceOptions = Array.isArray(col.serviceOptions) && col.serviceOptions.length
+        ? col.serviceOptions
+        : available;
+
+      const svcs = col.serviceOptions || [];
+
+      if (!svcs.length) {
+        state.step = "choose_service";
+        pending.set(chatId, state);
+        await reply(client, chatId, svcMsg);
+        return "";
+      }
+
+      // Applica servizio preferito se disponibile
+      if (state?.context?.preferredService) {
+        const preSvcRaw = String(state.context.preferredService || "").trim();
+        const guess =
+          (typeof bestServiceBySynonyms === "function" ? bestServiceBySynonyms(preSvcRaw) : null) ||
+          (typeof fuzzyServiceSafe === "function" ? fuzzyServiceSafe(preSvcRaw) : null) ||
+          preSvcRaw;
+
+        const found =
+          svcs.find((s) => norm(s) === norm(guess)) ||
+          svcs.find((s) => norm(s) === norm(preSvcRaw));
+
+        if (found) {
+          col.service = found;
+
+          const wasAny = !!col.professionalAny;
+          // Se l'utente ha scelto "Non mi interessa", assegna random tra chi svolge il servizio scelto
+          if (wasAny && !col.professionalEmail && !col.professionalName) {
+            try {
+              const emails = (typeof serviceProsEmails === "function" ? serviceProsEmails(col.service) : [])
+                .map((x) => String(x || "").trim())
+                .filter(Boolean);
+
+              if (emails.length) {
+                const chosen = emails[Math.floor(Math.random() * emails.length)];
+                col.professionalEmail = chosen;
+                col.professionalName = (typeof proNameByEmailSafe === "function" ? proNameByEmailSafe(chosen) : chosen) || chosen;
+                col.professionalAny = false;
+              }
+            } catch (e) {
+              log("error", "[RANDOM_PRO] failed (choose_service found)", e?.stack || e?.message || e);
+            }
+          }
+
+          state.context.preferredService = null;
+          state.step = "choose_day";
+          pending.set(chatId, state);
+
+          const proLine = wasAny && col.professionalEmail
+            ? `🔀 Ok, scelgo io: *${proNameByEmailSafe(col.professionalEmail)}*.\n`
+            : "";
+
+          await reply(client, chatId, `${proLine}✅ Trattamento selezionato: *${col.service}*.\nOra dimmi il giorno (es. "domani", "23/10").`);
+          return "";
+        }
+
+        state.context.preferredService = null;
+      }
+
+      // Parsing servizio dall'input
+      const pickFromFilteredByText = (raw) => {
+        const input = String(raw || "").trim();
+        if (!input) return null;
+
+        if (pureNumber.test(input)) {
+          const n = parseInt(input, 10);
+          if (n >= 1 && n <= svcs.length) return svcs[n - 1];
+          return "__INVALID_RANGE__";
+        }
+
+        const low = input.toLowerCase();
+        let idx = svcs.map(s => String(s).toLowerCase()).indexOf(low);
+        if (idx === -1) idx = svcs.findIndex(s => String(s).toLowerCase().startsWith(low));
+        if (idx !== -1) return svcs[idx];
+
+        let svcMatch = null;
+        try {
+          svcMatch = (typeof bestServiceBySynonyms === "function" ? bestServiceBySynonyms(input) : null) ||
+            (typeof fuzzyServiceSafe === "function" ? fuzzyServiceSafe(input) : null) || null;
+        } catch { }
+
+        if (svcMatch && svcs.some(s => norm(s) === norm(svcMatch))) return svcMatch;
+
+        try {
+          const all = (typeof cfgServices === "function" ? (cfgServices() || []) : []) || [];
+          const exists = all.find(s => norm(s) === norm(svcMatch || input));
+          if (exists && !isServiceAvailableForPro(exists, proEmail))
+            return { __UNAVAILABLE__: true, svc: exists };
+        } catch { }
+
+        return null;
       };
 
-      // --- 1) PROVA PRIMA A PARSARE UN ORARIO LIBERO CON I TUOI HELPER ---
-      // normalizzazione blanda -> non è un parser nuovo, serve solo ad aiutare i TUOI parser
-      const norm = String(msg)
-        .toLowerCase()
-        .replace(/[.,]/g, ":") // "9,30" / "9.30" -> "9:30"
-        .replace(/\b(\d{1,2})\s+e\s+(\d{1,2})\b/g, "$1:$2") // "9 e 30" -> "9:30"
-        .replace(/\s+/g, " ")
-        .trim();
+      const picked = pickFromFilteredByText(msg);
 
-      const t =
-        (typeof parseTimeSmart === "function" && parseTimeSmart(norm)) ||
-        (typeof parseHHMM === "function" && parseHHMM(norm)) ||
-        (typeof parseNaturalTime === "function" && parseNaturalTime(norm)) ||
-        null;
+      if (!picked) {
+        state.step = "choose_service";
+        pending.set(chatId, state);
+        await reply(client, chatId, svcMsg);
+        return "";
+      }
 
-      if (t) {
-        // match esatto sull’elenco (o il più vicino)
-        let idx = opts.findIndex(
-          (o) => o && typeof o.time === "string" && o.time.startsWith(t)
+      if (picked === "__INVALID_RANGE__") {
+        await reply(client, chatId, `Numero non valido. Scegli un numero (1-${svcs.length}).`);
+        return "";
+      }
+
+      if (typeof picked === "object" && picked.__UNAVAILABLE__) {
+        const svc = picked.svc;
+        const emails = serviceProsEmails(svc);
+        const names = emails.map(proNameByEmailSafe).filter(Boolean);
+        const who = names.length ? names.join(", ") : "—";
+        await reply(
+          client,
+          chatId,
+          `❌ *${svc}* non è disponibile con *${proNameByEmailSafe(proEmail)}*.\n` +
+          `✅ Disponibile con: ${who}\n\n` +
+          `👉 Scegli un altro trattamento tra quelli disponibili per *${proNameByEmailSafe(proEmail)}* (vedi lista sotto).`
         );
-        if (idx < 0 && opts.length) {
-          const want = toMin(t);
-          let bestIdx = -1,
-            best = Infinity;
-          for (let i = 0; i < opts.length; i++) {
-            const cur = toMin(opts[i].time || "00:00");
-            const d = Math.abs(cur - want);
-            if (d < best) {
-              best = d;
-              bestIdx = i;
-            }
+        state.step = "choose_service";
+        pending.set(chatId, state);
+        await reply(client, chatId, svcMsg);
+        return "";
+      }
+
+      col.service = picked;
+
+      const wasAny = !!col.professionalAny;
+      // Se l'utente ha scelto "Non mi interessa", assegna random tra chi svolge il servizio scelto
+      if (wasAny && !col.professionalEmail && !col.professionalName) {
+        try {
+          const emails = (typeof serviceProsEmails === "function" ? serviceProsEmails(col.service) : [])
+            .map((x) => String(x || "").trim())
+            .filter(Boolean);
+
+          if (emails.length) {
+            const chosen = emails[Math.floor(Math.random() * emails.length)];
+            col.professionalEmail = chosen;
+            col.professionalName = (typeof proNameByEmailSafe === "function" ? proNameByEmailSafe(chosen) : chosen) || chosen;
+            col.professionalAny = false;
           }
-          if (bestIdx >= 0) idx = bestIdx;
+        } catch (e) {
+          log("error", "[RANDOM_PRO] failed (choose_service picked)", e?.stack || e?.message || e);
+        }
+      }
+
+      // Validazione compatibilità professionista-servizio
+      try {
+        if (col.professionalEmail && typeof validateProfessionalForService === "function") {
+          const chk = validateProfessionalForService(col.service, col.professionalEmail);
+          if (!chk.ok) {
+            log('warn', '[SERVICE_PICK] Incompatibile', { service: col.service, pro: col.professionalEmail });
+            state.step = "choose_service";
+            pending.set(chatId, state);
+            await reply(client, chatId, chk.reason + "\n\nScegli un altro trattamento.");
+            return "";
+          }
+        }
+      } catch (e) {
+        log("error", "validate after service pick failed", e?.stack || e?.message || e);
+      }
+
+      state.step = "choose_day";
+      pending.set(chatId, state);
+
+      const proLine = wasAny && col.professionalEmail
+        ? `🔀 Ok, scelgo io: *${proNameByEmailSafe(col.professionalEmail)}*.\n`
+        : "";
+
+      await reply(client, chatId, `${proLine}Che giorno preferisci? (es. "domani", "lunedì prossimo", "tra 2 giorni", "23/10", "28 ottobre")`);
+      return "";
+    }
+
+    // ============================================================================
+    // SEZIONE 15: STEP 3 - SCELTA GIORNO
+    // ============================================================================
+    if (state.step !== "choose_service" && (!col.when || state.step === "choose_day")) {
+      state.step = "choose_day";
+  const userInput = String(msg || "").trim();
+
+      if (__dateParsingLocks.has(chatId)) {
+        log('warn', '[CHOOSE_DAY] Parsing già in corso, ignoro', { chatId });
+        return "";
+      }
+
+      if (!userInput || userInput.length < 2) {
+        await reply(client, chatId, `Che giorno preferisci? (es. "domani", "lunedì prossimo", "tra 2 giorni", "23/10", "28 ottobre")`);
+        return "";
+      }
+
+      // Verifica se serve ancora scegliere professionista
+      if (!col.professionalAny && !col.professionalName && !col.professionalEmail) {
+        const pros = (typeof cfgServiceProfessionals === "function" ? cfgServiceProfessionals(col.service) : []) || [];
+
+        if (pros.length) {
+          const tempDay = safeParseDateWithLock(chatId, userInput);
+          if (tempDay) {
+            ensureContext(state);
+            state.context.tmpDay = tempDay;
+          }
+
+          state.step = "pick_professional";
+          await reply(client, chatId, askProfessional(col.service));
+          pending.set(chatId, state);
+          return "";
+        }
+      }
+
+      // Parsing della data
+      __dateParsingLocks.add(chatId);
+      let parsedDate = null;
+
+      try {
+        parsedDate = safeParseDateWithLock(chatId, userInput);
+      } finally {
+        __dateParsingLocks.delete(chatId);
+      }
+
+      if (!parsedDate || isNaN(parsedDate.getTime())) {
+        await reply(client, chatId, `❌ Data non valida. Scrivi "domani", "lunedì", "23/10" o un formato simile.`);
+        return "";
+      }
+
+      const day = typeof atNoon === "function" ? atNoon(parsedDate) : parsedDate;
+
+      // Blocca date nel passato
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const dayCheck = new Date(day);
+      dayCheck.setHours(0, 0, 0, 0);
+
+      if (dayCheck < today) {
+        await reply(client, chatId, `⚠️ Quella data è già passata. Scegli una data futura (es. "domani" o "12/12").`);
+        return "";
+      }
+
+      // Verifica giorno chiuso
+      if (typeof cfgClosedDay === "function" && cfgClosedDay(day)) {
+        const dayStr = typeof formatDateWithWeekdayIT === "function"
+          ? formatDateWithWeekdayIT(day)
+          : day.toLocaleDateString();
+        await reply(client, chatId, `Il giorno ${dayStr} siamo chiusi. Dimmi un altro giorno.`);
+        return "";
+      }
+
+      col.when = day;
+
+      // Recupera slot disponibili
+      const duration = typeof cfgServiceDuration === "function" ? cfgServiceDuration(col.service) || 30 : 30;
+      const professional = col.professionalAny ? null : col.professionalEmail || col.professionalName || null;
+
+      const rawList = await fetchSlots({
+        service: col.service,
+        day: day,
+        duration,
+        professional,
+        wantDetail: true,
+      });
+
+      const slots = (typeof normalizeSlotsDetail === "function" ? normalizeSlotsDetail(rawList) : rawList) || [];
+
+      if (!slots.length) {
+        const dayStr = typeof formatDateWithWeekdayIT === "function"
+          ? formatDateWithWeekdayIT(day)
+          : day.toLocaleDateString();
+
+        col.when = null;
+        state.step = "choose_day";
+        await reply(client, chatId, `Nessuno slot disponibile per ${dayStr}. Prova un altro giorno.`);
+        return "";
+      }
+
+      col.options = slots;
+      state.step = "pick_time";
+
+      const lineList = slots
+        .map((s) => {
+          const prosNames = s.pros && s.pros.length ? ` (${s.pros.map((p) => p.name).join(", ")})` : "";
+          return `• ${s.time}${prosNames}`;
+        })
+        .join("\n");
+
+      const dayStr = typeof formatDateWithWeekdayIT === "function"
+        ? formatDateWithWeekdayIT(day)
+        : day.toLocaleDateString();
+
+      await reply(
+        client,
+        chatId,
+        `📅 Disponibilità per ${dayStr}:\n${lineList}\n\n💬 Scrivi l'orario desiderato (es. "14:30", "14.30" oppure "alle 14")`
+      );
+
+      pending.set(chatId, state);
+      return "";
+    }
+
+    const isEditStep = typeof state.step === "string" && state.step.startsWith("edit_");
+    const editTextSteps = state.step === "edit_reschedule_date" || state.step === "edit_change_name";
+
+    if (isEditStep && !editTextSteps) {
+      return await handleNumericReply(client, chatId, text, tools);
+    }
+
+    // ============================================================================
+    // SEZIONE 16: STEP 4 - SCELTA ORARIO
+    // ============================================================================
+    if (
+      (!col.time || state.step === "pick_time") &&
+      !(typeof state.step === "string" && state.step.startsWith("edit_"))
+    ) {
+      state.step = "pick_time";
+
+      // ✅ FIX: evita 01/01/1970 e richiede una data futura se la data è passata
+      {
+        const today0 = new Date();
+        today0.setHours(0, 0, 0, 0);
+
+        let when = col?.when;
+
+        // normalizza quando arriva come string/Date
+        if (when && !(when instanceof Date)) {
+          const tmp = new Date(when);
+          when = Number.isNaN(tmp.getTime()) ? null : tmp;
         }
 
-        if (idx >= 0) {
-  const choice = opts[idx];
-  col.time = choice.time;
+        // manca o invalida o "epoch" (1970)
+        if (!when || Number.isNaN(when.getTime()) || when.getFullYear() < 2000) {
+          col.when = null;
+          col.time = null;
+          col.options = null;
+          state.step = "choose_day";
+          pending.set(chatId, state);
+          await reply(client, chatId, `Che giorno preferisci? (es. "domani", "23/10")`);
+          return "";
+        }
 
-  // se nello slot c'è un solo pro, selezionalo
-  if (choice.pros && choice.pros.length === 1) {
-    col.professionalAny = false;
-    col.professionalName = choice.pros[0].name;
-    col.professionalEmail = choice.pros[0].email || null;
-  }
+        // giorno nel passato (confronto a mezzanotte, non a "ora attuale")
+        const when0 = new Date(when);
+        when0.setHours(0, 0, 0, 0);
+        if (when0 < today0) {
+          const oldStr =
+            typeof formatDateWithWeekdayIT === "function"
+              ? formatDateWithWeekdayIT(when)
+              : (typeof fmtDate === "function" ? fmtDate(when) : when.toLocaleDateString("it-IT"));
 
-  state.step = "collect";
-  bumpBookingLock(state);
-  setAndPersist();
-  return await advanceAppointment(false);
-}
+          col.when = null;
+          col.time = null;
+          col.options = null;
+          state.step = "choose_day";
+          pending.set(chatId, state);
+          await reply(
+            client,
+            chatId,
+            `⚠️ La data ${oldStr} è già passata. Dimmi un giorno futuro (es. "domani", "23/10").`
+          );
+          return "";
+        }
 
+        // normalizza a mezzogiorno
+        if (typeof atNoon === "function") {
+          const noon = atNoon(when);
+          if (noon && !Number.isNaN(noon.getTime())) col.when = noon;
+          else col.when = when;
+        } else {
+          col.when = when;
+        }
+      }
+
+      const renderSlotsList = () => {
+        return (col.options || [])
+          .map((slot) => {
+            const prosNames = slot.pros && slot.pros.length ? ` (${slot.pros.map((p) => p.name).join(", ")})` : "";
+            return `• ${slot.time}${prosNames}`;
+          })
+          .join("\n");
+      };
+
+      const hhmmToMin = (s) => {
+        const m = String(s || "").match(/^(\d{1,2}):(\d{2})$/);
+        if (!m) return null;
+        return +m[1] * 60 + +m[2];
+      };
+
+      const cleanedForTime = String(msg || "").replace(/\b(verso|intorno|circa|per\s+le|alle)\b/gi, " ");
+      const tryParseTime = () =>
+        (typeof parseTimeSmart === "function" ? parseTimeSmart(cleanedForTime) : null) ||
+        (typeof parseHHMM === "function" ? parseHHMM(cleanedForTime) : null);
+
+      const resolveEmailByName = (nm) => {
+        const tryMap = typeof proEmailByName === "function" ? proEmailByName(nm) : null;
+        if (tryMap) return tryMap;
+
+        const profEntry = Object.entries((config?.professionals || {})).find(([email, p]) => {
+          const a = typeof simpleNorm === "function" ? simpleNorm(p?.name || "") : String(p?.name || "").toLowerCase();
+          const b = typeof simpleNorm === "function" ? simpleNorm(nm) : String(nm || "").toLowerCase();
+          return a === b;
+        });
+        return profEntry ? profEntry[0] : null;
+      };
+
+      const anyRe = /\b(chiunque|qualsiasi|va\s*bene\s*chiunque|non\s*mi\s*interessa)\b/i;
+
+      const extractProFromText = (raw, preferredList) => {
+        try {
+          const txtN = typeof simpleNorm === "function" ? simpleNorm(raw) : String(raw || "").toLowerCase();
+
+          const scan = (arr) => {
+            for (const p of arr) {
+              const nm = typeof simpleNorm === "function" ? simpleNorm(p?.name || "") : String(p?.name || "").toLowerCase();
+              if (!nm) continue;
+              if ((" " + txtN + " ").includes(" " + nm + " ")) return p;
+            }
+            return null;
+          };
+
+          if (preferredList && preferredList.length) {
+            const hit = scan(preferredList);
+            if (hit) return hit;
+          }
+
+          const pros = (
+            typeof cfgServiceProfessionals === "function"
+              ? cfgServiceProfessionals(col.service) || []
+              : []
+          )
+            .map((p) => (typeof p === "string" ? { name: p, email: p } : p))
+            .filter((p) => p && p.name);
+
+          return scan(pros);
+        } catch {
+          return null;
+        }
+      };
+
+      // Carica slot se non ci sono
+      if ((!col.options || !col.options.length) && col.when && col.service) {
+        const professional = col.professionalAny ? null : (col.professionalEmail || null);
+        const duration = (typeof getDurForPro === "function")
+          ? getDurForPro(col.service, professional)
+          : ((typeof cfgServiceDuration === "function" ? (cfgServiceDuration(col.service) || 30) : 30));
+
+        const list = await fetchSlots({
+          service: col.service,
+          day: typeof atNoon === "function" ? atNoon(col.when) : col.when,
+          duration,
+          professional,
+          wantDetail: true,
+        });
+
+        const slots = (typeof normalizeSlotsDetail === "function" ? normalizeSlotsDetail(list) : list) || [];
+        col.options = Array.isArray(slots) ? slots : [];
+
+        if (!col.options.length) {
+          const dayStr = typeof fmtDate === "function" ? fmtDate(col.when) : col.when?.toLocaleDateString?.() || "";
+          col.when = null;
+          state.step = "choose_day";
+          await reply(
+            client,
+            chatId,
+            `Non ci sono orari liberi per ${dayStr}. Dimmi un altro giorno (tipo "domani", "sabato", "5 novembre").`
+          );
+          pending.set(chatId, state);
+          return "";
+        }
+      }
+
+      // Gestione cambio giorno durante pick_time
+      const rawMsg = String(msg || "");
+      const daySwitchHint =
+        /\b(oggi|domani|dopodomani|tra|fra|settimana|prossim|luned[iì]|marted[iì]|mercoled[iì]|gioved[iì]|venerd[iì]|sabato|domenica|\d{1,2}\s*[\/\-]\s*\d{1,2}|gennaio|febbraio|marzo|aprile|maggio|giugno|luglio|agosto|settembre|ottobre|novembre|dicembre)\b/i;
+
+      async function tryHandleDaySwitch(text) {
+        const _daySwitchText = String(text || "");
+        const _hasDayNumberCue = /\b(?:il|giorno|data|per\s+il)\s+\d{1,2}(?:\s*(?:°|º))?\b/i.test(_daySwitchText);
+        if (!_hasDayNumberCue && !daySwitchHint.test(_daySwitchText)) return false;
+
+        let parsedSwitch =
+          (typeof safeParseDateWithLock === "function" ? safeParseDateWithLock(chatId, text) : null) ||
+          (typeof parseNaturalDate === "function" ? parseNaturalDate(text) : null) ||
+          null;
+
+        // Supporto extra: frasi tipo "hai posto il 21" / "per il 22"
+        if (!parsedSwitch) {
+          const mDay = String(text || "").match(/\b(?:il|giorno|data|per\s+il)\s+(\d{1,2})(?:\s*(?:°|º))?\b/i);
+          if (mDay) {
+            const probe = `il ${mDay[1]}`;
+            parsedSwitch =
+              (typeof safeParseDateWithLock === "function" ? safeParseDateWithLock(chatId, probe) : null) ||
+              (typeof parseNaturalDate === "function" ? parseNaturalDate(probe) : null) ||
+              null;
+          }
+        }
+
+        if (!parsedSwitch) return false;
+
+        let newDay = parsedSwitch;
+        if (!(newDay instanceof Date)) {
+          try {
+            newDay = new Date(parsedSwitch);
+          } catch {
+            newDay = null;
+          }
+        }
+        if (!newDay || isNaN(newDay.getTime())) return false;
+
+        const dayAtNoon =
+          typeof atNoon === "function" ? atNoon(newDay) : new Date(newDay.getFullYear(), newDay.getMonth(), newDay.getDate(), 12, 0, 0, 0);
+
+        if (typeof isPast === "function" && isPast(dayAtNoon)) {
+          const formatted = typeof formatDateWithWeekdayIT === "function"
+            ? formatDateWithWeekdayIT(dayAtNoon)
+            : (typeof fmtDate === "function" ? fmtDate(dayAtNoon) : dayAtNoon.toLocaleDateString());
+          await reply(client, chatId, `La data ${formatted} è nel passato. Scrivi un'altra data valida (es. "domani", "12/12").`);
+          pending.set(chatId, state);
+          return true;
+        }
+
+        if (typeof cfgClosedDay === "function" && cfgClosedDay(dayAtNoon)) {
+          const dayStrClosed =
+            typeof formatDateWithWeekdayIT === "function"
+              ? formatDateWithWeekdayIT(dayAtNoon)
+              : (typeof fmtDate === "function" ? fmtDate(dayAtNoon) : dayAtNoon.toLocaleDateString());
+          await reply(client, chatId, `Il giorno ${dayStrClosed} siamo chiusi. Dimmi un altro giorno (es. "domani", "sabato", "12/12").`);
+          pending.set(chatId, state);
+          return true;
+        }
+
+        const professional = col.professionalAny ? null : (col.professionalEmail || null);
+        const duration = (typeof getDurForPro === "function")
+          ? getDurForPro(col.service, professional)
+          : ((typeof cfgServiceDuration === "function" ? (cfgServiceDuration(col.service) || 30) : 30));
+
+        const rawList = await fetchSlots({
+          service: col.service,
+          day: typeof atNoon === "function" ? atNoon(dayAtNoon) : dayAtNoon,
+          duration,
+          professional,
+          wantDetail: true,
+        });
+
+        const slots = (typeof normalizeSlotsDetail === "function" ? normalizeSlotsDetail(rawList) : rawList) || [];
+
+        if (!slots.length) {
+          const dayStr =
+            typeof formatDateWithWeekdayIT === "function"
+              ? formatDateWithWeekdayIT(dayAtNoon)
+              : (typeof fmtDate === "function" ? fmtDate(dayAtNoon) : dayAtNoon.toLocaleDateString());
+          await reply(client, chatId, `Non ci sono orari liberi per ${dayStr}. Dimmi un altro giorno (es. "domani", "sabato", "12/12").`);
+          pending.set(chatId, state);
+          return true;
+        }
+
+        col.when = dayAtNoon;
+        col.options = Array.isArray(slots) ? slots : [];
+        col.time = null;
+        state.step = "pick_time";
+        pending.set(chatId, state);
+
+        const dayStr =
+          typeof formatDateWithWeekdayIT === "function"
+            ? formatDateWithWeekdayIT(col.when)
+            : (typeof fmtDate === "function" ? fmtDate(col.when) : col.when.toLocaleDateString());
+
+        const lineList = col.options
+          .map((s) => {
+            const prosNames = s.pros && s.pros.length ? ` (${s.pros.map((p) => p.name).join(", ")})` : "";
+            return `• ${s.time}${prosNames}`;
+          })
+          .join("\n");
 
         await reply(
           client,
           chatId,
-          `Non ho slot esattamente a *${t}*. Indica un altro orario (es. "9:30") oppure scegli un numero della lista.`
+          `📅 Disponibilità per ${dayStr}:\n${lineList}\n\n💬 Scrivi l'orario desiderato (es. "14:30", "14.30" oppure "alle 14")`
         );
+
+        return true;
+      }
+
+      const handledDaySwitch = await tryHandleDaySwitch(rawMsg);
+      if (handledDaySwitch) return "";
+
+      // Parsing orario
+      const tParsed = tryParseTime();
+
+      if (!tParsed || !/^\d{2}:\d{2}$/.test(tParsed)) {
+        log('warn', '[PICK_TIME] Orario non valido', { input: msg, parsed: tParsed });
+        const dayLabel = typeof fmtDate === "function" ? fmtDate(col.when) : col.when.toLocaleDateString();
+        const lines = renderSlotsList();
+
+        await reply(
+          client,
+          chatId,
+          `📅 Disponibilità per ${dayLabel}:\n${lines}\n\n💬 Scrivi un orario valido (es. "14:30", "alle 3", "15.00")\n\nSe vuoi cambiare giorno scrivi ad esempio "domani", "giovedì" o "12/12".`
+        );
+        pending.set(chatId, state);
         return "";
       }
 
-      // --- 2) ALTERNATIVA: INDICE DELL'ELENCO (flessibile) ---
-      const n =
-        typeof parseListIndex === "function"
-          ? parseListIndex(msg, opts.length)
-          : parseInt(msg, 10);
+      // Match esatto orario
+      let chosenSlot = col.options.find((s) => s.time === tParsed);
 
-      if (Number.isFinite(n)) {
-        if (n === 0) {
-          // tuo ramo "mostra tutti gli slot" (lascia invariata la tua logica)
-          const duration = cfgServiceDuration(col.service);
-          const allSlots = await fetchSlots({
-            service: col.service,
-            day: atNoon(col.when),
-            duration,
-            professional: null,
-            wantDetail: true,
-          });
-          if (!allSlots.length) {
+      if (!chosenSlot) {
+        const target = hhmmToMin(tParsed);
+        if (target != null) {
+          let best = null;
+          let bestDiff = 1e9;
+          for (const s of col.options) {
+            const m = hhmmToMin(s.time);
+            if (m == null) continue;
+            const diff = Math.abs(m - target);
+            if (diff < bestDiff) {
+              best = s;
+              bestDiff = diff;
+            }
+          }
+          if (best && bestDiff <= 30) chosenSlot = best;
+        }
+      }
+
+      if (!chosenSlot) {
+        const dayLabel = typeof fmtDate === "function" ? fmtDate(col.when) : col.when.toLocaleDateString();
+        const lines = renderSlotsList();
+
+        await reply(client, chatId, `📅 Disponibilità per ${dayLabel}:\n${lines}\nScrivi un orario, per esempio "14:30".`);
+        pending.set(chatId, state);
+        return "";
+      }
+
+      col.time = chosenSlot.time;
+
+      // Risoluzione professionista
+      const ensureProFromSlot = async () => {
+        if (chosenSlot.pros && chosenSlot.pros.length) {
+          if (chosenSlot.pros.length === 1) {
+            const only = chosenSlot.pros[0];
+            col.professionalName = only.name;
+            col.professionalEmail = only.email || resolveEmailByName(only.name) || null;
+            col.professionalAny = false;
+            return "one";
+          }
+
+          const pick = extractProFromText(msg, chosenSlot.pros);
+          if (pick) {
+            col.professionalName = pick.name;
+            col.professionalEmail = pick.email || resolveEmailByName(pick.name) || null;
+            col.professionalAny = false;
+            return "one";
+          }
+
+          if (anyRe.test(msg)) {
+            col.professionalAny = true;
+            return "any";
+          }
+
+          col.proOptions = chosenSlot.pros.slice();
+          state.step = "pick_professional_for_time";
+
+          const prosList = chosenSlot.pros.map((p, i) => `${i + 1}) ${p.name}`).join("\n");
+
+          await reply(
+            client,
+            chatId,
+            `Chi preferisci alle ${chosenSlot.time}?\n${prosList}\nRispondi con un numero (1-${chosenSlot.pros.length}).`
+          );
+
+          pending.set(chatId, state);
+          return "ask";
+        }
+
+        const pick = extractProFromText(msg, []);
+        if (pick) {
+          col.professionalName = pick.name;
+          col.professionalEmail = pick.email || resolveEmailByName(pick.name) || null;
+          col.professionalAny = false;
+          return "one";
+        }
+
+        if (anyRe.test(msg)) {
+          col.professionalAny = true;
+          return "any";
+        }
+
+        return "none";
+      };
+
+      const pickRandomProFromChosenSlot = () => {
+        const arr = (chosenSlot && Array.isArray(chosenSlot.pros)) ? chosenSlot.pros.filter(Boolean) : [];
+        if (!arr.length) return false;
+        const p = arr[Math.floor(Math.random() * arr.length)];
+        col.professionalName = p?.name || null;
+        col.professionalEmail = p?.email || resolveEmailByName(p?.name) || null;
+        col.professionalAny = false;
+        return true;
+      };
+
+      // Se l'utente ha già scelto "Non mi interessa", assegna subito random tra i pro disponibili per quello slot
+      if (col.professionalAny && !col.professionalEmail && !col.professionalName) {
+        pickRandomProFromChosenSlot();
+      }
+
+      if (!col.professionalEmail && !col.professionalName) {
+        const mode = await ensureProFromSlot();
+        if (mode === "ask") return "";
+        // Se nel messaggio l'utente ha risposto "chiunque/qualsiasi", ora assegna random
+        if (col.professionalAny && !col.professionalEmail && !col.professionalName) {
+          pickRandomProFromChosenSlot();
+        }
+      }
+
+      // Safety: se è rimasto ANY e lo slot ha pro, assegna random
+      if (col.professionalAny && !col.professionalEmail && !col.professionalName) {
+        pickRandomProFromChosenSlot();
+      }
+
+      // Prosegui al prossimo step
+      state.step = "collect_name";
+      pending.set(chatId, state);
+    }
+
+    // ============================================================================
+    // SEZIONE 17: STEP 5 - RACCOLTA NOME
+    // ============================================================================
+    if (state.step === "collect_name") {
+      const col = state.collected || (state.collected = {});
+      const raw = String(msg || "").trim();
+
+      const newName = (typeof extractCustomerName === "function" ? extractCustomerName(raw) : raw) || raw;
+
+      if (!newName || String(newName).trim().split(/\s+/).filter(Boolean).length < 2) {
+        ensureContext(state);
+        state.context.awaitingName = true;
+        pending.set(chatId, state);
+        await reply(client, chatId, 'Per favore scrivi nome e cognome (es. "Maria Rossi") per completare la prenotazione.');
+        return "";
+      }
+
+      col.customerName = String(newName).trim();
+      ensureContext(state);
+      if (state.context) state.context.awaitingName = false;
+      pending.set(chatId, state);
+    }
+
+    // ============================================================================
+    // SEZIONE 18: STEP 6 - CREAZIONE FINALE EVENTO
+    // ============================================================================
+    col = state.collected || (state.collected = {});
+
+    // ✅ Validazioni finali (fondamentali per il "messaggio unico" / intake)
+    // Se l'utente manda già data+ora+servizio (e magari anche professionista), può saltare choose_day/pick_time:
+    // qui blocchiamo SEMPRE date chiuse/fuori range/orari non disponibili prima di chiedere il nome o creare l'evento.
+    const __isEditFlowNow = typeof state.step === "string" && state.step.startsWith("edit_");
+    if (!__isEditFlowNow) {
+      // 1) Data valida + non chiusa + in range
+      if (col.when) {
+        const dayAtNoon = (typeof atNoon === "function"
+          ? atNoon(col.when)
+          : (col.when instanceof Date ? col.when : new Date(col.when)));
+
+        if (!dayAtNoon || isNaN(dayAtNoon.getTime())) {
+          col.when = null;
+          col.time = null;
+          col.options = null;
+          state.step = "choose_day";
+          pending.set(chatId, state);
+          await reply(client, chatId, `❌ Data non valida. Dimmi un altro giorno (es. "domani", "23/10").`);
+          return "";
+        }
+
+        // Range prenotazioni (default 30 giorni)
+        try {
+          const maxDays = Number(config?.maxBookingDays || config?.bookingMaxDays || 30) || 30;
+          if (typeof validateDateInRange === "function" && !validateDateInRange(dayAtNoon, maxDays)) {
+            const dayStr = typeof formatDateWithWeekdayIT === "function"
+              ? formatDateWithWeekdayIT(dayAtNoon)
+              : (typeof fmtDate === "function" ? fmtDate(dayAtNoon) : dayAtNoon.toLocaleDateString());
+
+            col.when = null;
+            col.time = null;
+            col.options = null;
+            state.step = "choose_day";
+            pending.set(chatId, state);
+            await reply(client, chatId, `⚠️ La data ${dayStr} è troppo distante. Dimmi un altro giorno più vicino.`);
+            return "";
+          }
+        } catch { }
+
+        // Giorno chiuso (domenica/festivi/chiusure)
+        try {
+          if (typeof cfgClosedDay === "function" && cfgClosedDay(dayAtNoon)) {
+            const dayStr = typeof formatDateWithWeekdayIT === "function"
+              ? formatDateWithWeekdayIT(dayAtNoon)
+              : (typeof fmtDate === "function" ? fmtDate(dayAtNoon) : dayAtNoon.toLocaleDateString());
+
+            const next = (typeof nextOpenDay === "function" ? nextOpenDay(dayAtNoon) : null);
+            const nextStr = next
+              ? (typeof formatDateWithWeekdayIT === "function"
+                ? formatDateWithWeekdayIT(next)
+                : (typeof fmtDate === "function" ? fmtDate(next) : next.toLocaleDateString()))
+              : null;
+
+            col.when = null;
+            col.time = null;
+            col.options = null;
+            state.step = "choose_day";
+            pending.set(chatId, state);
+
             await reply(
               client,
               chatId,
-              "Nessuno slot disponibile in quel giorno."
+              nextStr
+                ? `Il giorno ${dayStr} siamo chiusi. Dimmi un altro giorno (es. "domani").\n👉 Prossimo giorno utile: ${nextStr}.`
+                : `Il giorno ${dayStr} siamo chiusi. Dimmi un altro giorno (es. "domani").`
             );
             return "";
           }
-          col.options = allSlots;
-          col.allSlotsMode = true;
-          if (typeof setAndPersist === "function") setAndPersist();
-          else pending.set(chatId, state);
+        } catch { }
 
-          const linesAll = allSlots.map(
-            (it, i) =>
-              `${i + 1}) ${it.time} (${(it.pros || [])
-                .map((p) => p.name)
-                .join(", ")})`
-          );
-          await reply(
-            client,
-            chatId,
-            "Tutti gli slot:\n" + linesAll.join("\n")
-          );
-          return "";
-        }
-
-        const choice = opts[n - 1];
-        if (!choice) {
-          await reply(
-            client,
-            chatId,
-            `Numero non valido. Scrivi un orario (es. "9:30") o un numero 1-${opts.length}.`
-          );
-          return "";
-        }
-
-                col.time = choice.time;
-        if (choice.pros && choice.pros.length === 1) {
-          col.professionalAny = false;
-          col.professionalName = choice.pros[0].name;
-          col.professionalEmail = choice.pros[0].email || null;
-        }
-
-        // ➜ AVANZA DI STEP dopo la scelta orario
-        state.step = "collect";
-
-        if (typeof setAndPersist === "function") setAndPersist();
-        else pending.set(chatId, state);
-
-        if (typeof scheduleReenter === "function") {
-          scheduleReenter(client, chatId, `ok ${col.time}`, tools);
-          return "";
-        }
-        // fallback coerente
-        return await handleMessage(client, chatId, `ok ${col.time}`, tools);
-
+        // Normalizza sempre a mezzogiorno
+        col.when = dayAtNoon;
       }
 
-      // --- 3) Fallback chiaro ---
-      await reply(
-        client,
-        chatId,
-        `Scrivi un orario (es. "9:30", "9 e 30", "9.30", "9,30") oppure il numero della lista.`
-      );
-      return "";
-    }
+      // 2) Se ho già anche l'orario, verifico che sia effettivamente uno slot valido
+      if (col.service && col.when && col.time) {
+        const hasOptions = Array.isArray(col.options) && col.options.length > 0;
+        const timeAlreadyInOptions = hasOptions && col.options.some((s) => s && s.time === col.time);
 
-    // ====== STEP: scelta professionista ======
-    if (state.step === "pick_professional") {
-      // assicurati che col esista
-      const col = state.collected || (state.collected = {});
-      if (!col.service) {
-        state.step = "choose_service";
-        await reply(
-          client,
-          chatId,
-          "Devo prima sapere il trattamento. Scegli un numero dall’elenco dei servizi."
-        );
-        return "";
-      }
+        if (!timeAlreadyInOptions) {
+          const proEmailTmp = col.professionalAny
+            ? null
+            : col.professionalEmail ||
+              (typeof proEmailByName === "function" ? proEmailByName(col.professionalName) : null) ||
+              null;
 
-      const list = proCatalog(col.service);
-      if (!list.length) {
-        await reply(
-          client,
-          chatId,
-          '⚠️ Per questo servizio non sono configurati professionisti. Scrivi "annulla".'
-        );
-        return "";
-      }
-      // se l’utente ha scritto qualcosa, prova a risolvere
-      const chosen = resolveProReply(text, list);
-      if (!chosen) {
-        await reply(
-          client,
-          chatId,
-          "❌ Quel professionista non risulta nel nostro centro.\n" +
-            renderProPrompt(list)
-        );
-        return ""; // resta nello stesso step
-      }
+          const durationTmp =
+            (typeof getDurForPro === "function"
+              ? getDurForPro(col.service, proEmailTmp)
+              : (typeof cfgServiceDuration === "function" ? (cfgServiceDuration(col.service) || 30) : 30));
 
-      if (chosen.any) {
-        col.professionalAny = true;
-        col.professionalName = null;
-        col.professionalEmail = null;
-      } else {
-        col.professionalAny = false;
-        col.professionalName = chosen.name;
-        col.professionalEmail = chosen.email;
-      }
-
-      // prima di avanzare, doppio check di coerenza
-      if (!ensureProfessionalValidForService(col)) {
-        await reply(
-          client,
-          chatId,
-          "❌ Il professionista indicato non è abilitato per questo servizio.\n" +
-            renderProPrompt(list)
-        );
-        return "";
-      }
-
-      state.step = "choose_day"; // tuo step successivo
-      await reply(
-        client,
-        chatId,
-        'Perfetto! Dimmi il giorno che preferisci (es. "mercoledì" o "23/10").'
-      );
-      return "";
-    }
-
-    // Parsing testo libero
-    const proHit = findProfessionalCandidatesByText(text, col.service);
-    if (proHit?.resolved) {
-      col.professionalAny = false;
-      col.professionalName = proHit.resolved;
-      col.professionalEmail = proEmailByName(col.professionalName);
-      state.step = "collect";
-      bumpBookingLock(state);
-      setAndPersist();
-      return advanceAppointment(false);
-    }
-    if (proHit?.ambiguous?.length) {
-      col.proOptions = proHit.ambiguous; // SOLO nomi
-      state.step = "pick_professional";
-
-      bumpBookingLock(state);
-      setAndPersist();
-      return reply(client, chatId, askProfessional(col.service));
-    }
-    // ====== STEP: scelta giorno ======
-    if (state.step === "choose_day") {
-      // 🔹 NEW: se l’utente scrive un orario qui, lo segniamo e poi chiediamo il giorno
-      const chosenTime =
-        (typeof parseTimeSmart === "function" && parseTimeSmart(text)) ||
-        (typeof parseHHMM === "function" && parseHHMM(text)) ||
-        null;
-
-      if (chosenTime) {
-        col.pendingTime = chosenTime; // lo teniamo “in tasca” fino alla scelta del giorno
-        setAndPersist();
-        await reply(
-          client,
-          chatId,
-          `Perfetto, segno *${chosenTime}*. Ora dimmi il giorno (es. "domani" o "23/10").`
-        );
-        return "";
-      }
-
-      // 1) pattern estesi: "lunedì prossimo", "tra 2 settimane lunedì", ecc.
-      const out = resolveDayishText(text, new Date());
-
-      if (out && out.askDow) {
-        await reply(
-          client,
-          chatId,
-          "Perfetto! Dimmi il giorno della settimana: lunedì, martedì, mercoledì, giovedì, venerdì o sabato."
-        );
-        return "";
-      }
-      if (out && out.date) {
-        col.when = atNoon(out.date);
-        // 🔹 NEW: se avevamo un orario “parcheggiato”, applicalo ora
-        if (col.pendingTime) {
-          col.time = col.pendingTime;
-          col.pendingTime = null;
-        }
-        bumpBookingLock(state);
-        setAndPersist();
-        return advanceAppointment(false);
-      }
-
-      // 2) fallback: tuoi parser esistenti
-      let day =
-        typeof parseRelativeDay === "function" ? parseRelativeDay(text) : null;
-
-      if (!day && typeof parseAvailabilityRequest === "function") {
-        try {
-          const req = parseAvailabilityRequest(text);
-          if (
-            req &&
-            (req.kind === "day" || req.kind === "calendar-day") &&
-            req.date
-          ) {
-            day = req.date;
+          let rawList = [];
+          try {
+            rawList = await fetchSlots({
+              service: col.service,
+              day: typeof atNoon === "function" ? atNoon(col.when) : col.when,
+              duration: durationTmp,
+              professional: proEmailTmp, // null => qualsiasi pro
+              wantDetail: true,
+            });
+          } catch (e) {
+            log("error", "[FINAL_VALIDATE] fetchSlots failed", e?.stack || e?.message || e);
+            rawList = [];
           }
-        } catch {}
-      }
 
-      if (day && !isNaN(new Date(day).getTime())) {
-        col.when = atNoon(day);
-        // 🔹 NEW: porta avanti l’eventuale orario scelto prima
-        if (col.pendingTime) {
-          col.time = col.pendingTime;
-          col.pendingTime = null;
+          const slots =
+            (typeof normalizeSlotsDetail === "function" ? normalizeSlotsDetail(rawList) : rawList) || [];
+
+          if (!slots.length) {
+            const dayStr = typeof formatDateWithWeekdayIT === "function"
+              ? formatDateWithWeekdayIT(col.when)
+              : (typeof fmtDate === "function" ? fmtDate(col.when) : col.when.toLocaleDateString());
+
+            col.when = null;
+            col.time = null;
+            col.options = null;
+            state.step = "choose_day";
+            pending.set(chatId, state);
+            await reply(client, chatId, `Non ci sono disponibilità per ${dayStr}. Dimmi un altro giorno.`);
+            return "";
+          }
+
+          const chosen = slots.find((s) => s && s.time === col.time) || null;
+
+          // Se l'orario richiesto non esiste, proponi lista
+          if (!chosen) {
+            col.options = slots;
+            col.time = null;
+            state.step = "pick_time";
+            pending.set(chatId, state);
+
+            const dayStr = typeof formatDateWithWeekdayIT === "function"
+              ? formatDateWithWeekdayIT(col.when)
+              : (typeof fmtDate === "function" ? fmtDate(col.when) : col.when.toLocaleDateString());
+
+            const lines = slots
+              .map((s) => {
+                const prosNames = s.pros && s.pros.length ? ` (${s.pros.map((p) => p.name).join(", ")})` : "";
+                return `• ${s.time}${prosNames}`;
+              })
+              .join("\n");
+
+            await reply(
+              client,
+              chatId,
+              `A quell'orario non abbiamo disponibilità per ${dayStr}. Questi sono gli orari liberi:\n${lines}\n\n💬 Scrivi l'orario desiderato (es. "14:30").`
+            );
+            return "";
+          }
+
+          // Se era ANY e lo slot ha 1 pro, assegnalo; se più pro, chiedi
+          if (col.professionalAny && !col.professionalEmail && !col.professionalName) {
+            if (Array.isArray(chosen.pros) && chosen.pros.length === 1) {
+              const only = chosen.pros[0];
+              col.professionalName = only.name || null;
+              col.professionalEmail =
+                only.email ||
+                (typeof proEmailByName === "function" ? proEmailByName(only.name) : null) ||
+                null;
+              col.professionalAny = false;
+            } else if (Array.isArray(chosen.pros) && chosen.pros.length > 1) {
+              col.proOptions = chosen.pros.slice();
+              state.step = "pick_professional_for_time";
+              pending.set(chatId, state);
+              const list = chosen.pros.map((p, i) => `${i + 1}) ${p.name}`).join("\n");
+              await reply(
+                client,
+                chatId,
+                `Chi preferisci alle ${col.time}?\n${list}\nRispondi con un numero (1-${chosen.pros.length}).`
+              );
+              return "";
+            }
+          }
+
+          col.options = slots;
         }
-        bumpBookingLock(state);
-        setAndPersist();
-        return advanceAppointment(false);
       }
+    }
 
-      await reply(
-        client,
-        chatId,
-        'Formato non riconosciuto. Esempi: "lunedì prossimo", "tra 2 settimane lunedì", "settimana prossima martedì", oppure GG/MM (es. "23/10").'
-      );
+    // Validazione finale nome
+    const nameValid = col.customerName && String(col.customerName).trim().split(/\s+/).filter(Boolean).length >= 2;
+
+    if (!nameValid) {
+      const nameAttemptStart = state.context?.nameAttemptStart || 0;
+      if (nameAttemptStart && (Date.now() - nameAttemptStart > 30000)) {
+        log('warn', '[NAME] Timeout raccolta nome, uso fallback', { chatId });
+        col.customerName = col.customerName || 'Cliente';
+      } else {
+        state.step = "collect_name";
+        ensureContext(state);
+        state.context.awaitingName = true;
+        state.context.nameAttemptStart = state.context.nameAttemptStart || Date.now();
+        pending.set(chatId, state);
+        await reply(client, chatId, 'Per favore scrivi nome e cognome (es. "Maria Rossi") per completare la prenotazione.');
+        return "";
+      }
+    }
+
+    const attendeeName = String(col.customerName).trim();
+
+    // Se siamo in edit flow, mostra menu
+    if (typeof state.step === "string" && state.step.startsWith("edit_")) {
+      const booking = state.edit?.target;
+      if (booking) {
+        await reply(client, chatId, showEditMenu(booking));
+      } else {
+        await reply(client, chatId, 'Sei nella modifica dell\'appuntamento. Scegli un\'opzione dal menu oppure scrivi \"annulla\".');
+      }
       return "";
     }
 
-    if (state.step === "pick_professional_for_slot") {
-      const names = Array.isArray(col.proOptions) ? col.proOptions : [];
-      const nums = /^\s*\d+\s*$/;
+    // Verifica che abbiamo tutti i dati necessari
+    if (!col.service || !col.when || !col.time) {
+      if (!col.service) {
+        const hasPro = !!(col.professionalAny || col.professionalEmail || col.professionalName);
 
-      if (nums.test(text)) {
-        const n = parseInt(text.trim(), 10);
-        if (n >= 1 && n <= names.length) {
-          col.professionalAny = false;
-          col.professionalName = names[n - 1];
-          col.professionalEmail = proEmailByName(col.professionalName);
-          col.time = col.pendingTime || col.time || null;
-          col.pendingTime = null;
+        if (!hasPro) {
+          state.step = "pick_professional";
+          const pros = getAllProsList();
 
-          state.step = "collect";
-          bumpBookingLock(state);
-          setAndPersist();
-          return await advanceAppointment(false);
+          if (!pros.length) {
+            await reply(client, chatId, "⚠️ Nessun professionista configurato. Contatta il salone.");
+            pending.set(chatId, state);
+            return "";
+          }
+
+          const list =
+            `👩‍🔧 Prima scegli il professionista:\n` +
+            `0) Non mi interessa\n` +
+            pros.map((p, i) => `${i + 1}) ${p.name}`).join("\n") +
+            `\n(0-${pros.length})`;
+
+          await reply(client, chatId, list);
+          pending.set(chatId, state);
+          return "";
         }
-        return reply(
-          client,
-          chatId,
-          `Scegli un numero valido (1-${names.length}).`
-        );
-      }
 
-      const proHit =
-        typeof findProfessionalCandidatesByText === "function"
-          ? findProfessionalCandidatesByText(text, col.service)
-          : null;
+        state.step = "choose_service";
+        const proEmail =
+          col.professionalAny
+            ? null
+            : col.professionalEmail || (typeof proEmailByName === "function" ? proEmailByName(col.professionalName) : null);
 
-      if (proHit?.resolved && names.includes(proHit.resolved)) {
-        col.professionalAny = false;
-        col.professionalName = proHit.resolved;
-        col.professionalEmail = proEmailByName(col.professionalName);
-        col.time = col.pendingTime || col.time || null;
-        col.pendingTime = null;
-
-        state.step = "collect";
-        bumpBookingLock(state);
-        setAndPersist();
-        return await advanceAppointment(false);
-      }
-
-      const list = names.map((p, i) => `${i + 1}) ${p}`).join("\n");
-      return reply(
-        client,
-        chatId,
-        `Per ${
-          col.pendingTime || col.time || "quell'orario"
-        } chi preferisci?\n${list}\n(1-${names.length})`
-      );
-    }
-
-    if (state.step === "ask_allergies") {
-      const info = parseAllergyInfo(text, col.service);
-      if (info) {
-        col.allergies = {
-          has: !!info.has,
-          list: Array.isArray(info.list) ? info.list : [],
-        };
-        state.step = "collect";
-        bumpBookingLock(state);
-        setAndPersist();
-        if (col.allergies.has) {
-          await reply(
-            client,
-            chatId,
-            "⚠️ Ho segnato le allergie. Procedo a fissare la prenotazione, ma chiama il negozio per avvisare e concordare meglio il tuo appuntamento."
-          );
-        }
-        return advanceAppointment(false);
-      }
-      return reply(
-        client,
-        chatId,
-        askAllergies(col.service) || "Sei allergico a qualcosa? (sì/no)"
-      );
-    }
-    // === TRIGGER BOOKING LEGGERO (anche in collect, senza intake completo) ===
-    {
-      const stepNow = String(state.step || "");
-      const notEditing = !/^edit_/.test(stepNow); // rimuovi il check su "cancel_confirm"
-
-      // looksLikeBooking usa: hasBookingVerb(t) || hasDateOrTime(t) || !!fuzzyService(t)
-      if (notEditing && looksLikeBooking(text)) {
-        state.step = "collect";
-        bumpBookingLock(state);
+        const { msg: svcMsg } = buildServicesMessageForPro(proEmail);
+        await reply(client, chatId, svcMsg);
         pending.set(chatId, state);
-        // avvia il flow standard: se manca il servizio chiederà il servizio
-        return await advanceAppointment(true);
+        return "";
+      } else if (!col.when) {
+        state.step = "choose_day";
+        await reply(client, chatId, `Che giorno preferisci? (es. "domani", "23/10")`);
+        pending.set(chatId, state);
+        return "";
+      } else {
+        state.step = "pick_time";
+        if (col.options && col.options.length) {
+          const lines = col.options
+            .map((s) => {
+              const prosNames = s.pros && s.pros.length ? ` (${s.pros.map((p) => p.name).join(", ")})` : "";
+              return `• ${s.time}${prosNames}`;
+            })
+            .join("\n");
+          const dayStr = typeof formatDateWithWeekdayIT === "function"
+            ? formatDateWithWeekdayIT(col.when)
+            : (typeof fmtDate === "function" ? fmtDate(col.when) : col.when.toLocaleDateString());
+          await reply(client, chatId, `📅 Disponibilità per ${dayStr}:\n${lines}\n\n💬 Scrivi l'orario desiderato`);
+        } else {
+          state.step = "choose_day";
+          await reply(client, chatId, `Che giorno preferisci? (es. "domani", "23/10")`);
+        }
+        pending.set(chatId, state);
+        return "";
       }
     }
 
-    // ===================== ROUTER IBRIDO (regex + fuzzy) =====================
-    if (!isInCriticalStep(state.step)) {
-      const quick = intentByHybrid(text);
-      function hasFutureBookingsForPhone(phone) {
-        try {
-          const all = readJSON("bookings.json", []);
-          const now = Date.now();
-          return all.some((b) => {
-            const p = (
-              b.phone ||
-              b.clientPhone ||
-              b.client_phone ||
-              ""
-            ).replace(/\D+/g, "");
-            const when = new Date(
-              b.start || b.startTime || b.start_date || b.when || 0
-            ).getTime();
-            return p.endsWith(phone.replace(/\D+/g, "")) && when && when >= now;
-          });
-        } catch {
-          return false;
+    // Crea timestamp finale
+    const start = typeof setTime === "function" ? setTime(col.when, col.time) : new Date(+col.when);
+
+    // Verifica che non sia nel passato
+    if (typeof isPast === "function" && isPast(start)) {
+      const oldDateStr = typeof fmtDate === "function" ? fmtDate(col.when) : col.when.toLocaleDateString();
+      col.time = null;
+      state.step = "pick_time";
+
+      // Verifica professionista per l'orario scelto
+      if (!col.professionalAny && !col.professionalEmail && !col.professionalName) {
+        const chosenSlot = (col.options || []).find((s) => s && s.time === col.time);
+        if (chosenSlot && Array.isArray(chosenSlot.pros) && chosenSlot.pros.length) {
+          if (chosenSlot.pros.length === 1) {
+            const only = chosenSlot.pros[0];
+            col.professionalName =
+              only.name || (typeof proNameByEmail === "function" ? proNameByEmail(only.email) : null) || null;
+            col.professionalEmail =
+              only.email || (typeof proEmailByName === "function" ? proEmailByName(only.name) : null) || null;
+            col.professionalAny = false;
+          } else {
+            col.proOptions = chosenSlot.pros.slice();
+            state.step = "pick_professional_for_time";
+            const list = chosenSlot.pros.map((p, i) => `${i + 1}) ${p.name}`).join("\n");
+            await reply(
+              client,
+              chatId,
+              `Chi preferisci alle ${col.time}?\n${list}\nRispondi con un numero (1-${chosenSlot.pros.length}).`
+            );
+            pending.set(chatId, state);
+            return "";
+          }
         }
       }
 
-      // --- CANCEL ---
-      if (quick.label === "cancel") {
-        const booking = getUpcomingBookingByPhone(phoneFromChatId(chatId));
-        if (!booking) {
-          await reply(client, chatId, MESSAGES.it.NO_FUTURE_BOOKINGS);
-          return "";
-        }
-        const startTs = new Date(booking.startTime).getTime();
-        if (startTs - Date.now() < CANCEL_POLICY_HOURS * 3600 * 1000) {
-          await reply(
-            client,
-            chatId,
-            `Mancano meno di ${CANCEL_POLICY_HOURS} ore: non posso annullare automaticamente. Contatta il salone.`
-          );
-          return "";
-        }
-        await cancelEventSafe(booking.eventId);
-        updateBookingByEventId(booking.eventId, {
-          status: "cancelled",
-          cancelledAt: new Date().toISOString(),
-        });
+      const professional = col.professionalAny ? null : (col.professionalEmail || null);
+      const duration = (typeof getDurForPro === "function")
+        ? getDurForPro(col.service, professional)
+        : ((typeof cfgServiceDuration === "function" ? (cfgServiceDuration(col.service) || 30) : 30));
+
+      const list = await fetchSlots({
+        service: col.service,
+        day: typeof atNoon === "function" ? atNoon(col.when) : col.when,
+        duration,
+        professional,
+        wantDetail: true,
+      });
+
+      const slots = typeof normalizeSlotsDetail === "function" ? normalizeSlotsDetail(list) : list;
+
+      if (!slots || !slots.length) {
+        col.when = null;
+        state.step = "choose_day";
         await reply(
           client,
           chatId,
-          `✅ Prenotazione del ${fmtDate(booking.startTime)} annullata.`
+          `L'orario selezionato è passato e non ci sono altri orari disponibili per ${oldDateStr}. Scegli un altro giorno.`
         );
+        pending.set(chatId, state);
         return "";
       }
 
-      // --- EDIT ---
-      if (quick.label === "edit") {
-        const booking = getUpcomingBookingByPhone(phoneFromChatId(chatId));
-        if (!booking) {
-          await reply(client, chatId, MESSAGES.it.NO_FUTURE_BOOKINGS);
-          return "";
+      col.options = slots;
+      const lines = slots
+        .map((s) => {
+          const prosNames = s.pros && s.pros.length ? ` (${s.pros.map((p) => p.name).join(", ")})` : "";
+          return `• ${s.time}${prosNames}`;
+        })
+        .join("\n");
+      await reply(client, chatId, `L'orario scelto è nel passato. Disponibili invece:\n${lines}`);
+      pending.set(chatId, state);
+      return "";
+    }
+
+    const durationMin = col.professionalEmail && col.service
+      ? (typeof getServiceDurationForPro === "function" ? getServiceDurationForPro(col.service, col.professionalEmail) : getServiceDurationForPro(col.service, col.professionalEmail))
+      : (typeof cfgServiceDuration === "function" ? cfgServiceDuration(col.service) || 30 : 30);
+
+    const proEmail = col.professionalAny
+      ? null
+      : col.professionalEmail || (typeof proEmailByName === "function" ? proEmailByName(col.professionalName) : null) || null;
+
+    // Validazione finale professionista-servizio
+    if (col.service && !col.professionalAny) {
+      try {
+        if (typeof validateProfessionalForService === "function") {
+          const chkFinal = validateProfessionalForService(col.service, proEmail);
+          if (!chkFinal.ok) {
+            state.step = "choose_service";
+            pending.set(chatId, state);
+            await reply(client, chatId, chkFinal.reason + "\n\nScegli un altro trattamento.");
+            return "";
+          }
         }
-        state.step = "edit_menu";
-        state.edit = { target: booking };
-        pending.set(chatId, state);
-        await reply(client, chatId, showEditMenu(booking));
-        return "";
-      }
-
-      // --- BOOKING (prenota/disponibilità) ---
-      if (quick.label === "booking" || looksLikeBooking(text)) {
-        bumpBookingLock(state);
-        pending.set(chatId, state);
-        return advanceAppointment(true); // riusa il tuo intake + flow
-      }
-
-      // --- PRICE ---
-      if (quick.label === "price") {
-        const svc =
-          fuzzyServiceSafe(text) || col.service || getLastService(chatId);
-        if (svc) {
-          await reply(
-            client,
-            chatId,
-            `• ${svc}: ${cfgServicePriceText(svc)} (durata ${cfgServiceDuration(
-              svc
-            )} min)`
-          );
-          return "";
-        }
-        const svcs = cfgServices();
-        col.infoOptions = svcs;
-        state.step = "price_select_service";
-        pending.set(chatId, state);
-        await reply(
-          client,
-          chatId,
-          `Di quale trattamento vuoi conoscere il prezzo?\n${svcs
-            .map((s, i) => `${i + 1}) ${s}`)
-            .join("\n")}\n(1-${svcs.length})`
-        );
-        return "";
-      }
-
-      // --- INFO (manda a askQA con contesto se possibile) ---
-      if (quick.label === "info") {
-        const svcCtx =
-          fuzzyServiceSafe(text) || col.service || getLastService(chatId);
-        const topic = extractInfoTopic(text) || getLastInfoTopic(chatId);
-        if (svcCtx) rememberService(chatId, svcCtx);
-        if (topic) rememberInfoTopic(chatId, topic);
-        const prompt = buildQAPromptWithMemory(
-          chatId,
-          composeInfoPrompt(svcCtx, topic)
-        );
-        let answer = (await askQA(prompt, tools, client)).trim();
-        if (!answer && svcCtx)
-          answer = `• ${svcCtx}: ${cfgServicePriceText(
-            svcCtx
-          )} (durata ${cfgServiceDuration(svcCtx)} min)`;
-        await reply(client, chatId, answer || "Dimmi pure cosa vuoi sapere 😉");
-        return "";
-      }
-
-      // --- GREETING / OTHER → fallback askQA ---
-      if (quick.label === "greeting" || quick.label === "other") {
-        const answer =
-          (
-            await askQA(buildQAPromptWithMemory(chatId, text), tools, client)
-          ).trim() ||
-          "Posso aiutarti a prenotare un trattamento o rispondere a domande sui nostri servizi. 😊";
-        await reply(client, chatId, answer);
+      } catch (e) {
+        log("error", "validateProfessionalForService(final) failed", e?.stack || e?.message || e);
+        await reply(client, chatId, "Errore tecnico durante la validazione del trattamento. Riprova tra poco o contatta il salone.");
         return "";
       }
     }
-    // (se siamo in step critico, mantiene il tuo flusso esistente)
 
-    // ===================== Fallback generativo =====================
-    const answer =
-      (
-        await askQA(buildQAPromptWithMemory(chatId, text), tools, client)
-      ).trim() ||
-      "Posso aiutarti a prenotare un trattamento o rispondere a domande sui nostri servizi. 😊 Fammi sapere come posso aiutarti.";
-    return reply(client, chatId, answer);
-  } catch (err) {
-    log("error", "onMessage error", err?.stack || err?.message || String(err));
+    // Acquisisci hold con validazione
+    let holdOk = false;
     try {
-      await reply(
-        client,
-        chatId,
-        "😓 C’è stato un errore temporaneo. Puoi ripetermi l’ultimo messaggio?"
-      );
-    } catch {}
+      if (typeof acquireSoftHold === "function") {
+        if (!start || isNaN(start.getTime())) {
+          throw new Error('Start time non valido per hold');
+        }
+
+        holdOk = acquireSoftHold({
+          chatId,
+          professionalEmail: proEmail || (col.professionalAny ? "" : ""),
+          startTime: start,
+          durationMin,
+        });
+      } else {
+        holdOk = true;
+      }
+    } catch (err) {
+      log('error', '[HOLD] Acquisizione fallita', { chatId, err: err?.message });
+      holdOk = false;
+    }
+
+    if (!holdOk) {
+      // Slot occupato: aggiorna lista
+      const professional = proEmail || null;
+      const list = await fetchSlots({
+        service: col.service,
+        day: typeof atNoon === "function" ? atNoon(col.when) : col.when,
+        duration: durationMin,
+        professional,
+        wantDetail: true,
+      });
+
+      const slots = typeof normalizeSlotsDetail === "function" ? normalizeSlotsDetail(list) : list;
+
+      if (!slots || !slots.length) {
+        await reply(client, chatId, "Quel posto è appena stato occupato. Non ho più disponibilità per quel giorno.");
+        col.when = null;
+        state.step = "choose_day";
+        pending.set(chatId, state);
+        return "";
+      }
+
+      col.options = slots;
+      state.step = "pick_time";
+      const lines = slots
+        .map((s) => {
+          const prosNames = s.pros && s.pros.length ? ` (${s.pros.map((p) => p.name).join(", ")})` : "";
+          return `• ${s.time}${prosNames}`;
+        })
+        .join("\n");
+      await reply(client, chatId, `Quel posto è appena stato occupato 😕. Disponibili invece:\n${lines}`);
+      pending.set(chatId, state);
+      return "";
+    }
+
+    // Verifica dati obbligatori
+    if (!col.service || !start || !durationMin || !phone) {
+      await reply(client, chatId, "Errore: alcuni dati obbligatori per la prenotazione non sono disponibili. Riprova dall'inizio digitando 'annulla'.");
+      pending.delete(chatId);
+      return "";
+    }
+
+    // Verifica professionista
+    if (!col.professionalEmail && !col.professionalName && !col.professionalAny) {
+      const slot = (col.options || []).find((s) => s && s.time === col.time);
+      const pros = (slot?.pros) || (state?.proOptions) || (typeof cfgServiceProfessionals === "function" ? cfgServiceProfessionals(col.service) : []) || [];
+
+      if (Array.isArray(pros) && pros.length > 0) {
+        state.step = "pick_professional_for_time";
+        col.proOptions = pros;
+        pending.set(chatId, state);
+
+        let list = "Scegli il professionista desiderato:\n";
+        pros.forEach((p, i) => {
+          const pName = p.name || (typeof p === 'string' ? p : 'Professionista');
+          list += `${i + 1}) ${pName}\n`;
+        });
+        list += "\n0) Qualsiasi professionista (assegniamo il primo disponibile)\n\nRispondi con il numero corrispondente.";
+
+        await reply(client, chatId, list);
+        return "";
+      }
+    }
+
+    if (!proEmail && !col.professionalAny) {
+      await reply(client, chatId, "⚠️ Nessun professionista selezionato o disponibile per l'orario scelto. Riprova.");
+      col.time = null;
+      state.step = "pick_time";
+      pending.set(chatId, state);
+      return "";
+    }
+
+    // Conferma finale (opzionale)
+    if (process.env.REQUIRE_FINAL_CONFIRM === "1" && state.step !== "confirm_final") {
+      state.step = "confirm_final";
+      pending.set(chatId, state);
+      const hh = String(start.getHours()).padStart(2, "0");
+      const mi = String(start.getMinutes()).padStart(2, "0");
+      const proLine = col.professionalName ? ` con ${col.professionalName}` : "";
+      const dateStr = formatDateWithWeekdayIT(start);
+      const timeStr = `${hh}:${mi}`;
+      await reply(client, chatId, `Confermi ${col.service}${proLine} ${dateStr} alle ${timeStr}?`);
+      return "";
+    }
+
+    if (state.step === "confirm_final") {
+      if (!/\b(si|sì|yes|ok)\b/i.test(msg)) {
+        await reply(client, chatId, 'Ok, annullato. Scrivi "prenota" per ricominciare.');
+        pending.delete(chatId);
+        try {
+          releaseSoftHoldByChat?.(chatId);
+        } catch { }
+        return "";
+      }
+    }
+
+    // Creazione evento con rollback
+    let ev = null;
+    let eventCreated = false;
+
+    try {
+      ev = await makeEvent({
+        serviceName: col.service,
+        professionalEmail: proEmail,
+        professionalName: col.professionalName || undefined,
+        clientPhone: phone,
+        customerName: col.customerName || undefined,
+        startTime: start,
+        durationMin,
+        notes: col.notes || undefined,
+        price: typeof cfgServicePriceText === "function" ? cfgServicePriceText(col.service) : undefined,
+      });
+
+      eventCreated = true;
+
+      const bookingRecord = {
+        eventId: ev?.id || ev?.eventId || `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        service: col.service,
+        professionalName: col.professionalName || null,
+        professionalEmail: proEmail || null,
+        clientPhone: phone,
+        clientChatId: chatId,
+        customerName: col.customerName || null,
+        startTime: start instanceof Date ? start.toISOString() : new Date(start).toISOString(),
+        durationMin,
+        status: "confirmed",
+        createdAt: new Date().toISOString(),
+      };
+
+      // Implementare saveBooking se necessario
+     {
+        const ok = typeof persistBooking === "function" ? persistBooking(bookingRecord) : false;
+        if (!ok) {
+          // forza il catch -> rollback evento calendar
+          throw new Error("saveBookings failed");
+        }
+      }
+
+    } catch (bookingErr) {
+      log('error', '[BOOKING] Persistenza fallita', { chatId, err: bookingErr?.message });
+
+      // Rollback: cancella evento se booking non salvato
+      if (eventCreated && ev?.id) {
+        try {
+          await cancelEventSafe(ev.id);
+          log('info', '[BOOKING] Evento rollback OK', { eventId: ev.id });
+        } catch (rollbackErr) {
+          log('error', '[BOOKING] Rollback fallito', { eventId: ev.id, err: rollbackErr?.message });
+        }
+      }
+
+      await reply(client, chatId, "❌ Errore durante il salvataggio. Riprova o contatta il salone.");
+      return "";
+    }
+
+    // Cleanup finale
+    try {
+      releaseSoftHoldByChat?.(chatId);
+    } catch (cleanupErr) {
+      log('warn', '[CLEANUP] Hold release fallito', { chatId, err: cleanupErr?.message });
+    }
+
+    pending.delete(chatId);
+    __dateParsingLocks.delete(chatId);
+
+    // Messaggio di conferma
+    const hh = String(start.getHours()).padStart(2, "0");
+    const mi = String(start.getMinutes()).padStart(2, "0");
+    const proLine = col.professionalName ? ` con ${col.professionalName}` : "";
+
+    await reply(client, chatId, `✅ Prenotato: ${col.service}${proLine} ${formatDateWithWeekdayIT(start)} alle ${hh}:${mi}.`);
+    await reply(client, chatId, '💡 Puoi scrivere "modifica" o "cambiare" per modificare un appuntamento.');
+
+    return "";
+
+  } catch (e) {
+    log("error", "handleMessage critical error", e?.stack || e?.message || String(e));
+
+    // Cleanup forzato su errore critico
+    try {
+      pending.delete(chatId);
+      __dateParsingLocks.delete(chatId);
+      releaseSoftHoldByChat?.(chatId);
+    } catch (cleanupErr) {
+      log('warn', '[CLEANUP] Errore durante cleanup critico', { err: cleanupErr?.message });
+    }
+
+    try {
+      await reply(client, chatId, "😵‍💫 Errore tecnico. Scrivi 'annulla' e riprova, o contatta il salone.");
+    } catch (sendErr) {
+      log("warn", "Invio messaggio errore fallito", sendErr?.message);
+    }
+
+    return "";
+
   } finally {
     __busyChats.delete(chatId);
     __busySince.delete(chatId);
   }
 }
+// Helper robusto per scelte numeriche "1", "1)", "1.", con invisibili ecc.
+// allowZero=true permette "0" (es. nessuna preferenza pro).
 
 // ============== Gestione risposte numeriche (liste) ==============
+/**
+ * The `handleNumericReply` function handles various scenarios related to selecting services, choosing
+ * professionals, and scheduling appointments, with added patches for specific flows like picking
+ * professionals for a specific time slot.
+ * @param client - The `client` parameter is the client object that represents the connection to the
+ * messaging platform or API. It is used to send messages or perform actions related to the messaging
+ * platform, such as sending replies to the user.
+ * @param chatId - The `handleNumericReply` function is quite extensive and handles various scenarios
+ * related to processing numeric replies in a chat conversation. Here is a breakdown of the main
+ * functionalities it provides:
+ * @param textRaw - The `handleNumericReply` function is quite extensive and seems to handle various
+ * scenarios related to processing numeric replies in a chat application. It includes logic for
+ * selecting services, choosing professionals, managing availability, and handling different steps in
+ * the conversation flow.
+ * @param [tools] - The `tools` parameter in the `handleNumericReply` function is an object that
+ * contains various tools or utilities that can be used within the function. These tools are typically
+ * helper functions or services that can assist in performing specific tasks or operations within the
+ * function.
+ * @returns The function `handleNumericReply` returns a message or an empty string based on the logic
+ * and conditions within the function. The return value could be a message to be sent to the user, such
+ * as availability information, error messages, prompts for user input, or confirmation messages. If
+ * certain conditions are met, the function may also trigger other actions or functions in the chat
+ * flow.
+ */
 export async function handleNumericReply(client, chatId, textRaw, tools = {}) {
   // === corpo di handleNumericReply (versione patchata) ===
   const msg = (textRaw || "").trim();
   const pureNumber = /^\s*\d+\s*[\).]?\s*$/; // accetta "2", "2)", "2."
-
+  const t = typeof norm === "function" ? norm(msg) : msg.toLowerCase();
+  let n = NaN;
+  const sRaw = String(msg || "");
+  const sNorm = typeof norm === "function" ? norm(sRaw) : sRaw.toLowerCase().trim();
   const s = pending.get(chatId);
   if (!s) return safeSend(client, chatId, "Nessuna scelta in corso.");
 
   const state = s;
   const col = state.collected || (state.collected = {});
   const setAndPersist = () => pending.set(chatId, state);
+  // --- INIZIO PATCH: gestione pick_professional_for_time ---
+  if (state.step === "pick_professional_for_time") {
+    const pros =
+      Array.isArray(col.proOptions) && col.proOptions.length
+        ? col.proOptions.slice()
+        : Array.isArray(state.proOptions) && state.proOptions.length
+          ? state.proOptions.slice()
+          : [];
+
+    if (!pros.length) {
+      state.step = "collect";
+      pending.set(chatId, state);
+      return safeSend(client, chatId, "Ops, non riesco a trovare i professionisti disponibili. Riprova.");
+    }
+
+    // Parsing numero
+    if (pureNumber.test(msg)) {
+      const idx = parseListIndex(msg, pros.length);
+      if (!Number.isFinite(idx) || idx < 1 || idx > pros.length) {
+        return safeSend(client, chatId, `Scegli un numero valido (1-${pros.length}).`);
+      }
+      const chosen = pros[idx - 1];
+      col.professionalName = chosen && chosen.name ? chosen.name : null;
+      col.professionalEmail = chosen && chosen.email ? chosen.email : null;
+      col.professionalAny = false;
+      col.proOptions = null;
+
+      // ✅ FIX: Passa a "collect" e re-entra
+      state.step = "collect";
+      pending.set(chatId, state);
+
+      if (typeof scheduleReenter === "function") {
+        await scheduleReenter(client, chatId, "ok professionista", tools);
+        return "";
+      }
+      return ""; // evita recursion in-handleMessage
+
+    }
+
+    // Parsing testo (nome professionista)
+    const choice =
+      typeof resolveProReply === "function" ? resolveProReply(msg, pros) : null;
+    if (choice) {
+      if (choice.any) {
+        col.professionalAny = true;
+        col.professionalName = null;
+        col.professionalEmail = null;
+      } else {
+        col.professionalName = choice.name || null;
+        col.professionalEmail = choice.email || null;
+        col.professionalAny = false;
+      }
+      col.proOptions = null;
+
+      // ✅ FIX: Passa a "collect" per permettere al flusso normale di gestire il prossimo step
+      state.step = "collect";
+      pending.set(chatId, state);
+
+      // ✅ Re-entra nel flusso per processare il giorno (se già presente) o chiederlo
+      if (typeof scheduleReenter === "function") {
+        await scheduleReenter(client, chatId, "ok professionista", tools);
+        return "";
+      }
+      return ""; // evita recursion in-handleMessage
+    }
+
+    // Risposta non valida
+    return safeSend(
+      client,
+      chatId,
+      `Risposta non valida. Rispondi con il numero (1-${pros.length}) oppure scrivi il nome del professionista.`
+    );
+  }
+  // --- FINE PATCH ---
 
   // ==== AVAILABILITY FLOW: scelta giorno con numero secco ====
   if (state.availFlow && state.availFlow.awaiting === "day") {
@@ -6464,20 +7365,20 @@ export async function handleNumericReply(client, chatId, textRaw, tools = {}) {
   }
 
   // ==== SCELTA SERVIZIO DA ELENCO NUMERATO ====
-  if (state.step === "choose_service") {
+  if (state.step === "choose_service" && pureNumber.test(String(msg || "").trim())) {
     const n = parseListIndex(
       msg,
       Array.isArray(state.ui && state.ui.lastServiceList)
         ? state.ui.lastServiceList.length
         : Array.isArray(col.svcOptions)
-        ? col.svcOptions.length
-        : Array.isArray(col.serviceOptions)
-        ? col.serviceOptions.length
-        : state.options && Array.isArray(state.options.services)
-        ? state.options.services.length
-        : Array.isArray(config?.services)
-        ? config.services.length
-        : 0
+          ? col.svcOptions.length
+          : Array.isArray(col.serviceOptions)
+            ? col.serviceOptions.length
+            : state.options && Array.isArray(state.options.services)
+              ? state.options.services.length
+              : Array.isArray(config?.services)
+                ? config.services.length
+                : 0
     );
 
     const candidates = [
@@ -6508,29 +7409,179 @@ export async function handleNumericReply(client, chatId, textRaw, tools = {}) {
         : chosen?.name || chosen?.id || chosen?.title || String(chosen);
 
     col.service = svc;
-    state.step = "collect";
+
+    // ✅ Controllo compatibilità professionista ↔ servizio
+    const check = validateProfessionalForService(col.service, col.professionalEmail);
+    if (!check.ok) {
+      await reply(client, chatId, check.reason);
+      state.step = "choose_service";
+      pending.set(chatId, state);
+      return "";
+    }
+
+    state.step = "choose_day";
     pending.set(chatId, state);
 
-    // Avanza il flusso di prenotazione come nel resto del codice
-    scheduleReenter(client, chatId, `ok servizio ${svc}`, tools);
+    await reply(
+      client,
+      chatId,
+      `Che giorno preferisci? (es. "domani", "lunedì prossimo", "tra 2 giorni", "23/10", "28 ottobre")`
+    );
     return "";
   }
-
   // ==== MENU DI MODIFICA (prenotazione esistente) ====
+  // ==== Scelta prenotazione da modificare (quando ce ne sono più di una) ====
+  if (state.step === "edit_pick_booking") {
+    const list = (state.edit && state.edit.list) || [];
+    if (!list.length) {
+      pending.delete(chatId);
+      return reply(
+        client,
+        chatId,
+        'Sessione scaduta. Scrivi "modifica appuntamento" per ripartire.'
+      );
+    }
+
+    const n = parseListIndex(msg, list.length);
+    if (!Number.isFinite(n) || n < 1 || n > list.length) {
+      return reply(
+        client,
+        chatId,
+        `Scegli un numero valido (1-${list.length}).`
+      );
+    }
+
+    const chosen = list[n - 1];
+    _editSnapshotStateFromBooking(state, chosen);
+    const nextStep = state.edit && state.edit.nextStep;
+
+    // Se il comando rapido voleva una modifica specifica (data)
+    if (nextStep === "edit_reschedule_date") {
+      state.step = "edit_reschedule_date";
+      state.edit = { target: chosen };
+      state.collected = state.collected || {};
+      pending.set(chatId, state);
+
+      return reply(
+        client,
+        chatId,
+        `Vuoi cambiare la data di:\n${_fmtBookingLine(
+          chosen
+        )}\n\nDimmi la nuova data (GG/MM, "oggi" o "domani").`
+      );
+    }
+
+    // Se il comando rapido voleva cambiare solo l'orario
+    if (nextStep === "edit_reschedule_time") {
+      const day = _editDayFromBooking(chosen);
+      const duration = _editDuration(chosen);
+      const pro = chosen.professionalEmail || null;
+
+      try {
+        releaseSoftHoldByChat(chatId);
+      } catch { }
+
+      const slots = normalizeSlotsDetail(
+        await fetchSlots({
+          service: chosen.service,
+          day,
+          duration,
+          professional: pro,
+          wantDetail: true,
+        })
+      );
+
+      if (!slots.length) {
+        pending.set(chatId, state);
+        return reply(
+          client,
+          chatId,
+          `Non vedo orari liberi per ${fmtDate(
+            day
+          )} con il professionista attuale. Puoi cambiare data o professionista dal menu di modifica.`
+        );
+      }
+
+      const col = state.collected || (state.collected = {});
+      col.options = slots;
+
+      state.step = "edit_reschedule_time";
+      state.edit = { target: chosen, day };
+      pending.set(chatId, state);
+
+      return reply(
+        client,
+        chatId,
+        `Orari disponibili per ${fmtDate(
+          day
+        )} (tengo il professionista attuale):\n${renderSlotsList(slots)}\n(1-${slots.length
+        })`
+      );
+    }
+
+    // Se il comando rapido voleva cambiare solo il professionista
+    if (nextStep === "edit_pick_professional") {
+      const pros = cfgServiceProfessionals(chosen.service)
+        .map((x) => x.name)
+        .filter(Boolean);
+      if (!pros.length) {
+        pending.delete(chatId);
+        return reply(
+          client,
+          chatId,
+          "Non ho professionisti associati a questo servizio."
+        );
+      }
+
+      state.step = "edit_pick_professional";
+      state.edit = { target: chosen, proOptions: pros };
+      pending.set(chatId, state);
+
+      const listPros =
+        "0) Non mi interessa\n" +
+        pros.map((p, i) => `${i + 1}) ${p}`).join("\n");
+      return reply(
+        client,
+        chatId,
+        `Scegli il professionista:\n${listPros}\n(0-${pros.length})`
+      );
+    }
+
+    // Se il comando rapido voleva cambiare il nome
+    if (nextStep === "edit_change_name") {
+      state.step = "edit_change_name";
+      state.edit = { target: chosen };
+      pending.set(chatId, state);
+      return reply(
+        client,
+        chatId,
+        "Scrivi il nuovo nome e cognome per la prenotazione."
+      );
+    }
+
+    // Default: apre il menu generico di modifica
+    state.step = "edit_menu";
+    state.edit = { target: chosen };
+    pending.set(chatId, state);
+    return reply(client, chatId, showEditMenu(chosen));
+  }
+
+  // ==== Gestione del MENU DI MODIFICA vero e proprio ====
   if (state.step === "edit_menu") {
     // Accetta sia numeri che testo (es. "nome", "orario", "data", "professionista", "annulla")
     const sRaw = String(msg || "");
-    const sNorm = norm(sRaw); // usa la tua normalizzazione (accenti, maiuscole, ecc.)
+    const sNorm =
+      typeof norm === "function" ? norm(sRaw) : sRaw.toLowerCase().trim();
     let n = parseInt(sNorm, 10);
 
-    // Mappa testo → opzione
+    // Mappa testo -> opzione
     // 0 = annulla prenotazione
     // 1 = cambia data
     // 2 = cambia orario
     // 3 = cambia professionista
     // 4 = cambia nome
     const map = [
-      [0, /\b(annull|cancell|disd)(a|o|i|e)?\w*\b/], // annulla/cancella/disdici
+      [0, /\b(annull|cancell|disd)(a|o|i|e)?\w*\b/],
       [1, /\b(data|giorno|gg|sposta\s+data|cambia\s+data|nuova\s+data)\b/],
       [2, /\b(ora|orario|time|slot|fascia|fascia\s+orar)\w*\b/],
       [
@@ -6550,12 +7601,13 @@ export async function handleNumericReply(client, chatId, textRaw, tools = {}) {
     }
 
     const booking = state.edit && state.edit.target;
-    if (!booking)
+    if (!booking) {
       return reply(
         client,
         chatId,
         "Ops, non trovo la prenotazione da gestire."
       );
+    }
 
     // Range valido 0..4
     if (Number.isNaN(n) || n < 0 || n > 4) {
@@ -6566,6 +7618,7 @@ export async function handleNumericReply(client, chatId, textRaw, tools = {}) {
       );
     }
 
+    // 0) Cancella prenotazione
     if (n === 0) {
       state.step = "edit_cancel_confirm";
       pending.set(chatId, state);
@@ -6582,57 +7635,103 @@ export async function handleNumericReply(client, chatId, textRaw, tools = {}) {
       return reply(
         client,
         chatId,
-        `⚠️ Confermi la cancellazione?\n• ${line}\n\nScrivi "sì" per confermare o "annulla" per tornare indietro.`
+        `Sei sicuro di voler cancellare questa prenotazione?\n${line}\n\nRispondi sì/no.`
       );
     }
 
+    // 1) Cambia data -> passo a edit_reschedule_date
     if (n === 1) {
       state.step = "edit_reschedule_date";
+      state.edit = { target: booking };
+      state.collected = state.collected || {};
       pending.set(chatId, state);
-      const oldD = fmtDate(booking.startTime);
-      const oldT = booking.startTime.slice(11, 16);
       return reply(
         client,
         chatId,
-        `Hai un appuntamento fissato per *${oldD} ${oldT}*.\n📅 Per quando vuoi spostarlo? (GG/MM o “domani”)`
+        `Vuoi cambiare la data di:\n${_fmtBookingLine(
+          booking
+        )}\n\nDimmi la nuova data (GG/MM, "oggi" o "domani").`
       );
     }
 
+    // 2) Cambia orario -> passo a edit_reschedule_time (con professionista attuale)
     if (n === 2) {
-      // da menu: utente sceglie "orario" → vai prima alla data, poi al tempo
-      state.step = "edit_reschedule_date";
+      const day = _editDayFromBooking(booking);
+      const duration = _editDuration(booking);
+      const pro = booking.professionalEmail || null;
+
+      try {
+        releaseSoftHoldByChat(chatId);
+      } catch { }
+
+      const slots = normalizeSlotsDetail(
+        await fetchSlots({
+          service: booking.service,
+          day,
+          duration,
+          professional: pro,
+          wantDetail: true,
+        })
+      );
+
+      if (!slots.length) {
+        pending.set(chatId, state);
+        return reply(
+          client,
+          chatId,
+          `Non vedo orari liberi per ${fmtDate(
+            day
+          )} con il professionista attuale. Puoi cambiare data o professionista dal menu di modifica.`
+        );
+      }
+
+      const col = state.collected || (state.collected = {});
+      col.options = slots;
+
+      state.step = "edit_reschedule_time";
+      state.edit = { target: booking, day };
       pending.set(chatId, state);
-      const day = fmtDate(booking.startTime);
+
       return reply(
         client,
         chatId,
-        `Ok, cambiamo orario. 📅 Confermi il giorno *${day}* o vuoi un’altra data? (scrivi GG/MM o “oggi/domani”)`
+        `Orari disponibili per ${fmtDate(
+          day
+        )} (tengo il professionista attuale):\n${renderSlotsList(slots)}\n(1-${slots.length
+        })`
       );
     }
 
+    // 3) Cambia professionista -> passo a edit_pick_professional
     if (n === 3) {
       const pros = cfgServiceProfessionals(booking.service)
         .map((x) => x.name)
         .filter(Boolean);
-      if (!pros.length)
+      if (!pros.length) {
         return reply(
           client,
           chatId,
           "Non ho professionisti associati a questo servizio."
         );
+      }
       state.step = "edit_pick_professional";
-      state.edit.proOptions = pros;
+      state.edit = { target: booking, proOptions: pros };
       pending.set(chatId, state);
-      const list = pros.map((p, i) => `${i + 1}) ${p}`).join("\n");
+
+      const listPros =
+        "0) Non mi interessa\n" +
+        pros.map((p, i) => `${i + 1}) ${p}`).join("\n");
       return reply(
         client,
         chatId,
-        `Scegli il professionista:\n${list}\n(1-${pros.length})`
+        `Scegli il professionista:\n${listPros}\n(0-${pros.length})`
       );
     }
 
+    // 4) Cambia nome -> passo a edit_change_name
     if (n === 4) {
       state.step = "edit_change_name";
+      state.edit = { target: booking };
       pending.set(chatId, state);
       return reply(
         client,
@@ -6642,166 +7741,307 @@ export async function handleNumericReply(client, chatId, textRaw, tools = {}) {
     }
   }
 
-  // ==== Spostamento: scelta NUOVO ORARIO (fuori dal blocco edit_menu!) ====
+  // ==== EDIT FLOW: scelta orario (dopo cambio data/orario) ====
   if (state.step === "edit_reschedule_time") {
-    const booking = state.edit && state.edit.target;
+    const booking = state.edit?.target;
+    const dayRaw = state.edit?.day || (booking ? _editDayFromBooking(booking) : null);
+    const day = (dayRaw && (dayRaw instanceof Date ? dayRaw : new Date(dayRaw))) || null;
+
+    const col = (state.collected = state.collected || {});
     const options = Array.isArray(col.options) ? col.options : [];
-    if (!booking) {
+
+    // session validation
+    if (!booking || !day || !options.length) {
+      pending.delete(chatId);
+      return reply(client, chatId, 'Sessione scaduta. Scrivi "modifica appuntamento" per ripartire.');
+    }
+
+    const raw = String(msg || "").trim();
+    if (/^annulla|annula$/i.test(raw)) {
+      pending.delete(chatId);
+      return reply(client, chatId, "Operazione annullata.");
+    }
+
+    // 1) se l'utente ha scritto una nuova DATA -> cambia giorno e ricarica slot
+    const maybeNewDay = _editParseNewDate ? _editParseNewDate(raw) : null;
+    if (maybeNewDay && maybeNewDay instanceof Date && !Number.isNaN(maybeNewDay.getTime())) {
+      const newDay = new Date(maybeNewDay);
+      newDay.setHours(0, 0, 0, 0);
+
+      // check chiusure/validità (se esiste cfgClosedDay)
+      if (typeof cfgClosedDay === "function" && cfgClosedDay(newDay)) {
+        const dayStrClosed = typeof formatDateWithWeekdayIT === "function"
+          ? formatDateWithWeekdayIT(newDay)
+          : (typeof fmtDate === "function" ? fmtDate(newDay) : newDay.toLocaleDateString());
+        pending.set(chatId, state);
+        return reply(client, chatId, `Il giorno ${dayStrClosed} è chiuso. Prova un altro giorno.`);
+      }
+
+      // fetch nuovi slot per il nuovo giorno
+      const duration = _editDuration ? _editDuration(booking) : null;
+      const pro = booking.professionalEmail || null;
+
+      try { releaseSoftHoldByChat(chatId); } catch (e) { }
+
+      const rawSlots = await fetchSlots({
+        service: booking.service,
+        day: typeof atNoon === "function" ? atNoon(newDay) : newDay,
+        duration,
+        professional: pro,
+        wantDetail: true,
+      });
+
+      const slots = (typeof normalizeSlotsDetail === "function" ? normalizeSlotsDetail(rawSlots) : rawSlots) || [];
+
+      if (!slots.length) {
+        pending.set(chatId, state);
+        const dateStr = typeof formatDateWithWeekdayIT === "function"
+          ? formatDateWithWeekdayIT(newDay)
+          : (typeof fmtDate === "function" ? fmtDate(newDay) : newDay.toLocaleDateString());
+        return reply(client, chatId, `Non ci sono orari liberi per ${dateStr}. Prova un altro giorno.`);
+      }
+
+      // aggiorna stato e mostra nuovo elenco
+      state.edit.day = newDay;
+      state.collected.options = slots;
+      pending.set(chatId, state);
+
+      const dateStr = typeof formatDateWithWeekdayIT === "function"
+        ? formatDateWithWeekdayIT(newDay)
+        : (typeof fmtDate === "function" ? fmtDate(newDay) : newDay.toLocaleDateString());
+      const lines = typeof renderSlotsList === "function" ? renderSlotsList(slots) : slots.join("\n");
+
+      return reply(
+        client,
+        chatId,
+        `📅 Nuova disponibilità per ${dateStr}:\n${lines}\n\n💬 Scrivi l'orario desiderato (es. "14:30" oppure "alle 14").`
+      );
+    }
+
+    // helper: normalizza stringa orario a "HH:MM"
+    const parseUserTime = (text) => {
+      const s = String(text || "").toLowerCase().trim();
+      // supporta: "10", "10:00", "10.30", "alle 10", "9 e 30", "9:30"
+      const m = s.match(/(?:alle\s*)?(\d{1,2})(?:\s*[:.\h,\s]\s*(\d{2}))?/i);
+      if (!m) return null;
+      const hh = parseInt(m[1], 10);
+      const mm = m[2] == null ? 0 : parseInt(m[2], 10);
+      if (!Number.isFinite(hh) || hh < 0 || hh > 23) return null;
+      if (!Number.isFinite(mm) || mm < 0 || mm > 59) return null;
+      return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
+    };
+
+    // 2) se è un numero puro: permette selezione per indice (1-based) o 0 = mostra tutti
+    if (/^\d+$/.test(raw)) {
+      const n = Number(raw);
+      if (n === 0) {
+        // mostra tutti gli slot (richiesta esplicita)
+        const allRaw = await fetchSlots({
+          service: booking.service,
+          day: typeof atNoon === "function" ? atNoon(state.edit.day || day) : (state.edit.day || day),
+          duration: _editDuration ? _editDuration(booking) : null,
+          professional: booking.professionalEmail || null,
+          wantDetail: true,
+        });
+        const allSlots = (typeof normalizeSlotsDetail === "function" ? normalizeSlotsDetail(allRaw) : allRaw) || [];
+        if (!allSlots.length) return reply(client, chatId, "Nessuno slot disponibile per quel giorno.");
+        state.collected.options = allSlots;
+        pending.set(chatId, state);
+        const dateStr = typeof formatDateWithWeekdayIT === "function"
+          ? formatDateWithWeekdayIT(state.edit.day || day)
+          : (typeof fmtDate === "function" ? fmtDate(state.edit.day || day) : (state.edit.day || day).toLocaleDateString());
+        const lines = typeof renderSlotsList === "function" ? renderSlotsList(allSlots) : allSlots.join("\n");
+        return reply(client, chatId, `📅 Disponibilità per ${dateStr}:\n${lines}\n\nScrivi l'orario desiderato.`);
+      }
+
+      // se è un indice, lo interpreto rispetto a col.options attuali (1-based)
+      const idx = n - 1;
+      if (Number.isInteger(idx) && idx >= 0 && idx < options.length) {
+        const item = options[idx];
+        const time = (typeof item === "object" ? item.time : item) || null;
+        if (!time) {
+          pending.set(chatId, state);
+          return reply(client, chatId, "Impossibile leggere l'orario selezionato. Riprova scrivendo l'orario (es. 14:30).");
+        }
+        // costruisco la nuova start ISO e applico l'edit
+        const [hh, mm] = time.split(":").map(Number);
+        const d = new Date(state.edit.day || day);
+        d.setHours(hh, mm || 0, 0, 0);
+        const newStartISO = d.toISOString();
+        const ok = await _editApplyUpdate({ booking, newStartISO });
+        if (!ok) {
+          state.step = "edit_menu";
+          pending.set(chatId, state);
+          return reply(client, chatId, "Quel posto sembra occupato. Puoi cambiare orario oppure scegliere un altro professionista.");
+        }
+        pending.delete(chatId);
+        const dateStr = typeof formatDateWithWeekdayIT === "function" ? formatDateWithWeekdayIT(d) : (typeof fmtDate === "function" ? fmtDate(d) : d.toLocaleString());
+        return reply(client, chatId, `✅ Prenotazione spostata a ${dateStr}.`);
+      }
+
+      // se numero fuori range -> errore
+      pending.set(chatId, state);
+      return reply(client, chatId, "Numero non valido. Scrivi l'orario (es. 14:30) oppure il numero corrispondente all'orario mostrato.");
+    }
+
+    // 3) altrimenti provo a interpretare l'input come orario testuale
+    const requestedHHMM = parseUserTime(raw);
+    if (!requestedHHMM) {
+      pending.set(chatId, state);
+      return reply(client, chatId, `💬 Scrivi l'orario in formato orario (es. "14:30", "14.30" oppure "alle 14").`);
+    }
+
+    // cerco lo slot corrispondente
+    const found = options.find((o) => {
+      const t = (typeof o === "string" ? o : (o && (o.time || o.hhmm))) || "";
+      return String(t).replace(".", ":") === requestedHHMM;
+    });
+
+    if (!found) {
+      pending.set(chatId, state);
+      return reply(client, chatId, `⚠️ Non ho trovato disponibilità alle ${requestedHHMM}. Scegli un orario dall'elenco mostrato.`);
+    }
+
+    // applico la modifica
+    const hh = Number(requestedHHMM.split(":")[0]);
+    const mm = Number(requestedHHMM.split(":")[1] || 0);
+    const newDate = new Date(state.edit.day || day);
+    newDate.setHours(hh, mm, 0, 0);
+    const newStartISO = newDate.toISOString();
+
+    const ok = await _editApplyUpdate({ booking, newStartISO });
+    if (!ok) {
+      state.step = "edit_menu";
+      pending.set(chatId, state);
+      return reply(client, chatId, "Quel posto sembra occupato. Puoi cambiare orario oppure scegliere un altro professionista.");
+    }
+
+    pending.delete(chatId);
+    const dateStr = typeof formatDateWithWeekdayIT === "function" ? formatDateWithWeekdayIT(newDate) : (typeof fmtDate === "function" ? fmtDate(newDate) : newDate.toLocaleString());
+    return reply(client, chatId, `✅ Prenotazione spostata a ${dateStr}.`);
+  }
+
+  // ==== EDIT FLOW: scelta professionista ====
+  if (state.step === "edit_pick_professional") {
+    const editState = state.edit || {};
+    const booking = editState.target;
+    const pros = Array.isArray(editState.proOptions) ? editState.proOptions : [];
+
+    if (!booking || !pros.length) {
       pending.delete(chatId);
       return reply(
         client,
         chatId,
-        "Sessione scaduta. Scrivi “modifica appuntamento” per ripartire."
+        'Sessione scaduta. Scrivi "modifica appuntamento" per ripartire.'
       );
     }
 
-    const day = state.edit?.day
-      ? new Date(state.edit.day)
-      : new Date(booking.startTime);
-    const duration =
-      Number(booking.durationMin) || cfgServiceDuration(booking.service);
+    const txt = String(msg || "").trim();
+    const n = Number.parseInt(txt, 10);
 
-    const applyUpdate = async (hhmm, prosForSlot) => {
-      const newStart = setTime(day, hhmm);
-
-      let newProEmail = booking.professionalEmail;
-      let newProName = booking.professionalName;
-
-      if (Array.isArray(prosForSlot) && prosForSlot.length) {
-        const same = prosForSlot.find(
-          (p) => p.email && p.email === booking.professionalEmail
-        );
-        const pick = same || prosForSlot[0];
-        newProEmail = pick.email || newProEmail;
-        newProName = pick.name || newProName;
-      }
-
-      const ok = await updateEventSafe({
-        eventId: booking.eventId,
-        serviceName: booking.service,
-        professionalEmail: newProEmail,
-        clientPhone: booking.clientPhone,
-        startTime: toISOStringLocal(newStart),
-        durationMin: duration,
-      });
-
-      if (ok) {
-        updateBookingByEventId(booking.eventId, {
-          startTime: toISOStringLocal(newStart),
-          professionalEmail: newProEmail,
-          professionalName: newProName || proNameByEmail(newProEmail),
-        });
-        pending.delete(chatId);
-        return reply(
-          client,
-          chatId,
-          `✅ Appuntamento spostato a ${fmtDate(newStart)} alle ${hhmm}.`
-        );
-      }
+    if (!Number.isFinite(n) || !Number.isInteger(n) || n < 0 || n > pros.length) {
       return reply(
         client,
         chatId,
-        "❌ Non sono riuscito a spostare l’appuntamento. Riprova tra poco."
+        `Scegli un numero valido (0-${pros.length}).`
       );
-    };
-
-    const freshSlots = normalizeSlotsDetail(
-      await fetchSlots({
-        service: booking.service,
-        day,
-        duration,
-        professional: null,
-        wantDetail: true,
-      })
-    );
-    const freshTimes = freshSlots.map((s) => s.time);
-
-    // --- Scelta da lista numerata ---
-    if (pureNumber.test(msg)) {
-      let n;
-      if (/^\s*0\b/.test(msg)) {
-        n = 0;
-      } else {
-        n = parseListIndex(msg, options.length);
-      }
-      if (n < 1 || n > options.length) {
-        return reply(
-          client,
-          chatId,
-          `Scegli un numero valido (1-${options.length}).`
-        );
-      }
-
-      const item = options[n - 1];
-      const hhmm = typeof item === "string" ? item : item.time;
-      const pros =
-        typeof item === "object" && Array.isArray(item.pros) ? item.pros : [];
-
-      if (!freshTimes.includes(hhmm)) {
-        if (!freshSlots.length)
-          return reply(
-            client,
-            chatId,
-            `Nessun orario più disponibile per ${fmtDate(day)}.`
-          );
-        col.options = freshSlots;
-        pending.set(chatId, state);
-        return reply(
-          client,
-          chatId,
-          `Quell’orario non è più disponibile. Ecco cosa resta per ${fmtDate(
-            day
-          )}:\n${renderSlotsList(freshSlots)}\n(1-${freshSlots.length})`
-        );
-      }
-
-      return applyUpdate(hhmm, pros);
     }
 
-    const hhmm = parseTimeSmart(msg);
-    if (hhmm) {
-      if (!freshTimes.includes(hhmm)) {
-        const near = nearestTimes(freshTimes, hhmm, 3);
-        if (near.length) {
-          const nearDetail = freshSlots.filter((x) => near.includes(x.time));
-          col.options = nearDetail;
-          pending.set(chatId, state);
-          return reply(
-            client,
-            chatId,
-            `A ${hhmm} non c’è posto. Posso proporti:\n${renderSlotsList(
-              nearDetail
-            )}\n(1-${nearDetail.length})`
-          );
-        }
-        if (freshSlots.length) {
-          col.options = freshSlots;
-          pending.set(chatId, state);
-          return reply(
-            client,
-            chatId,
-            `A ${hhmm} non c’è posto. Disponibili per ${fmtDate(
-              day
-            )}:\n${renderSlotsList(freshSlots)}\n(1-${freshSlots.length})`
-          );
-        }
-        return reply(
-          client,
-          chatId,
-          `Nessun orario libero per ${fmtDate(day)}. Prova una data diversa.`
-        );
-      }
-
-      const slot = freshSlots.find((s) => s.time === hhmm);
-      return applyUpdate(hhmm, (slot && slot.pros) || []);
+    // 0) Torno al menu senza cambiare nulla
+    if (n === 0) {
+      state.step = "edit_menu";
+      pending.set(chatId, state);
+      return reply(client, chatId, showEditMenu(booking));
     }
+
+    const chosenName = pros[n - 1];
+    const newProEmail = proEmailByName(chosenName);
+
+    if (!newProEmail) {
+      return reply(
+        client,
+        chatId,
+        "Non riesco a collegare quel nome a un professionista valido. Riprova scegliendo dall’elenco."
+      );
+    }
+
+    // Se ha scelto lo stesso professionista non faccio lavoro inutile
+    if (booking.professionalEmail && booking.professionalEmail === newProEmail) {
+      state.step = "edit_menu";
+      pending.set(chatId, state);
+      return reply(
+        client,
+        chatId,
+        `Hai già ${chosenName} assegnata/o a questo appuntamento.\n\n${showEditMenu(
+          booking
+        )}`
+      );
+    }
+
+    // Controllo extra: il professionista deve essere abilitato per questo servizio
+    const svcCfg =
+      (config.services && config.services[booking.service]) || {};
+    const svcPros = Array.isArray(svcCfg.professionals)
+      ? svcCfg.professionals
+      : [];
+
+    const serviceLabel =
+      booking.serviceName ||
+      booking.serviceLabel ||
+      booking.service ||
+      "questo trattamento";
+
+    if (svcPros.length && !svcPros.includes(newProEmail)) {
+      // Non applico l’update, torno semplicemente al menu di modifica
+      state.step = "edit_menu";
+      pending.set(chatId, state);
+      return reply(
+        client,
+        chatId,
+        "⚠️ " +
+        chosenName +
+        " non è configurata per eseguire " +
+        serviceLabel +
+        " nel gestionale. " +
+        "Scegli un altro professionista (3) oppure lascia quello attuale."
+      );
+    }
+
+    // Ok, applico il cambio professionista
+    const ok = await _editApplyUpdate({ booking, newProEmail });
+    if (!ok) {
+      state.step = "edit_menu";
+      pending.set(chatId, state);
+      return reply(
+        client,
+        chatId,
+        "Quel professionista sembra occupato in quell’orario 😕. " +
+        "Puoi cambiare orario (2) oppure scegliere un altro professionista (3)."
+      );
+    }
+
+    // ricarico dal file booking per essere sicuro di avere la versione aggiornata
+    let updated = booking;
+    try {
+      const all = getUserActiveBookingsAll(booking.clientPhone) || [];
+      const match = all.find((b) => b.eventId === booking.eventId);
+      if (match) updated = match;
+    } catch { }
+
+    state.step = "edit_menu";
+    state.edit = { target: updated };
+    pending.set(chatId, state);
 
     return reply(
       client,
       chatId,
-      `Scegli un numero (1-${options.length}) o scrivi un orario *HH:MM*.`
+      `✅ Prenotazione aggiornata:\n${_fmtBookingLine(
+        updated
+      )}\n\n${showEditMenu(updated)}`
     );
   }
+
+
 
   // ==== Conferma cancellazione edit ====
   if (state.step === "edit_cancel_confirm") {
@@ -6819,12 +8059,23 @@ export async function handleNumericReply(client, chatId, textRaw, tools = {}) {
       /\b(si|sì|ok|va bene|confermo|confermare|procedi|procedere|certo|affermativo)\b/i.test(
         sMsg
       );
-    const no = /\b(no|annulla|indietro|stop)\b/i.test(sMsg);
+    const no = /\b(no|annula|annulla|indietro|stop)\b/i.test(sMsg);
     if (yes) {
+      // Idempotenza: se è già cancellata, non rifaccio la procedura
+      const curStatus = String(booking.status || "").toLowerCase();
+      if (/(cancel|annull)/.test(curStatus)) {
+        pending.delete(chatId);
+        return reply(
+          client,
+          chatId,
+          "ℹ️ Questa prenotazione risulta già cancellata nel sistema."
+        );
+      }
+
       let gcalOk = false;
       try {
         gcalOk = await cancelEventSafe(booking.eventId);
-      } catch {}
+      } catch { }
       const patched = {
         status: "cancelled",
         cancelledAt: new Date().toISOString(),
@@ -6842,22 +8093,16 @@ export async function handleNumericReply(client, chatId, textRaw, tools = {}) {
       pending.delete(chatId);
       if (gcalOk && updated)
         return reply(client, chatId, "✅ Prenotazione cancellata.");
-      if (gcalOk && !updated)
-        return reply(
-          client,
-          chatId,
-          "⚠️ Cancellata su calendario; non ho trovato la riga nel file interno."
-        );
       if (!gcalOk && updated)
         return reply(
           client,
           chatId,
-          "✅ Prenotazione cancellata (solo interno)."
+          "⚠️ Ho aggiornato il sistema interno, ma non sono riuscito a cancellare l’evento in calendario. Avvisa il salone se vedi ancora l’appuntamento."
         );
       return reply(
         client,
         chatId,
-        "❌ Non sono riuscito a cancellare. Riprova."
+        "❌ Errore interno durante la cancellazione. Riprova tra poco."
       );
     }
     if (no) {
@@ -6922,154 +8167,157 @@ export async function handleNumericReply(client, chatId, textRaw, tools = {}) {
     );
   }
 
-  // ==== Scelta professionista (generico o da pick_time multipro) ====
-  // ====== STEP: scelta professionista ======
-  if (state.step === "pick_professional") {
-    const col = state.collected || (state.collected = {});
 
-    // serve prima il servizio
-    if (!col.service) {
-      state.step = "choose_service";
-      await reply(
-        client,
-        chatId,
-        "Devo prima sapere il trattamento. Scegli un numero dall’elenco dei servizi."
-      );
-      return "";
-    }
 
-    // catalogo professionisti per il servizio (fallback robusto)
-    const list =
-      (typeof proCatalog === "function" && proCatalog(col.service)) ||
-      (cfgServiceProfessionals(col.service) || []).map((p) => ({
-        name: p.name,
-        email: p.email,
-      }));
-
-    if (!Array.isArray(list) || !list.length) {
-      await reply(
-        client,
-        chatId,
-        '⚠️ Per questo servizio non sono configurati professionisti. Scrivi "annulla".'
-      );
-      return "";
-    }
-
-    // 0) gestione scelta numerica stile "0 non mi interessa / 1..N nome"
-    const nums = /^\s*\d+\s*$/;
-    if (nums.test(msg)) {
-      const n = parseInt(msg.trim(), 10);
-
-      if (n === 0) {
-        col.professionalAny = true;
-        col.professionalName = null;
-        col.professionalEmail = null;
-      } else if (n >= 1 && n <= list.length) {
-        const pick = list[n - 1];
-        col.professionalAny = false;
-        col.professionalName = pick.name || null;
-        col.professionalEmail =
-          pick.email || (pick.name ? proEmailByName(pick.name) : null);
-      } else {
-        const prompt =
-          `Preferisci un professionista in particolare?\n0) Non mi interessa\n` +
-          list.map((p, i) => `${i + 1}) ${p.name}`).join("\n") +
-          `\n(0-${list.length})`;
-        await reply(client, chatId, prompt);
-        return "";
-      }
-    } else {
-      // 1) risoluzione da testo libero (usa resolveProReply se presente, altrimenti fallback)
-      let chosen = null;
-
-      if (typeof resolveProReply === "function") {
-        chosen = resolveProReply(msg, list);
-
-        // resolveProReply può restituire { any:true } oppure { name, email }
-        if (!chosen) {
-          const prompt =
-            `❌ Quel professionista non risulta nel nostro centro.\n` +
-            `Preferisci un professionista in particolare?\n0) Non mi interessa\n` +
-            list.map((p, i) => `${i + 1}) ${p.name}`).join("\n") +
-            `\n(0-${list.length})`;
-          await reply(client, chatId, prompt);
-          return "";
-        }
-      } else {
-        // fallback semplice: match per nome (parziale, case-insensitive)
-        const tnorm = norm(msg);
-        const hit = list.find((p) => norm(p.name).includes(tnorm));
-        if (
-          /\b(qualsiasi|chiunque|va\s*bene\s*chiunque|non\s*mi\s*interessa)\b/i.test(
-            tnorm
-          )
-        ) {
-          chosen = { any: true };
-        } else if (hit) {
-          chosen = {
-            name: hit.name,
-            email: hit.email || proEmailByName(hit.name),
-          };
-        } else {
-          const prompt =
-            `Preferisci un professionista in particolare?\n0) Non mi interessa\n` +
-            list.map((p, i) => `${i + 1}) ${p.name}`).join("\n") +
-            `\n(0-${list.length})`;
-          await reply(client, chatId, prompt);
-          return "";
-        }
-      }
-
-      if (chosen.any) {
-        col.professionalAny = true;
-        col.professionalName = null;
-        col.professionalEmail = null;
-      } else {
-        col.professionalAny = false;
-        col.professionalName = chosen.name || null;
-        col.professionalEmail =
-          chosen.email || (chosen.name ? proEmailByName(chosen.name) : null);
-      }
-    }
-
-    // doppio check coerenza col servizio (se disponibile)
-    if (typeof ensureProfessionalValidForService === "function") {
-      if (!ensureProfessionalValidForService(col)) {
-        const prompt =
-          `❌ Il professionista indicato non è abilitato per questo servizio.\n` +
-          `Preferisci un professionista in particolare?\n0) Non mi interessa\n` +
-          list.map((p, i) => `${i + 1}) ${p.name}`).join("\n") +
-          `\n(0-${list.length})`;
-        await reply(client, chatId, prompt);
-        return "";
-      }
-    }
-
-    state.step = "collect"; // ⚠️ NON usare "choose_day"
-    bumpBookingLock(state);
-    setAndPersist();
-
-    // lascia che il flow standard chieda la data/orario se mancanti
-    pending.set(chatId, state); // persisti
-    // lascia che il flow standard chieda data/orario se mancanti
-    scheduleReenter(client, chatId, "ok professionista", tools);
-    return "";
-  }
   // ==== Orari (prenotazione standard) ====
-    if (state.step !== "pick_time") {
+  if (state.step !== "pick_time") {
     scheduleReenter(client, chatId, "ok professionista", tools);
     return "";
   }
 
+  // assicurati che ci sia la data in contesto
+  if (!(col && col.when)) {
+    return safeSend(client, chatId, 'Mi manca il giorno: dimmi la data (es. domani / 12 dic / 12/12).');
+  }
+
+  // ✅ NEW: durante pick_time permetti cambio giorno (es. "giovedì", "martedì prossimo", "12/12", "28 ottobre")
+  const daySwitchHint =
+    /\b(oggi|domani|dopodomani|tra|fra|settimana|prossim|luned[iì]|marted[iì]|mercoled[iì]|gioved[iì]|venerd[iì]|sabato|domenica|\d{1,2}\s*[\/\-]\s*\d{1,2}|gennaio|febbraio|marzo|aprile|maggio|giugno|luglio|agosto|settembre|ottobre|novembre|dicembre)\b/i;
+
+  const _daySwitchText = String(msg || "");
+  const _hasDayNumberCue = /\b(?:il|giorno|data|per\s+il)\s+\d{1,2}(?:\s*(?:°|º))?\b/i.test(_daySwitchText);
+
+  if (_hasDayNumberCue || daySwitchHint.test(_daySwitchText)) {
+    let parsedSwitch =
+      (typeof safeParseDateWithLock === "function" ? safeParseDateWithLock(chatId, _daySwitchText) : null) ||
+      null;
+
+    if (!parsedSwitch) {
+      const mDay = _daySwitchText.match(/\b(?:il|giorno|data|per\s+il)\s+(\d{1,2})(?:\s*(?:°|º))?\b/i);
+      if (mDay) {
+        const probe = `il ${mDay[1]}`;
+        parsedSwitch =
+          (typeof safeParseDateWithLock === "function" ? safeParseDateWithLock(chatId, probe) : null) ||
+          null;
+      }
+    }
+
+    if (parsedSwitch && !isNaN(parsedSwitch)) {
+      const day =
+        typeof atNoon === "function"
+          ? atNoon(parsedSwitch)
+          : new Date(parsedSwitch.getFullYear(), parsedSwitch.getMonth(), parsedSwitch.getDate(), 12, 0, 0, 0);
+
+      if (typeof cfgClosedDay === "function" && cfgClosedDay(day)) {
+        const dayStrClosed =
+          typeof formatDateWithWeekdayIT === "function"
+            ? formatDateWithWeekdayIT(day)
+            : (typeof fmtDate === "function" ? fmtDate(day) : day.toLocaleDateString());
+        pending.set(chatId, state);
+        return safeSend(client, chatId, `Il giorno ${dayStrClosed} siamo chiusi. Dimmi un altro giorno (es. "domani", "sabato", "12/12").`);
+      }
+
+      col.when = day;
+      col.time = null;
+
+      const duration = getDurForPro(col.service, col.professionalEmail);
 
 
-  const n = parseInt(msg, 10);
-  if (isNaN(n))
+      const professional = col.professionalAny
+        ? null
+        : col.professionalEmail || col.professionalName || null;
+
+      const rawList = await fetchSlots({
+        service: col.service,
+        day: typeof atNoon === "function" ? atNoon(col.when) : col.when,
+        duration,
+        professional,
+        wantDetail: true,
+      });
+
+      const slots =
+        (typeof normalizeSlotsDetail === "function"
+          ? normalizeSlotsDetail(rawList)
+          : rawList) || [];
+
+      if (!slots.length) {
+        const dayStr =
+          typeof formatDateWithWeekdayIT === "function"
+            ? formatDateWithWeekdayIT(col.when)
+            : (typeof fmtDate === "function" ? fmtDate(col.when) : col.when.toLocaleDateString());
+        col.when = null;
+        state.step = "choose_day";
+        pending.set(chatId, state);
+        return safeSend(client, chatId, `Non ci sono orari liberi per ${dayStr}. Dimmi un altro giorno (es. "domani", "sabato", "12/12").`);
+      }
+
+      col.options = slots;
+      state.step = "pick_time";
+      pending.set(chatId, state);
+
+      const lines = slots
+        .map((s) => {
+          const prosNames =
+            s.pros && s.pros.length ? ` (${s.pros.map((p) => p.name).join(", ")})` : "";
+          return `• ${s.time}${prosNames}`;
+        })
+        .join("\n");
+
+      const dayStr =
+        typeof formatDateWithWeekdayIT === "function"
+          ? formatDateWithWeekdayIT(col.when)
+          : (typeof fmtDate === "function" ? fmtDate(col.when) : col.when.toLocaleDateString());
+
+      return safeSend(
+        client,
+        chatId,
+        `📅 Disponibilità per ${dayStr}:\n${lines}\n\n💬 Scrivi l'orario desiderato (es. "14:30", "14.30" oppure "alle 14")`
+      );
+    }
+  }
+
+  // ✅ PATCH: accetta SOLO orari testuali (HH:MM), NON numeri di lista
+  const parsedTime = (typeof parseTimeSmart === "function" ? parseTimeSmart(msg) : null)
+    || (typeof parseHHMM === "function" ? parseHHMM(msg) : null);
+
+  if (!parsedTime) {
     return safeSend(
       client,
       chatId,
-      `Scrivi un numero valido (0-${col.options ? col.options.length : 0}).`
+      `Scrivi l'orario nel formato "14:30" o "14.30". Non usare numeri dell'elenco.`
     );
+  }
+
+
+  // Trova lo slot corrispondente all'orario scritto
+  const matchedSlot = (col.options || []).find(s => s.time === parsedTime);
+
+  if (!matchedSlot) {
+    // Orario non disponibile: suggerisci alternative
+    const nearest = typeof nearestTimes === "function"
+      ? nearestTimes(col.options.map(s => s.time), parsedTime, 3)
+      : [];
+
+    if (nearest.length) {
+      return safeSend(
+        client,
+        chatId,
+        `L'orario ${parsedTime} non è disponibile. Orari vicini:\n${nearest.map(t => `• ${t}`).join('\n')}\n\nScrivi uno di questi orari.`
+      );
+    }
+
+    return safeSend(client, chatId, `L'orario ${parsedTime} non è disponibile. Scegli tra quelli mostrati sopra.`);
+  }
+  // dichiarazioni preliminari per evitare ReferenceError
+  let item = null;
+  let time = null;
+
+
+  // ✅ Orario valido: continua con matchedSlot
+  item = matchedSlot;
+  time = item && item.time ? item.time : null;
+  col.time = time;
+
 
   if (n === 0) {
     const duration = cfgServiceDuration(col.service);
@@ -7104,278 +8352,400 @@ export async function handleNumericReply(client, chatId, textRaw, tools = {}) {
     return safeSend(
       client,
       chatId,
-      `Tutti gli slot disponibili (${fmtDate(col.when)}):\n${linesAll}\n(1-${
-        allSlots.length
+      `Tutti gli slot disponibili (${fmtDate(col.when)}):\n${linesAll}\n(1-${allSlots.length
       })`
     );
   }
 
-  const item = col.options && col.options[n - 1];
-  if (!item)
+  // n è l'input dell'utente (es. "3"), col/options è un array di opzioni
+  const idx = Number(n) - 1;
+  const hasOptions = Array.isArray(col.options);
+  const len = hasOptions ? col.options.length : 0;
+
+  if (!Number.isInteger(idx) || idx < 0 || !hasOptions || idx >= len) {
+    return safeSend(client, chatId, `Scrivi l'orario in formato _HH:MM_! Ad esempio _14:00_ *oppure* semplicemente "_alle 14_"!`);
+  }
+
+  // riusa le variabili già dichiarate
+  item = col.options[idx];
+  time = item && typeof item === "object" ? item.time : item;
+
+
+  if (!time) {
     return safeSend(
       client,
       chatId,
-      `Scrivi un numero valido (0-${col.options ? col.options.length : 0}).`
+      tr(chatId, "GENERIC_ERROR") || "Errore: orario non valido."
     );
+  }
 
-  col.time = item.time || item;
+  col.time = time;
 
-  if (
-    !col.professionalEmail &&
-    !col.professionalName &&
-    item.pros &&
-    item.pros.length > 1
-  ) {
-    col.proOptions = item.pros.map((p) => p.name);
-    state.step = "pick_professional";
+  // Gestione professionisti
+  const needPro =
+    !col.professionalEmail && !col.professionalName && !col.professionalAny;
+
+  const hasPros = item && Array.isArray(item.pros);
+
+  if (needPro && hasPros && item.pros.length > 1) {
+    // più professionisti disponibili a quell'orario: chiedi quale
+    col.proOptions = item.pros.slice(); // OGGETTI {name,email}
+    state.step = "pick_professional_for_time";
     pending.set(chatId, state);
 
     const list = item.pros.map((p, i) => `${i + 1}) ${p.name}`).join("\n");
-    return reply(
+    await reply(
       client,
       chatId,
-      `Chi preferisci alle ${col.time}?\n${list}\n(1-${item.pros.length})`
+      tr(chatId, "CHOOSE_PRO_FOR_TIME", time, list, item.pros.length)
     );
-  } else if (
-    !col.professionalEmail &&
-    !col.professionalName &&
-    item.pros &&
-    item.pros.length === 1
-  ) {
-    col.professionalEmail = item.pros[0].email;
-    col.professionalName = item.pros[0].name;
+    return "";
   }
 
-    state.step = "collect";
+  if (
+    hasPros &&
+    item.pros.length === 1 &&
+    !col.professionalEmail &&
+    !col.professionalName
+  ) {
+    // un solo professionista: assegnalo automaticamente
+    const only = item.pros[0];
+    col.professionalName = only.name;
+    col.professionalEmail =
+      only.email ||
+      (typeof proEmailByName === "function" ? proEmailByName(only.name) : null);
+    col.professionalAny = false;
+  }
+
+  // Se vuoi bloccare il caso "nessun pro e non è ANY", scommenta:
+  // if (needPro && (!hasPros || item.pros.length === 0)) {
+  //   return safeSend(client, chatId, tr(chatId, "NO_PRO_AVAILABLE_FOR_TIME", time));
+  // }
+
+  state.step = "collect";
   pending.set(chatId, state);
+
   if (typeof scheduleReenter === "function") {
-    scheduleReenter(client, chatId, `ok ${col.time}`, tools);
+    await scheduleReenter(client, chatId, `ok ${time}`, tools);
     return "";
   }
   // fallback (non dovrebbe servire, ma è sicuro):
-  return await handleMessage(client, chatId, `ok ${col.time}`, tools);
+  return ""; // evita recursion in-handleMessage
 
+  // ============== Parsing e altre funzioni ==============
+  function parseIntake(raw) {
+    if (!raw) return null;
+    const out = {};
+    const text = String(raw);
 
-}
-
-// ============== Parsing e altre funzioni ==============
-function parseIntake(text) {
-  const out = {};
-  const t = norm(text);
-  let svc = resolveServiceFromText(text);
-  if (!svc) {
-    const hit = fuzzyService(text);
-    const first =
-      (typeof cfgServices === "function" && (cfgServices()[0] || null)) || null;
-    const hasSvcToken = (() => {
-      try {
-        const tokens = (cfgServices() || [])
-          .flatMap((s) => s.toLowerCase().split(/\W+/))
-          .filter((x) => x && x.length >= 4);
-        const nq = norm(text);
-        return tokens.some((tok) => nq.includes(norm(tok)));
-      } catch {
-        return false;
+    // 0) Nome (anche dentro frasi lunghe)
+    try {
+      if (typeof extractCustomerName === "function") {
+        let nm = extractCustomerName(text);
+        if (!nm) {
+          const m = text.match(/\b(?:mi\s+chiamo|io\s+sono|sono|mi\s+chiamano)\s+([^\n,;.]+)/i);
+          if (m && m[0]) nm = extractCustomerName(m[0]);
+          if (!nm && m && m[1]) nm = extractCustomerName(m[1]);
+        }
+        if (nm && nm !== "Nome non fornito") out.customerName = nm;
       }
-    })();
-    if (hit && !(first && norm(hit) === norm(first) && !hasSvcToken)) svc = hit;
+    } catch { }
+
+    // 1) Servizio
+    let svc = null;
+    try {
+      svc = (typeof resolveServiceFromText === "function" ? resolveServiceFromText(text) : null) || null;
+    } catch { }
+
+    if (!svc) {
+      try {
+        svc = (typeof bestServiceBySynonyms === "function" ? bestServiceBySynonyms(text) : null) || null;
+      } catch { }
+    }
+
+    if (!svc) {
+      try {
+        const hit =
+          (typeof fuzzyServiceSafe === "function" ? fuzzyServiceSafe(text) : null) ||
+          (typeof fuzzyService === "function" ? fuzzyService(text) : null);
+
+        // evita falsi positivi: se il fuzzy match = primo servizio ma nel testo non ci sono token del servizio, scarta
+        const first =
+          (typeof cfgServices === "function" && (cfgServices()[0] || null)) ||
+          null;
+
+        const hasSvcToken = (() => {
+          try {
+            const tokens = (typeof cfgServices === "function" ? (cfgServices() || []) : [])
+              .flatMap((s) => String(s || "").toLowerCase().split(/\W+/))
+              .filter((x) => x && x.length >= 4);
+            const nq = norm(text);
+            return tokens.some((tok) => nq.includes(norm(tok)));
+          } catch {
+            return false;
+          }
+        })();
+
+        if (hit && !(first && norm(hit) === norm(first) && !hasSvcToken)) svc = hit;
+      } catch { }
+    }
+
+    if (svc) out.service = svc;
+
+    // 2) Data
+    try {
+      const d = (typeof safeParseDateWithLock === "function" ? safeParseDateWithLock(chatId, text) : null) || null;
+      if (d) {
+        const at12 = typeof atNoon === "function" ? atNoon(d) : d;
+        if (!(typeof isPast === "function" && isPast(at12))) out.when = at12;
+      }
+    } catch { }
+
+    // 3) Orario
+    try {
+      let hhmm =
+        (typeof parseTimeSmart === "function" ? parseTimeSmart(text) : null) ||
+        (typeof parseHHMM === "function" ? parseHHMM(text) : null);
+
+      if (!hhmm && typeof parseNaturalTime === "function") hhmm = parseNaturalTime(text);
+      if (hhmm) out.time = hhmm;
+    } catch { }
+
+    // 4) Professionista
+    try {
+      const anyRe = /\b(chiunque|qualsiasi|va\s*bene\s*chiunque|non\s*mi\s*interessa)\b/i;
+      if (anyRe.test(text)) {
+        out.professionalAny = true;
+      } else {
+        const list =
+          (out.service && typeof proCatalog === "function" ? proCatalog(out.service) : null) ||
+          Object.entries((config?.professionals || {})).map(([email, p]) => ({
+            email,
+            name: (p?.name) || email,
+          }));
+
+        const nrm = (typeof simpleNorm === "function" ? simpleNorm : (s) => String(s || "").toLowerCase())(text);
+        let best = null, bestScore = 0;
+
+        for (const p of list) {
+          const nm = typeof simpleNorm === "function" ? simpleNorm(p.name) : String(p.name || "").toLowerCase();
+          if (!nm) continue;
+
+          if ((" " + nrm + " ").includes(" " + nm + " ")) {
+            best = p;
+            bestScore = 1;
+            break;
+          }
+          if (nrm.includes(nm)) {
+            best = p;
+            bestScore = Math.max(bestScore, 0.95);
+          }
+        }
+
+        if (best && bestScore >= 0.95) {
+          out.professionalName = best.name;
+          out.professionalEmail = best.email || null;
+          out.professionalAny = false;
+        }
+      }
+    } catch { }
+
+    return Object.keys(out).length ? out : null;
   }
-  if (svc) out.service = svc;
-
-  const relDay = parseRelativeDay(text);
-  if (relDay) out.when = relDay;
-  let time = parseTimeSmart(text);
-  if (!time) time = parseNaturalTime(text);
-
-  if (time) out.time = time;
-  return out;
-}
-function parseDaypartWindow(text) {
-  const t = norm(text);
-  const dp = getDaypartBoundaries();
-  if (/\bmattin/.test(t)) return dp.mattina;
-  if (/\bpomeriggio\b/.test(t)) return dp.pomeriggio;
-  if (/\bsera\b/.test(t)) return dp.sera;
-  return null;
-}
-
-// === Giorno chiuso? (settimana + date specifiche)
-function cfgClosedDay(date) {
-  const d = date instanceof Date ? date : new Date(date);
-  const dayKey = isoWeekday(d); // '1'..'7'
-
-  // chiusure settimanali
-  const closed = config.closedDays ?? config.daysOff ?? {};
-  if (Array.isArray(closed)) {
-    if (closed.map(String).includes(dayKey)) return true;
-  } else if (closed && typeof closed === "object") {
-    // se esiste la chiave ed è truthy (o non esplicitamente false) consideriamo chiuso
-    if (
-      Object.prototype.hasOwnProperty.call(closed, dayKey) &&
-      closed[dayKey] !== false
-    )
-      return true;
-  }
-
-  // date specifiche (ferie/festivi)
-  const toYMD = (dd) =>
-    `${dd.getFullYear()}-${String(dd.getMonth() + 1).padStart(2, "0")}-${String(
-      dd.getDate()
-    ).padStart(2, "0")}`;
-  const ymd = toYMD(d);
-  const closedDates = Array.isArray(config.holidays)
-    ? config.holidays
-    : Array.isArray(config.closedDates)
-    ? config.closedDates
-    : [];
-  if (closedDates.includes(ymd)) return true;
-
-  return false;
-}
-
-// === Orari vicini a un target (es. se 10:30 non c'è, proponi 10:00/11:00…)
-function nearestTimes(slots, target, count = 3) {
-  const tm = timeToMinutes(target);
-  return (slots || [])
-    .map((s) => ({ s, d: Math.abs(timeToMinutes(s) - tm) }))
-    .sort((a, b) => a.d - b.d)
-    .slice(0, count)
-    .map((x) => x.s);
-}
-
-// === Prompt “scegli servizio” (lista da config)
-function askService(stateIn, chatId) {
-  const svcs = cfgServices();
-  if (!svcs.length) return "Quale trattamento desideri prenotare?";
-
-  const st = stateIn || getState(chatId);
-  st.ui = st.ui || {};
-  st.ui.lastServiceList = svcs; // già c’è
-  st.collected ||= {};
-  st.collected.svcOptions = svcs; // <-- AGGIUNGI QUESTA RIGA
-  pending.set(chatId, st);
-
-  return `💆‍♀️ Quale trattamento desideri prenotare?\n${svcs
-    .map((s, i) => `${i + 1}) ${s}`)
-    .join("\n")}\n(1-${svcs.length})`;
-}
-
-// === Filtra times con vincoli after/before tipo "dopo 15:00" / "prima 18:00"
-function filterTimesByAfterBefore(times, { after = null, before = null } = {}) {
-  let out = Array.isArray(times) ? times.slice() : [];
-  if (after) {
-    const a = timeToMinutes(after);
-    out = out.filter((t) => timeToMinutes(t) >= a);
-  }
-  if (before) {
-    const b = timeToMinutes(before);
-    out = out.filter((t) => timeToMinutes(t) <= b);
-  }
-  return out.sort(compareHHMM);
-}
-
-// === Se il giorno è oggi, elimina gli orari già passati
-function filterOutPastTimesForToday(day, times) {
-  const D = day instanceof Date ? day : new Date(day);
-  const now = new Date();
-  const isSameDate =
-    D.getFullYear() === now.getFullYear() &&
-    D.getMonth() === now.getMonth() &&
-    D.getDate() === now.getDate();
-  if (!isSameDate) return times;
-
-  const curMin = now.getHours() * 60 + now.getMinutes();
-  return (times || [])
-    .filter((t) => timeToMinutes(t) >= curMin)
-    .sort(compareHHMM);
-}
-
-// === Messaggio di disponibilità (giorno singolo) con raggruppamento per fasce e lista pro nello slot
-async function buildAvailabilityMessage({
-  day,
-  service = null, // nome servizio (opzionale)
-  duration = null, // in minuti (se assente, prende da config servizio o 30)
-  professional = null, // email o nome pro (opzionale)
-  window = null, // es. ['09:00','12:30']
-  after = null, // 'HH:MM'
-  before = null, // 'HH:MM'
-} = {}) {
-  const D = atNoon(day);
-  if (cfgClosedDay(D)) {
-    const next = nextOpenDay(D);
-    return `Il giorno ${fmtDate(D)} siamo chiusi. Ti va bene ${fmtDate(next)}?`;
+  function parseDaypartWindow(text) {
+    const t = norm(text);
+    const dp = getDaypartBoundaries();
+    if (/\bmattin/.test(t)) return dp.mattina;
+    if (/\bpomeriggio\b/.test(t)) return dp.pomeriggio;
+    if (/\bsera\b/.test(t)) return dp.sera;
+    return null;
   }
 
-  // Risoluzione pro
-  const proEmail = professional
-    ? professional.includes("@")
-      ? professional
-      : proEmailByName(professional) || null
-    : null;
+  // === Giorno chiuso? (settimana + date specifiche)
+  function cfgClosedDay(date) {
+    const d = date instanceof Date ? date : new Date(date);
+    const dayKey = isoWeekday(d); // '1'..'7'
 
-  // Durata
-  let durMin = Number(duration);
-  if (!Number.isFinite(durMin) || durMin <= 0) {
-    durMin = service ? cfgServiceDuration(service) : 30;
+    // chiusure settimanali
+    const closed = config.closedDays ?? config.daysOff ?? {};
+    if (Array.isArray(closed)) {
+      if (closed.map(String).includes(dayKey)) return true;
+    } else if (closed && typeof closed === "object") {
+      // se esiste la chiave ed è truthy (o non esplicitamente false) consideriamo chiuso
+      if (
+        Object.prototype.hasOwnProperty.call(closed, dayKey) &&
+        closed[dayKey] !== false
+      )
+        return true;
+    }
+
+    // date specifiche (ferie/festivi)
+    const toYMD = (dd) =>
+      `${dd.getFullYear()}-${String(dd.getMonth() + 1).padStart(
+        2,
+        "0"
+      )}-${String(dd.getDate()).padStart(2, "0")}`;
+    const ymd = toYMD(d);
+    const closedDates = Array.isArray(config.holidays)
+      ? config.holidays
+      : Array.isArray(config.closedDates)
+        ? config.closedDates
+        : [];
+    if (closedDates.includes(ymd)) return true;
+
+    return false;
   }
 
-  // Prendi slots dettagliati (time + pros)
-  const detail = await fetchSlots({
-    service,
-    day: D,
-    duration: durMin,
-    professional: proEmail || professional || null,
-    wantDetail: true,
-  });
-  const list = Array.isArray(detail) ? detail : [];
-  let times = list.map((x) => x.time);
-
-  // Finestra “mattina/pomeriggio/sera”
-  if (window && Array.isArray(window) && window.length === 2) {
-    times = filterSlotsByWindow(times, window);
+  // === Orari vicini a un target (es. se 10:30 non c'è, proponi 10:00/11:00…)
+  function nearestTimes(slots, target, count = 3) {
+    const tm = timeToMinutes(target);
+    return (slots || [])
+      .map((s) => ({ s, d: Math.abs(timeToMinutes(s) - tm) }))
+      .sort((a, b) => a.d - b.d)
+      .slice(0, count)
+      .map((x) => x.s);
   }
 
-  // Vincoli after/before
-  times = filterTimesByAfterBefore(times, { after, before });
+  // === Prompt “scegli servizio” (lista da config)
+  function askService(stateIn, chatId) {
+    const svcs = cfgServices();
+    if (!svcs.length) return "Quale trattamento desideri prenotare?";
 
-  // Se oggi, elimina orari passati
-  times = filterOutPastTimesForToday(D, times);
+    const st = stateIn || getState(chatId);
+    st.ui = st.ui || {};
+    st.ui.lastServiceList = svcs; // già c’è
+    st.collected ||= {};
+    st.collected.svcOptions = svcs; // <-- AGGIUNGI QUESTA RIGA
+    pending.set(chatId, st);
 
-  if (!times.length) {
-    const fascia = window ? " nella fascia richiesta" : "";
-    return `Per ${fmtDate(D)} non vedo orari liberi${
-      service ? ` per ${service}` : ""
-    }${fascia}.`;
+    return `💆‍♀️ Quale trattamento desideri prenotare?\n${svcs
+      .map((s, i) => `${i + 1}) ${s}`)
+      .join("\n")}\n(1-${svcs.length})`;
   }
 
-  // Mappa time -> dettaglio (per label dei pro)
-  const byTime = new Map(list.map((x) => [x.time, x]));
+  // === Filtra times con vincoli after/before tipo "dopo 15:00" / "prima 18:00"
+  function filterTimesByAfterBefore(
+    times,
+    { after = null, before = null } = {}
+  ) {
+    let out = Array.isArray(times) ? times.slice() : [];
+    if (after) {
+      const a = timeToMinutes(after);
+      out = out.filter((t) => timeToMinutes(t) >= a);
+    }
+    if (before) {
+      const b = timeToMinutes(before);
+      out = out.filter((t) => timeToMinutes(t) <= b);
+    }
+    return out.sort(compareHHMM);
+  }
 
-  // Raggruppamento in blocchi
-  const grouped = groupSlotsByDaypart(times);
-  const renderGroup = (title, arr) => {
-    if (!arr || !arr.length) return null;
-    const lines = arr
-      .map((h) => {
-        const item = byTime.get(h) || { pros: [] };
-        const lbl = labelProsForSlot(item); // usa la tua versione già presente
-        return `• ${h}${lbl ? ` (${lbl})` : ""}`;
-      })
+  // === Se il giorno è oggi, elimina gli orari già passati
+  function filterOutPastTimesForToday(day, times) {
+    const D = day instanceof Date ? day : new Date(day);
+    const now = new Date();
+    const isSameDate =
+      D.getFullYear() === now.getFullYear() &&
+      D.getMonth() === now.getMonth() &&
+      D.getDate() === now.getDate();
+    if (!isSameDate) return times;
+
+    const curMin = now.getHours() * 60 + now.getMinutes();
+    return (times || [])
+      .filter((t) => timeToMinutes(t) >= curMin)
+      .sort(compareHHMM);
+  }
+
+  // === Messaggio di disponibilità (giorno singolo) con raggruppamento per fasce e lista pro nello slot
+  async function buildAvailabilityMessage({
+    day,
+    service = null, // nome servizio (opzionale)
+    duration = null, // in minuti (se assente, prende da config servizio o 30)
+    professional = null, // email o nome pro (opzionale)
+    window = null, // es. ['09:00','12:30']
+    after = null, // 'HH:MM'
+    before = null, // 'HH:MM'
+  } = {}) {
+    const D = atNoon(day);
+    if (cfgClosedDay(D)) {
+      const next = nextOpenDay(D);
+      return `Il giorno ${fmtDate(D)} siamo chiusi. Ti va bene ${fmtDate(
+        next
+      )}?`;
+    }
+
+    // Risoluzione pro
+    const proEmail = professional
+      ? professional.includes("@")
+        ? professional
+        : proEmailByName(professional) || null
+      : null;
+
+    // Durata
+    let durMin = Number(duration);
+    if (!Number.isFinite(durMin) || durMin <= 0) {
+      durMin = service ? cfgServiceDuration(service) : 30;
+    }
+
+    // Prendi slots dettagliati (time + pros)
+    const detail = await fetchSlots({
+      service,
+      day: D,
+      duration: durMin,
+      professional: proEmail || professional || null,
+      wantDetail: true,
+    });
+    const list = Array.isArray(detail) ? detail : [];
+    let times = list.map((x) => x.time);
+
+    // Finestra “mattina/pomeriggio/sera”
+    if (window && Array.isArray(window) && window.length === 2) {
+      times = filterSlotsByWindow(times, window);
+    }
+
+    // Vincoli after/before
+    times = filterTimesByAfterBefore(times, { after, before });
+
+    // Se oggi, elimina orari passati
+    times = filterOutPastTimesForToday(D, times);
+
+    if (!times.length) {
+      const fascia = window ? " nella fascia richiesta" : "";
+      return `Per ${fmtDate(D)} non vedo orari liberi${service ? ` per ${service}` : ""
+        }${fascia}.`;
+    }
+
+    // Mappa time -> dettaglio (per label dei pro)
+    const byTime = new Map(list.map((x) => [x.time, x]));
+
+    // Raggruppamento in blocchi
+    const grouped = groupSlotsByDaypart(times);
+    const renderGroup = (title, arr) => {
+      if (!arr || !arr.length) return null;
+      const lines = arr
+        .map((h) => {
+          const item = byTime.get(h) || { pros: [] };
+          const lbl = labelProsForSlot(item); // usa la tua versione già presente
+          return `• ${h}${lbl ? ` (${lbl})` : ""}`;
+        })
+        .join("\n");
+      return `${title}\n${lines}`;
+    };
+
+    const headSvc = service ? ` • ${service}` : "";
+    const headPro = proEmail
+      ? ` • ${proNameByEmail(proEmail) || proEmail}`
+      : "";
+    const blocks = [
+      renderGroup("🌅 Mattina", grouped.mattina),
+      renderGroup("🌤️ Pomeriggio", grouped.pomeriggio),
+      renderGroup("🌙 Sera", grouped.sera),
+    ]
+      .filter(Boolean)
       .join("\n");
-    return `${title}\n${lines}`;
-  };
 
-  const headSvc = service ? ` • ${service}` : "";
-  const headPro = proEmail ? ` • ${proNameByEmail(proEmail) || proEmail}` : "";
-  const blocks = [
-    renderGroup("🌅 Mattina", grouped.mattina),
-    renderGroup("🌤️ Pomeriggio", grouped.pomeriggio),
-    renderGroup("🌙 Sera", grouped.sera),
-  ]
-    .filter(Boolean)
-    .join("\n");
-
-  return `📅 Disponibilità ${fmtDate(D)}${headSvc}${headPro}\n${blocks}`;
+    return `📅 Disponibilità ${fmtDate(D)}${headSvc}${headPro}\n${blocks}`;
+  }
 }
 
 // ==== Stato conversazione (export compat) ====
@@ -7391,7 +8761,6 @@ export function getState(chatId) {
         professionalName: null,
         professionalEmail: null,
         customerName: null,
-        allergies: null,
         options: [],
         proOptions: null,
         daypartWindow: null,
@@ -7411,6 +8780,20 @@ function setState(chatId, st) {
   pending.set(chatId, st);
 }
 // === MENU EDIT HELPERS ===
+function _fmtBookingLine(booking) {
+  if (!booking) return "";
+  const when = new Date(booking.startTime || booking.day || new Date());
+  const dd = String(when.getDate()).padStart(2, "0");
+  const mm = String(when.getMonth() + 1).padStart(2, "0");
+  const hh = String(when.getHours()).padStart(2, "0");
+  const mi = String(when.getMinutes()).padStart(2, "0");
+  const pro =
+    booking.professionalName ||
+    proNameByEmail(booking.professionalEmail) ||
+    "—";
+  const service = booking.service || booking.serviceName || "";
+  return `${dd}/${mm} ${hh}:${mi} — ${service}${pro ? " con " + pro : ""}`;
+}
 function showEditMenu(booking) {
   const when = new Date(booking.startTime);
   const dd = String(when.getDate()).padStart(2, "0");
@@ -7432,47 +8815,39 @@ function showEditMenu(booking) {
 4) Modifica nome
 (0-4)`;
 }
+function renderEditBookingList(bookings) {
+  return bookings
+    .map((b, i) => {
+      const when = new Date(b.startTime);
+      const dd = String(when.getDate()).padStart(2, "0");
+      const mm = String(when.getMonth() + 1).padStart(2, "0");
+      const hh = String(when.getHours()).padStart(2, "0");
+      const mi = String(when.getMinutes()).padStart(2, "0");
+      const pro =
+        b.professionalName || proNameByEmail(b.professionalEmail) || "—";
+      return `${i + 1}) ${dd}/${mm} ${hh}:${mi} — ${b.service} con ${pro}`;
+    })
+    .join("\n");
+}
 
-// === PATCH: add missing export handleAllergyReply ===
-export async function handleAllergyReply(client, chatId, textRaw, tools = {}) {
-  const msg = (textRaw || "").trim();
-  const state = pending.get(chatId);
-  if (!state) {
-    scheduleReenter(client, chatId, msg, tools);
-    return "";
-  }
-  const col = state.collected || (state.collected = {});
-  if (state.step === "ask_allergies") {
-    const info = parseAllergyInfo(msg, col.service);
-    if (info) {
-      col.allergies = {
-        has: !!info.has,
-        list: Array.isArray(info.list) ? info.list : [],
-      };
-      state.step = "collect";
-      pending.set(chatId, state);
-      if (col.allergies.has) {
-        await reply(
-          client,
-          chatId,
-          "✅ Ho segnato le allergie indicate. Ti consigliamo di contattare il negozio per i dettagli sul trattamento."
-        );
-      }
-            if (typeof scheduleReenter === "function") {
-        scheduleReenter(client, chatId, "ok allergie", tools);
-        return "";
-      }
-      return await handleMessage(client, chatId, "ok allergie", tools);
+async function startEditChooseBooking(
+  client,
+  chatId,
+  bookings,
+  nextStep = null
+) {
+  const s = pending.get(chatId) || getState(chatId);
+  s.step = "edit_pick_booking";
+  s.edit = { list: bookings, nextStep: nextStep || null };
+  pending.set(chatId, s);
 
-    }
-    return reply(
-      client,
-      chatId,
-      askAllergies(col.service) || "Sei allergico a qualcosa? (sì/no)"
-    );
-  }
-  scheduleReenter(client, chatId, msg, tools);
-  return "";
+  const list = renderEditBookingList(bookings);
+  const msg =
+    getLang(chatId) === "en"
+      ? `Which booking do you want to manage?\n${list}\n(1-${bookings.length})`
+      : `Quale prenotazione vuoi gestire?\n${list}\n(1-${bookings.length})`;
+
+  return reply(client, chatId, msg);
 }
 
 // ===== [PATCH helpers intent & sanitize] =====
@@ -7611,4 +8986,733 @@ export function resolveServiceIntent(text, state = {}, services = []) {
   if (best.score >= 0.6) return best.name;
 
   return state.lastService || null;
+}
+let __lastReminderSlotKey = ""; // evita doppio invio nello stesso slot (runtime)
+
+function normalizeRecipientId(b) {
+  const raw = (b?.clientChatId || b?.chatId || b?.clientPhone || "").toString().trim();
+  if (!raw) return "";
+  if (raw.includes("@c.us") || raw.includes("@g.us")) return raw;
+  const digits = raw.replace(/[^\d]/g, "");
+  return digits ? `${digits}@c.us` : raw;
+}
+
+function floorToHalfHour(d) {
+  const x = new Date(d);
+  x.setSeconds(0, 0);
+  x.setMinutes(x.getMinutes() < 30 ? 0 : 30);
+  return x;
+}
+
+function slotKey(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+// Tick “a slot”: se ora è 09:30 -> target = domani 09:30..10:00
+export async function remind24hTick(sendFn, opts = {}) {
+  const { batchLimit = 120, graceMinutes = 10 } = opts;
+  if (typeof sendFn !== "function") throw new Error("remind24hTick: sendFn mancante");
+
+  const now = new Date();
+  const slot = floorToHalfHour(now);
+
+  // Se il processo parte “in ritardo” (es. sono le 09:25 e slot=09:00), non inviare quello vecchio
+  const lateMs = now.getTime() - slot.getTime();
+  if (lateMs < 0 || lateMs > graceMinutes * 60_000) return 0;
+
+  const sk = slotKey(slot);
+  if (sk === __lastReminderSlotKey) return 0;
+  __lastReminderSlotKey = sk;
+
+  // domani stessa ora/minuti dello slot
+  const targetStart = new Date(slot);
+  targetStart.setDate(targetStart.getDate() + 1);
+
+  // finestra: 30 minuti (09:30..10:00)
+  const targetEnd = new Date(targetStart);
+  targetEnd.setMinutes(targetEnd.getMinutes() + 30);
+
+  const arr = (typeof loadBookings === "function" ? loadBookings() : null) || [];
+  if (!Array.isArray(arr)) return 0;
+
+  const fromMs = targetStart.getTime();
+  const toMs = targetEnd.getTime();
+
+  let sent = 0;
+
+  for (const b of arr) {
+    if (sent >= batchLimit) break;
+    if (!b || b.status === "cancelled") continue;
+
+    // idempotenza anche dopo riavvio: se già inviato per questo slot, skippa
+    if (b.reminder24hSent || b.reminder24hSlotKey === sk) continue;
+
+    const startMs = Date.parse(b.startTime);
+    if (!Number.isFinite(startMs)) continue;
+
+    // ✅ qui la tua richiesta: tutti gli appuntamenti tra targetStart e targetEnd
+    if (startMs < fromMs || startMs >= toMs) continue;
+
+    const toId = normalizeRecipientId(b);
+    if (!toId) continue;
+
+    const svc = b.service || b.serviceName || "il trattamento";
+
+    const pro =
+      b.professionalName ||
+      (typeof proNameByEmail === "function" ? proNameByEmail(b.professionalEmail) : null) ||
+      "il professionista";
+
+    const dt = new Date(startMs);
+    const timeStr = `${String(dt.getHours()).padStart(2, "0")}:${String(dt.getMinutes()).padStart(2, "0")}`;
+    const dayStr =
+      (typeof formatDateWithWeekdayIT === "function"
+        ? formatDateWithWeekdayIT(dt)
+        : dt.toLocaleDateString("it-IT", { weekday: "long", day: "2-digit", month: "long", year: "numeric" })
+      );
+
+    const msg =
+      `Ciao! Ti ricordiamo che domani hai *${svc}* alle *${timeStr}* (${dayStr}) con *${pro}*.\n\n` +
+      `Se vuoi modificare qualche dettaglio, scrivi *modifica*.\nNon vediamo l'ora di accoglierti 🌸`;
+
+    try {
+      await sendFn(toId, msg);
+
+      if (typeof updateBookingByEventId === "function" && b.eventId) {
+        updateBookingByEventId(b.eventId, {
+          reminder24hSent: true,
+          reminder24hSentAt: new Date().toISOString(),
+          reminder24hSlotKey: sk,
+        });
+      } else {
+        b.reminder24hSent = true;
+        b.reminder24hSentAt = new Date().toISOString();
+        b.reminder24hSlotKey = sk;
+      }
+
+      sent++;
+    } catch (e) {
+      console.warn("[remind24hTick] invio fallito:", e?.message || e);
+    }
+  }
+
+  console.log(`[remind24hTick] slot=${sk} target=[${slotKey(targetStart)}..${slotKey(targetEnd)}] sent=${sent}`);
+  return sent;
+}
+
+
+// --- CONFIG ---
+const INACTIVITY_MS = 60 * 60 * 1000; // 1 ora (modifica se vuoi)
+
+// --- FUNZIONE: invia saluto se l'utente torna dopo inattività ---
+/**
+ * The function `greetIfReturningUser` checks if a user is returning based on their last activity and
+ * sends a greeting message with an image based on the time of day.
+ * @param chatId - The `chatId` parameter in the `greetIfReturningUser` function represents the unique
+ * identifier for the chat or conversation where the user interaction is taking place. It is used to
+ * track and manage the state and activity of the user within that specific chat context.
+ * @param client - The `client` parameter in the `greetIfReturningUser` function is typically the
+ * client object that manages the chat communication. It is used to send messages and stickers to the
+ * user in the chat identified by `chatId`. If the `client` object is not provided, the function falls
+ * back
+ * @param state - The `state` parameter in the `greetIfReturningUser` function is used to keep track of
+ * the current state of the conversation with the user. In this case, if a returning user is detected
+ * and greeted, the state is set to "collect". This state can be used to manage the
+ */
+async function greetIfReturningUser(chatId, client, state) {
+  try {
+    const db = loadChatDB();
+    const now = Date.now();
+    const data = db[chatId] = db[chatId] || {};
+    const lastActive = Number(data.lastActive || 0);
+    const lastGreet = Number(data.lastGreet || 0);
+
+    // Solo se c'era una precedente attività e l'inattività supera la soglia
+    // e non abbiamo già salutato dopo l'ultima attività.
+    if (lastActive && now - lastActive >= INACTIVITY_MS && lastGreet < lastActive) {
+      state = "collect";
+      let image;
+      const hour = new Date().getHours();
+      let greeting = "";
+      if (hour >= 6 && hour < 13) {
+        greeting += "Buongiorno 🌞, che bello rivederti!";
+        image = "./buongiorno.jpg";
+      } else if (hour >= 13 && hour < 18) {
+        greeting += "Buon pomeriggio 🍹, mi fa piacere rivederti qui!";
+        image = "./buonpomeriggio.jpg";
+      } else if (hour >= 18 && hour < 22) {
+        greeting += "Buonasera 🌇, che bello rivederti!";
+        image = "./buonasera.jpg";
+      } else {
+        greeting += "Buonanotte 🌙, che bello rivederti!";
+        image = "./buonanotte.jpg";
+      }
+
+      try {
+        // usa il client passato (normalmente il client che gestisce la chat)
+        await safeSend(client || inactivityClient, chatId, greeting);
+        creaEInviaSticker(client, chatId, image);
+        __delay(1000);
+        data.lastGreet = now; // marca il saluto inviato
+      } catch (err) {
+        log("warn", `Errore invio saluto bentornato a ${chatId}`, err?.message || err);
+      }
+    }
+
+    // registra comunque l'attività (l'utente ha scritto ora)
+    data.lastActive = now;
+    saveChatDB(db);
+  } catch (err) {
+    log("error", "greetIfReturningUser failed", err?.message || err);
+  }
+}
+
+// --------------------------- util.js: append this block (setAndPersist) ---------------------------
+
+/**
+ * The `setAndPersist` function in JavaScript is designed to set and persist data to a file system in
+ * an atomic manner, handling different argument combinations for various use cases.
+ * @param a - a can be a string, an object, or a string representing a key.
+ * @param b - The parameter `b` in the `setAndPersist` function represents the data object that you
+ * want to write to a file. It should be an object containing the data that you want to persist.
+ * @param c - The parameter `c` in the `setAndPersist` function represents the third argument that can
+ * be passed to the function. It is used in the third scenario where the function is called with the
+ * following format: `(key, value, stateObj, [filePath])`.
+ * @param d - The parameter `d` in the `setAndPersist` function represents an optional file path where
+ * the data will be written. If provided, the function will use this file path to persist the data. If
+ * not provided, the function will default to using the file path specified in the `stateObj.__
+ * @returns The `setAndPersist` function returns different values based on the input arguments:
+ */
+export function setAndPersist(a, b, c, d) {
+  const writeAtomic = (targetPath, data) => {
+    try {
+      const dir = path.dirname(targetPath);
+      if (!fsSync.existsSync(dir)) fsSync.mkdirSync(dir, { recursive: true });
+      const tmp = targetPath + ".tmp";
+      fsSync.writeFileSync(tmp, JSON.stringify(data, null, 2), "utf8");
+      fsSync.renameSync(tmp, targetPath);
+    } catch (e) {
+      throw new Error(`writeAtomic failed: ${e?.message || e}`);
+    }
+  };
+
+  const resolvePath = (p) =>
+    path.isAbsolute(String(p || ""))
+      ? p
+      : path.join(DATA_DIR || ".", String(p || ""));
+
+  try {
+    // caso: (filePath, obj)
+    if (typeof a === "string" && typeof b === "object" && b !== null && c === undefined) {
+      const filePath = resolvePath(a);
+      writeAtomic(filePath, b);
+      return b;
+    }
+
+    // caso: (stateObj, filePath)
+    if (typeof a === "object" && a !== null && typeof b === "string" && c === undefined) {
+      const stateObj = a;
+      const filePath = resolvePath(b);
+      writeAtomic(filePath, stateObj);
+      return stateObj;
+    }
+
+    // caso: (key, value, stateObj, [filePath])
+    if (typeof a === "string" && arguments.length >= 3 && typeof c === "object" && c !== null) {
+      const key = a;
+      const value = b;
+      const stateObj = c;
+      const filePath = d
+        ? resolvePath(d)
+        : stateObj.__file
+          ? resolvePath(stateObj.__file)
+          : path.join(DATA_DIR || ".", "state.json");
+      // aggiorna in-place
+      stateObj[key] = value;
+      writeAtomic(filePath, stateObj);
+      return stateObj;
+    }
+
+    throw new Error("setAndPersist: argomenti non riconosciuti");
+  } catch (err) {
+    // usa la funzione di logging già definita in util.js
+    try {
+      log && typeof log === "function"
+        ? log("error", "[setAndPersist] errore", err?.message || err)
+        : console.error("[setAndPersist] errore", err);
+    } catch { }
+    throw err;
+  }
+}
+
+
+/* The above code defines a JavaScript function called `getServiceDurationForPro` that takes two
+parameters: `serviceName` and `proId`. The function is intended to calculate the service duration
+for a specific professional identified by `proId` for a given `serviceName`. However, the actual
+implementation of the function is represented by placeholder characters (` */
+function getServiceDurationForPro(serviceName, proId) {
+  try {
+    // fallback rapido
+    const DEFAULT = 30;
+    if (!serviceName) {
+      if (typeof cfgServiceDuration === "function") {
+        const d = cfgServiceDuration();
+        return Number.isFinite(+d) && +d > 0 ? +d : DEFAULT;
+      }
+      return DEFAULT;
+    }
+
+    // Ottieni item servizio (supporta helper esistenti)
+    const svcItem =
+      (typeof cfgServiceItem === "function" ? cfgServiceItem(serviceName) : null) ||
+      (config && config.services && config.services[serviceName]) ||
+      {};
+
+    // mappa professionalDurations (se esiste)
+    const pd = svcItem.professionalDurations || svcItem.professionalDuration || {};
+
+    // Normalizza proId: se è un nome cerca email con proEmailByName se disponibile
+    let proEmail = proId || null;
+    if (proEmail && typeof proEmailByName === "function" && !/@/.test(String(proEmail))) {
+      try {
+        const mapped = proEmailByName(proEmail);
+        if (mapped) proEmail = mapped;
+      } catch { }
+    }
+
+    // 1) Cerca corrispondenza chiave diretta (case-insensitive) su professionalDurations
+    if (proEmail && pd && typeof pd === "object") {
+      const lookup = String(proEmail).toLowerCase();
+      for (const k of Object.keys(pd)) {
+        if (!k) continue;
+        if (k.toLowerCase() === lookup) {
+          const val = +pd[k];
+          if (Number.isFinite(val) && val > 0) return val;
+        }
+      }
+    }
+
+    // 2) Potrebbe esserci una chiave in pd usata come "nome" invece che email — confronto fuzzy semplice
+    if (proId && pd && typeof pd === "object") {
+      const tryNorm = (v) =>
+        typeof simpleNorm === "function" ? simpleNorm(String(v || "")) : String(v || "").toLowerCase().trim();
+      const tgt = tryNorm(proId);
+      for (const k of Object.keys(pd)) {
+        if (!k) continue;
+        // confronto sulla chiave (nome) o, se la chiave è un'email presente in config.professionals, confronto il nome associato
+        if (tryNorm(k) === tgt) {
+          const val = +pd[k];
+          if (Number.isFinite(val) && val > 0) return val;
+        }
+        const maybeName = config?.professionals?.[k]?.name;
+        if (maybeName && tryNorm(maybeName) === tgt) {
+          const val = +pd[k];
+          if (Number.isFinite(val) && val > 0) return val;
+        }
+      }
+    }
+
+    // 3) Fallback al campo generico duration del servizio (config.services[svc].duration)
+    if (Number.isFinite(+svcItem.duration) && +svcItem.duration > 0) return +svcItem.duration;
+
+    // 4) Fallback all'helper cfgServiceDuration se presente
+    if (typeof cfgServiceDuration === "function") {
+      try {
+        const d = cfgServiceDuration(serviceName);
+        if (Number.isFinite(+d) && +d > 0) return +d;
+      } catch { }
+    }
+
+    // default ultimo
+    return DEFAULT;
+  } catch (err) {
+    // sicurezza: non rompere il flusso di prenotazione
+    try { log && typeof log === "function" && log("warn", "getServiceDurationForPro error", err?.message || err); } catch { }
+    return 30;
+  }
+}
+
+
+const __dateParsingInProgress = new Set();
+
+/**
+ * The function `parseUnifiedDate` in JavaScript parses various date formats and relative date
+ * expressions to return a valid Date object, with the option to provide a base date for context.
+ * @param text - The `parseUnifiedDate` function you provided is quite comprehensive and handles
+ * various date formats and relative date expressions. It parses the input `text` to determine a date
+ * based on the provided `baseDate` or the current date if no base date is specified.
+ * @param [baseDate] - The `baseDate` parameter in the `parseUnifiedDate` function is used to provide a
+ * reference date for parsing relative dates or dates without a specified year. If no `baseDate` is
+ * provided, the current date and time will be used as the default reference point. This allows for
+ * more accurate
+ * @returns The `parseUnifiedDate` function parses a given text input to determine a date relative to a
+ * base date. It handles various formats and expressions such as relative dates (e.g., "today",
+ * "tomorrow"), weekdays, numeric dates, month names, and more. The function returns a `Date` object
+ * representing the parsed date or `null` if the input text does not contain a recognizable date
+ */
+function parseUnifiedDate(text, baseDate = new Date()) {
+  if (text == null) return null;
+
+  const stripDiacritics = (s) =>
+    String(s).normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+
+  const normalize = (s) => {
+    let t = stripDiacritics(String(s ?? "").toLowerCase().trim());
+    t = t.replace(/[“”"']/g, "");
+    t = t.replace(/\s+/g, " ").trim();
+    // rimuove punteggiatura ai bordi (così "domani?" / "15/12," ecc)
+    t = t.replace(/^[?!.,;:()\[\]{}<>]+/g, "").replace(/[?!.,;:()\[\]{}<>]+$/g, "").trim();
+    return t;
+  };
+
+  const s = normalize(text);
+
+  const base = baseDate instanceof Date ? new Date(baseDate) : new Date();
+  const baseDay = new Date(base);
+  baseDay.setHours(0, 0, 0, 0);
+
+  const setNoon = (d) => {
+    if (!(d instanceof Date) || Number.isNaN(d.getTime())) return null;
+    d.setHours(12, 0, 0, 0);
+    return d;
+  };
+
+  const isValidDate = (d, y, m, day) =>
+    d instanceof Date &&
+    !Number.isNaN(d.getTime()) &&
+    d.getFullYear() === y &&
+    d.getMonth() === m &&
+    d.getDate() === day;
+
+  const makeDate = (y, m, day) => {
+    const d = new Date(y, m, day, 12, 0, 0, 0);
+    return isValidDate(d, y, m, day) ? d : null;
+  };
+
+  const normalizeYear = (yy) => {
+    if (yy == null) return null;
+    const n = parseInt(String(yy), 10);
+    if (Number.isNaN(n)) return null;
+    if (n < 100) return 2000 + n; // 25 -> 2025
+    return n;
+  };
+
+  const rollFutureIfMissingYear = (d) => {
+    if (d && d < baseDay) d.setFullYear(d.getFullYear() + 1);
+    return d;
+  };
+
+  const addDays = (n) => {
+    const d = new Date(baseDay);
+    d.setDate(d.getDate() + n);
+    return setNoon(d);
+  };
+
+  const addMonths = (n) => {
+    const d = new Date(baseDay);
+    d.setMonth(d.getMonth() + n);
+    return setNoon(d);
+  };
+
+  const addYears = (n) => {
+    const d = new Date(baseDay);
+    d.setFullYear(d.getFullYear() + n);
+    return setNoon(d);
+  };
+
+  const wordToNumber = (w) => {
+    const map = {
+      un: 1, uno: 1, una: 1,
+      due: 2, tre: 3, quattro: 4, cinque: 5, sei: 6, sette: 7, otto: 8, nove: 9, dieci: 10,
+      undici: 11, dodici: 12, tredici: 13, quattordici: 14, quindici: 15, sedici: 16,
+      diciassette: 17, diciotto: 18, diciannove: 19, venti: 20,
+      ventuno: 21, ventidue: 22, ventitre: 23, ventiquattro: 24, venticinque: 25,
+      ventisei: 26, ventisette: 27, ventotto: 28, ventinove: 29, trenta: 30, trentuno: 31
+    };
+    if (w == null) return null;
+    const t = normalize(w);
+    if (/^\d+$/.test(t)) return parseInt(t, 10);
+    return map[t] ?? null;
+  };
+
+  // --- 1) Relativi (anche dentro frasi) ---
+  // "oggi" / "domani?" / "dopodomani" / "dopo domani"
+  if (/\boggi\b/.test(s)) return addDays(0);
+  if (/\b(dopodomani|dopo domani)\b/.test(s)) return addDays(2);
+  if (/\bdomani\b/.test(s)) return addDays(1);
+
+  // "settimana prossima", "mese prossimo", "anno prossimo"
+  if (/\bsettimana\s+prossima\b/.test(s)) return addDays(7);
+  if (/\bmese\s+prossim[oa]\b/.test(s)) return addMonths(1);
+  if (/\banno\s+prossim[oa]\b/.test(s)) return addYears(1);
+
+  // "tra/fra X giorni|settimane|mesi|anni" (X cifra o parola)
+  {
+    const rel = s.match(/\b(tra|fra)\s+([a-z0-9]+)\s*(giorno|giorni|g|gg|settimana|settimane|sett|mese|mesi|anno|anni)\b/);
+    if (rel) {
+      const n = wordToNumber(rel[2]);
+      const unit = rel[3];
+      if (n != null && n >= 0) {
+        if (unit === "giorno" || unit === "giorni" || unit === "g" || unit === "gg") return addDays(n);
+        if (unit === "settimana" || unit === "settimane" || unit === "sett") return addDays(n * 7);
+        if (unit === "mese" || unit === "mesi") return addMonths(n);
+        if (unit === "anno" || unit === "anni") return addYears(n);
+      }
+    }
+  }
+
+  // --- 2) Giorni della settimana ---
+  {
+    const weekdayMap = {
+      lunedi: 1, lun: 1,
+      martedi: 2, mar: 2,
+      mercoledi: 3, mer: 3,
+      giovedi: 4, gio: 4,
+      venerdi: 5, ven: 5,
+      sabato: 6, sab: 6,
+      domenica: 0, dom: 0
+    };
+
+    const w = s.match(/\b(lunedi|lun|martedi|mar|mercoledi|mer|giovedi|gio|venerdi|ven|sabato|sab|domenica|dom)\b/);
+    if (w) {
+      const key = w[1];
+      const targetDow = weekdayMap[key];
+      const currentDow = baseDay.getDay();
+      let diff = (targetDow - currentDow + 7) % 7;
+      if (diff === 0) diff = 7; // prossima occorrenza, non "oggi"
+
+      // "venerdì della prossima settimana" => forza settimana successiva
+      if (/\b(settimana prossima|della prossima settimana)\b/.test(s)) diff += 7;
+
+      const d = new Date(baseDay);
+      d.setDate(d.getDate() + diff);
+      return setNoon(d);
+    }
+  }
+
+  // --- 3) Date numeriche (anche dentro frasi) ---
+  // ISO: YYYY-MM-DD / YYYY/MM/DD / YYYY.MM.DD
+  {
+    const iso = s.match(/\b(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})\b/);
+    if (iso) {
+      const y = parseInt(iso[1], 10);
+      const m = parseInt(iso[2], 10) - 1;
+      const day = parseInt(iso[3], 10);
+      const d = makeDate(y, m, day);
+      if (d) return d;
+    }
+  }
+
+  // D/M(/Y) con / - . (prova anche M/D se necessario)
+  {
+    const dmy = s.match(/\b(\d{1,2})[\/\-.](\d{1,2})(?:[\/\-.](\d{2,4}))?\b/);
+    if (dmy) {
+      const a = parseInt(dmy[1], 10);
+      const b = parseInt(dmy[2], 10);
+      const yOpt = normalizeYear(dmy[3]) ?? baseDay.getFullYear();
+
+      // preferenza IT: D/M
+      let d = makeDate(yOpt, b - 1, a);
+
+      // se non valida, prova swap (M/D)
+      if (!d) d = makeDate(yOpt, a - 1, b);
+
+      if (d) {
+        if (dmy[3] == null) d = rollFutureIfMissingYear(d);
+        return d;
+      }
+    }
+  }
+
+  // Spazi: "15 12 2025" / "15 12" (solo se è praticamente tutto il testo)
+  {
+    const spaced = s.match(/^(?:il\s+|data\s+)?(\d{1,2})\s+(\d{1,2})(?:\s+(\d{2,4}))?$/);
+    if (spaced) {
+      const a = parseInt(spaced[1], 10);
+      const b = parseInt(spaced[2], 10);
+      const yOpt = normalizeYear(spaced[3]) ?? baseDay.getFullYear();
+
+      let d = makeDate(yOpt, b - 1, a); // D M
+      if (!d) d = makeDate(yOpt, a - 1, b); // swap
+
+      if (d) {
+        if (spaced[3] == null) d = rollFutureIfMissingYear(d);
+        return d;
+      }
+    }
+  }
+
+  // --- 4) Mese scritto: "15 dicembre", "15 dic 2025", "dicembre 15" ---
+  {
+    const monthMap = {
+      gennaio: 0, gen: 0,
+      febbraio: 1, feb: 1,
+      marzo: 2, mar: 2,
+      aprile: 3, apr: 3,
+      maggio: 4, mag: 4,
+      giugno: 5, giu: 5,
+      luglio: 6, lug: 6,
+      agosto: 7, ago: 7,
+      settembre: 8, set: 8, sett: 8,
+      ottobre: 9, ott: 9,
+      novembre: 10, nov: 10,
+      dicembre: 11, dic: 11
+    };
+
+    const monthKeys = Object.keys(monthMap).sort((a, b) => b.length - a.length).join("|");
+
+    // giorno + mese (+ anno)
+    const dm = s.match(new RegExp(`\\b(\\d{1,2})(?:\\s*(?:°|º))?\\s*(?:di\\s*)?(${monthKeys})\\b(?:\\s+(\\d{2,4}))?`, "i"));
+    if (dm) {
+      const day = parseInt(dm[1], 10);
+      const mKey = normalize(dm[2]);
+      const mm = monthMap[mKey];
+      const yOpt = normalizeYear(dm[3]) ?? baseDay.getFullYear();
+      let d = makeDate(yOpt, mm, day);
+      if (d) {
+        if (dm[3] == null) d = rollFutureIfMissingYear(d);
+        return d;
+      }
+    }
+
+    // mese + giorno (+ anno)
+    const md = s.match(new RegExp(`\\b(${monthKeys})\\s+(\\d{1,2})(?:\\s*(?:°|º))?\\b(?:\\s+(\\d{2,4}))?`, "i"));
+    if (md) {
+      const mKey = normalize(md[1]);
+      const day = parseInt(md[2], 10);
+      const mm = monthMap[mKey];
+      const yOpt = normalizeYear(md[3]) ?? baseDay.getFullYear();
+      let d = makeDate(yOpt, mm, day);
+      if (d) {
+        if (md[3] == null) d = rollFutureIfMissingYear(d);
+        return d;
+      }
+    }
+  }
+
+  // --- 5) Solo giorno: "9", "il 9", "giorno 9" ---
+  {
+    const onlyDay = s.match(/^(?:il\s+|giorno\s+)?(\d{1,2})(?:\s*(?:°|º))?$/);
+    if (onlyDay) {
+      const day = parseInt(onlyDay[1], 10);
+      if (day >= 1 && day <= 31) {
+        let y = baseDay.getFullYear();
+        let m = baseDay.getMonth();
+
+        let d = makeDate(y, m, day);
+        if (!d) return null;
+
+        if (d < baseDay) {
+          m += 1;
+          if (m > 11) {
+            m = 0;
+            y += 1;
+          }
+          d = makeDate(y, m, day);
+          if (!d) return null;
+        }
+        return d;
+      }
+    }
+  }
+
+  // --- 6) Fallback: parser esterno se presente ---
+  if (typeof parseDaySmart === "function") {
+    const d = parseDaySmart(String(text), { baseDate: baseDay });
+    if (d && !Number.isNaN(d.getTime())) return setNoon(new Date(d));
+  }
+
+  return null;
+}
+
+/**
+ * Wrapper sicuro per prevenire loop
+ */
+function safeParseDateWithLock(chatIdOrText, maybeText) {
+  // Supporta sia safeParseDateWithLock(chatId, text) che safeParseDateWithLock(text)
+  const hasTwoArgs = typeof maybeText !== "undefined";
+  const chatKey = hasTwoArgs ? String(chatIdOrText || "GLOBAL") : "GLOBAL";
+  const text = hasTwoArgs ? maybeText : chatIdOrText;
+
+  // Previeni parsing ricorsivo per la stessa chat
+  if (__dateParsingInProgress.has(chatKey)) {
+    log("warn", "[DATE] Parsing già in corso, ignoro", { chatId: chatKey });
+    return null;
+  }
+
+  try {
+    __dateParsingInProgress.add(chatKey);
+    return parseUnifiedDate(text);
+  } finally {
+    __dateParsingInProgress.delete(chatKey);
+  }
+}
+
+/**
+ * Start the review followups loop - calls reviewFollowupsTick at regular intervals
+ * @param {Object} client - WhatsApp client instance
+ * @param {Object} opts - Options object
+ * @param {number} opts.intervalMinutes - How often to run (in minutes)
+ * @param {number} opts.lookbackDays - How many days back to check
+ * @param {number} opts.minAfterEndMinutes - Minimum minutes after appointment end
+ * @param {number} opts.batchLimit - Maximum messages to send per batch
+ * @param {boolean} opts.alignToHalfHour - Whether to align runs to :00 and :30
+ */
+export function startReviewFollowupsLoop(client, opts = {}) {
+  const {
+    intervalMinutes = 30,
+    lookbackDays = 3,
+    minAfterEndMinutes = 15,
+    batchLimit = 20,
+    alignToHalfHour = true
+  } = opts;
+
+  const sendFn = (to, msg) => safeSend(client, to, msg, { noFooter: true });
+
+  // Calculate delay to align to next :00 or :30 if requested
+  const getAlignmentDelay = () => {
+    if (!alignToHalfHour) return 0;
+    
+    const now = new Date();
+    const minutes = now.getMinutes();
+    const targetMinute = minutes < 30 ? 30 : 60;
+    const delay = (targetMinute - minutes) * 60 * 1000 - now.getSeconds() * 1000;
+    return delay > 0 ? delay : 0;
+  };
+
+  // Run immediately on startup
+  log('info', '[REVIEW_LOOP] Starting review followups loop', {
+    intervalMinutes,
+    lookbackDays,
+    minAfterEndMinutes,
+    batchLimit,
+    alignToHalfHour
+  });
+
+  // First run with alignment if requested
+  const initialDelay = getAlignmentDelay();
+  
+  setTimeout(() => {
+    // First run
+    reviewFollowupsTick(sendFn, {
+      lookbackDays,
+      minAfterEndMinutes,
+      batchLimit
+    }).catch(err => {
+      log('error', '[REVIEW_LOOP] Error in reviewFollowupsTick', err?.message || err);
+    });
+
+    // Then set up recurring interval
+    setInterval(() => {
+      reviewFollowupsTick(sendFn, {
+        lookbackDays,
+        minAfterEndMinutes,
+        batchLimit
+      }).catch(err => {
+        log('error', '[REVIEW_LOOP] Error in reviewFollowupsTick', err?.message || err);
+      });
+    }, intervalMinutes * 60 * 1000);
+  }, initialDelay);
+
+  log('info', `[REVIEW_LOOP] Will check every ${intervalMinutes} minutes (first run in ${Math.round(initialDelay / 1000)}s)`);
 }

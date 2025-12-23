@@ -8,15 +8,16 @@ import os from 'node:os';
 import readline from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
 import express from 'express';
+// import { reminder24hTick } from "./util.js";
 import {
   handleMessage,
   handleNumericReply,
-  handleAllergyReply,
+  remind24hTick,
   getState,
   resetState,
   safeSend,
-  reviewFollowupsTick,
-  confirmAppointmentsTick
+  startReviewFollowupsLoop,
+  confirmAppointmentsTick,
 } from './util.js';
 import { debugDataDir } from './fs-json.js';
 console.log('[DATA_DIR]', debugDataDir());
@@ -458,6 +459,14 @@ async function main() {
       throw e2;
     }
   }
+setInterval(() => {
+  remind24hTick((to, msg) => client.sendText(to, msg), { graceMinutes: 10, batchLimit: 200 })
+    .catch(err => console.warn("remind24hTick error:", err));
+}, 60_000);
+process.on('uncaughtException', (err) => {
+  console.error('💥 CRASH:', err);
+  process.exit(1); // pm2/nodemon riavvierà automaticamente
+});
 
   status.online = true;
   debugDataDir();
@@ -469,16 +478,19 @@ async function main() {
       try { client.forceRefocus?.(); } catch {}
     }
   });
+// entrypoint (server/index):
 
-  // === REVIEW CRON (dopo WA pronto, ogni 30 min) ===
-  const sendWhatsApp = async (to, text) => safeSend(client, to, text);
-  const reviewOpts = { windowMinutes: 30, batchLimit: 20 };
-  try { await reviewFollowupsTick(sendWhatsApp, reviewOpts); }
-  catch (err) { log('warn', '[reviewFollowupsTick] primo giro fallito', err?.message || err); }
-  setInterval(() => {
-    reviewFollowupsTick(sendWhatsApp, reviewOpts)
-      .catch(err => log('warn', '[reviewFollowupsTick] errore', err?.message || err));
-  }, 30 * 60 * 1000);
+// ogni 15 minuti controllo il prossimo "24h":
+// setInterval(() => reminder24hTick((to, msg) => client.sendText(to, msg), { windowMinutes: 15 }), 15 * 60 * 1000);
+
+  // === REVIEW LOOP (ogni 30 min, recupera fino a 3 giorni indietro) ===
+  startReviewFollowupsLoop(client, {
+    intervalMinutes: 30,
+    lookbackDays: 3,
+    minAfterEndMinutes: 15,
+    batchLimit: 20,
+    alignToHalfHour: true, // allinea a :00 e :30
+  });
 
   // === CONFIRM CRON (promemoria conferma pre-appuntamento) ===
   const confirmOpts = {
@@ -486,10 +498,10 @@ async function main() {
     windowMinutes: 15,
     batchLimit: 50
   };
-  try { await confirmAppointmentsTick(sendWhatsApp, confirmOpts); }
+  try { await confirmAppointmentsTick(safeSend, confirmOpts); }
   catch (err) { log('warn', '[confirmAppointmentsTick] primo giro fallito', err?.message || err); }
   setInterval(() => {
-    confirmAppointmentsTick(sendWhatsApp, confirmOpts)
+    confirmAppointmentsTick(safeSend, confirmOpts)
       .catch(err => log('warn', '[confirmAppointmentsTick] errore', err?.message || err));
   }, 15 * 60 * 1000);
 
@@ -503,23 +515,11 @@ async function main() {
 
       if (/^\s*(annulla|reset|stop|ricomincia)\s*$/i.test(text)) {
         resetState(chatId);
-        await safeSend(client, chatId, 'Ok, reset. Dimmi cosa vuoi prenotare. Oppure “modifica” o “cancella” per gestire una prenotazione 😊');
+        await safeSend(client, chatId, 'Ho annullato tutto, aspetto i tuoi ordini! 🌺');
         return;
       }
 
       const state = getState(chatId);
-
-      
-
-      if (/^\d+$/.test(text) && state?.step === 'pick_time') {
-        await handleNumericReply(client, chatId, text);
-        return;
-      }
-
-      if (state && (state.step === 'ask_allergies' || state.step === 'ask_allergy_list')) {
-        await handleAllergyReply(client, chatId, text);
-        return;
-      }
 
       await handleMessage(client, chatId, text);
     } catch (e) {
