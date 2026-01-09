@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 import { pathToFileURL } from 'node:url';
-// Se vuoi hardcodare una chiave di default, mettila qui (PEM). Altrimenti lascia stringa vuota.
+
 const PUBLIC_KEY_PEM_DEFAULT = ``;
 
 // ---- base64url <-> Buffer
@@ -11,13 +11,26 @@ function b64uToBuf(s) {
   return Buffer.from(t + pad, 'base64');
 }
 
+// ---- normalizza PEM (converte \\n in \n reali)
+function normalizeKeyPem(pem) {
+  if (!pem) return pem;
+  const s = String(pem).trim();
+  // Se contiene \\n letterali, sostituiscili con newline reali
+  return s.includes('\\n') ? s.replace(/\\n/g, '\n') : s;
+}
+
 // ---- sorgente chiave pubblica (preferisci PEM inline da .env)
 export function getPublicKeyPem() {
   const pem  = (process.env.LICENSE_PUBLIC_KEY_PEM  || '').trim();
   const file = (process.env.LICENSE_PUBLIC_KEY_FILE || '').trim();
-  if (pem && file && fs.existsSync(file)) console.warn('[license] LICENSE_PUBLIC_KEY_PEM e FILE sono entrambi settati: uso PEM inline.');
-  if (pem) return pem;
-  if (file && fs.existsSync(file)) return fs.readFileSync(file, 'utf8');
+  
+  if (pem && file && fs.existsSync(file)) {
+    console.warn('[license] LICENSE_PUBLIC_KEY_PEM e FILE sono entrambi settati: uso PEM inline.');
+  }
+  
+  if (pem) return normalizeKeyPem(pem);
+  if (file && fs.existsSync(file)) return normalizeKeyPem(fs.readFileSync(file, 'utf8'));
+  
   throw new Error('Chiave pubblica non configurata');
 }
 
@@ -32,7 +45,6 @@ export function parseLicenseText(txt) {
   if (!out.LIC || !out.SIG) throw new Error('Formato licenza invalido: attese righe LIC= e SIG=');
   return { licB64: out.LIC, sigB64: out.SIG };
 }
-
 
 // ---- ordinamento deterministico per canonical JSON
 function sortObj(o){
@@ -52,7 +64,7 @@ export function verifyLicenseBytes(licBytes, sigBytes, { now = Date.now(), curre
   // Parse payload
   let payload;
   try { payload = JSON.parse(licBytes.toString('utf8')); }
-  catch { throw new Error('Payload LIC non A  JSON valido'); }
+  catch { throw new Error('Payload LIC non è JSON valido'); }
 
   // Campi accettati (flessibili)
   const version  = payload.version ?? payload.v ?? 1;
@@ -88,15 +100,8 @@ export function verifyLicenseBytes(licBytes, sigBytes, { now = Date.now(), curre
 
   return { ok: true, payload };
 }
-function pubkeyFp(pem){
-  const der = crypto.createPublicKey(pem).export({format:'der', type:'spki'});
-  return crypto.createHash('sha256').update(der).digest('hex');
-}
-
-
 
 export function verifyLicenseText(txt, { now = Date.now(), currentHwid = null, graceDays = 7 } = {}) {
-
   const __HERE_URL = (typeof __filename !== 'undefined') ? pathToFileURL(__filename).href : 'unknown://license-verifier';
   console.log('[license] verifier ACTIVE vC @', __HERE_URL);
 
@@ -112,10 +117,17 @@ export function verifyLicenseText(txt, { now = Date.now(), currentHwid = null, g
   if (ok) pathUsed='RAW_BASE64_STRING';
 
   // A) byte JSON
-  if (!ok) { ok = crypto.verify(null, licBytes, pub, sigBytes); if (ok) { pathUsed='JSON_BYTES'; try { payload=JSON.parse(licBytes.toString('utf8')); } catch {} } }
+  if (!ok) { 
+    ok = crypto.verify(null, licBytes, pub, sigBytes); 
+    if (ok) { 
+      pathUsed='JSON_BYTES'; 
+      try { payload=JSON.parse(licBytes.toString('utf8')); } catch {} 
+    } 
+  }
 
   // B) JSON canonico
-  if (!ok) { try {
+  if (!ok) { 
+    try {
       const obj = JSON.parse(licBytes.toString('utf8'));
       const canon = JSON.stringify(sortObj(obj));
       ok = crypto.verify(null, Buffer.from(canon,'utf8'), pub, sigBytes);
@@ -124,7 +136,10 @@ export function verifyLicenseText(txt, { now = Date.now(), currentHwid = null, g
   }
 
   if (!ok) throw new Error('Firma Ed25519 non valida');
-  if (!payload) { try { payload=JSON.parse(licBytes.toString('utf8')); } catch { throw new Error('Payload LIC non A  JSON valido'); } }
+  if (!payload) { 
+    try { payload=JSON.parse(licBytes.toString('utf8')); } 
+    catch { throw new Error('Payload LIC non è JSON valido'); } 
+  }
 
   const version  = payload.version ?? payload.v ?? 1;
   const customer = payload.customer ?? payload.client;
@@ -157,7 +172,6 @@ export function verifyLicenseText(txt, { now = Date.now(), currentHwid = null, g
   if (process.env.LICENSE_DEBUG==='1') console.log('[license] verify path:', pathUsed);
   return { ok:true, payload };
 }
-
 
 // ---- verifica da file
 export function verifyLicenseFile(filePath, opts = {}) {
