@@ -1,0 +1,20 @@
+{
+  # Per sviluppo locale usiamo :8080; in produzione abilita i blocchi dominio qui sotto.
+  auto_https disable_redirects
+}
+
+:8080 {
+  encode zstd gzip
+  reverse_proxy api:4000
+}
+
+api.miodominio.tld {
+  encode zstd gzip
+  reverse_proxy api:4000
+}
+
+app.miodominio.tld {
+  root * /srv/frontend
+  try_files {path} /index.html
+  file_server
+}

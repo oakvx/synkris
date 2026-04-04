@@ -89,7 +89,7 @@ export class SessionManager {
         name: "default",
         provider: record.provider,
         status: record.status,
-        sessionPath: this.store.resolvePath(record.userId),
+        sessionPath: record.sessionPersisted ? this.store.resolvePath(record.userId) : null,
         qrCodeDataUrl: record.qrCodeDataUrl,
         pairingCode: record.pairingCode,
         phoneNumber: record.phoneNumber,
@@ -100,7 +100,7 @@ export class SessionManager {
       update: {
         provider: record.provider,
         status: record.status,
-        sessionPath: this.store.resolvePath(record.userId),
+        sessionPath: record.sessionPersisted ? this.store.resolvePath(record.userId) : null,
         qrCodeDataUrl: record.qrCodeDataUrl,
         pairingCode: record.pairingCode,
         phoneNumber: record.phoneNumber,
@@ -149,3 +149,4 @@ export class SessionManager {
     };
   }
 }
+

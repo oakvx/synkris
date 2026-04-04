@@ -35,6 +35,24 @@ export const RegisterRequestSchema = LoginRequestSchema.extend({
 });
 export type RegisterRequest = z.infer<typeof RegisterRequestSchema>;
 
+export const ForgotPasswordRequestSchema = z.object({
+  email: z.string().email(),
+});
+export type ForgotPasswordRequest = z.infer<typeof ForgotPasswordRequestSchema>;
+
+export const ForgotPasswordResponseSchema = z.object({
+  message: z.string(),
+  previewToken: z.string().nullable().optional(),
+  previewUrl: z.string().nullable().optional(),
+});
+export type ForgotPasswordResponse = z.infer<typeof ForgotPasswordResponseSchema>;
+
+export const ResetPasswordRequestSchema = z.object({
+  token: z.string().min(8),
+  newPassword: z.string().min(8),
+});
+export type ResetPasswordRequest = z.infer<typeof ResetPasswordRequestSchema>;
+
 export const AuthResponseSchema = z.object({
   token: z.string(),
   user: PortalUserSchema,

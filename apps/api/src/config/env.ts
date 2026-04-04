@@ -18,4 +18,5 @@ export const env = {
   allowedOrigins: parseOrigins(process.env.ALLOWED_ORIGINS),
   botWorkerBaseUrl: (process.env.BOT_WORKER_BASE_URL ?? "http://127.0.0.1:4001").replace(/\/$/, ""),
   internalServiceToken: process.env.INTERNAL_SERVICE_TOKEN ?? "change-me-internal-token",
+  appBaseUrl: (process.env.APP_BASE_URL ?? "http://localhost:5173/#/login").replace(/\/$/, ""),
 };

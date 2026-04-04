@@ -20,4 +20,11 @@ export class UserRepository {
       },
     });
   }
+
+  updatePassword(userId: string, passwordHash: string): Promise<User> {
+    return prisma.user.update({
+      where: { id: userId },
+      data: { passwordHash },
+    });
+  }
 }

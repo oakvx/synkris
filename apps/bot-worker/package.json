@@ -11,7 +11,7 @@
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",
-    "@whatsapp-ai/shared": "workspace:*",
+    "@whatsapp-ai/shared": "file:../../packages/shared",
     "express": "^5.1.0",
     "zod": "^3.24.1"
   },
@@ -22,3 +22,4 @@
     "typescript": "^5.7.2"
   }
 }
+
