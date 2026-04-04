@@ -1,5 +1,7 @@
 {
-  # Per sviluppo locale usiamo :8080; in produzione abilita i blocchi dominio qui sotto.
+  # Frontend di produzione attuale: https://oakvxish.github.io/synkris
+  # Caddy resta davanti all'API; il blocco app.miodominio.tld sotto e' opzionale se in futuro
+  # vorrai servire anche il frontend statico dal server invece che da GitHub Pages.
   auto_https disable_redirects
 }
 

@@ -9,6 +9,19 @@ coverage/
 *.tsbuildinfo
 .turbo/
 .vite/
+.env
+.env.local
+.env.*.local
+.node-persist/
+_IGNORE_session/
+session.json/
+.session-state.json
+session.data.json
+apps/frontend/dist/
+screenshots/
+screenshot_whatsapp-ai_*.png
+open-wa-session*.json
+*.7z
 prisma/dev.db
 postgres-data/
 bot-sessions/
@@ -18,5 +31,3 @@ node18/
 node-18.5.0/
 *.exe
 *.blob
-*.cjs
-*.mjs
