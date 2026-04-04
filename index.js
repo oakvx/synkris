@@ -1,4 +1,4 @@
-// index.js — bootstrap minimale + router messaggi (ESM) con hardening
+// index.js – bootstrap minimale + router messaggi (ESM) con hardening
 import 'dotenv/config';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
@@ -8,7 +8,6 @@ import os from 'node:os';
 import readline from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
 import express from 'express';
-// import { reminder24hTick } from "./util.js";
 import {
   handleMessage,
   handleNumericReply,
@@ -25,24 +24,21 @@ import { loadAndVerifyLicense, storeLicense } from './license-utils.js';
 import { verifyLicenseText } from './license-utils.js';
 import { createRequire } from 'node:module';
 import net from 'node:net';
-// CJS/SEA-safe: evita import.meta
 import { warmOllama } from './util.js';
+
 
 
 function normalizeLicenseText(s) {
   return String(s).replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').trim() + '\n';
 }
+
 const __req =
   (typeof module !== 'undefined' && module.require)
     ? module.require
     : createRequire(process.cwd() + '/noop.js');
 
 // ====== RUNTIME PACKAGING DETECTION (SEA / PKG) ======
-// Se stiamo girando come eseguibile standalone (Node SEA o pkg),
-// forziamo APP_DATA_DIR in una cartella locale vicino all'exe,
-// così i JSON e la licenza restano esterni e modificabili.
 try {
-  
   let IS_SEA = false;
   try {
     const sea = __req('node:sea');
@@ -53,23 +49,22 @@ try {
     process.env.APP_DATA_DIR = path.join(path.dirname(process.execPath), 'configs & dashboard');
   }
 } catch { /* best-effort */ }
+
 // --- loader @open-wa/wa-automate dal filesystem (compatibile SEA) ---
-// index.js — fix resolver per open-wa
 const IS_PKG = !!(process.versions && process.versions.pkg);
 let IS_SEA = false;
 try { const sea = __req('node:sea'); IS_SEA = !!(sea?.isSea?.()); } catch {}
 
 const __requireCJS = (IS_SEA || IS_PKG)
   ? createRequire(process.execPath + (process.platform === 'win32' ? '\\noop.js' : '/noop.js'))
-  : __req; // <-- normale: risolve dal progetto
+  : __req;
 
 const __waModule = __requireCJS('@open-wa/wa-automate');
-
 const __waCreate = __waModule?.create || __waModule?.default?.create || __waModule?.default || __waModule;
+
 if (typeof __waCreate !== 'function') {
   throw new Error('wa-automate create() non trovato');
 }
-
 
 // --- wrapper create() SAFE (no loop/console) ---
 function __arrayUnion(a = [], b = []) {
@@ -120,8 +115,6 @@ const create = async (opts = {}) => {
   merged.args = __arrayUnion(safeArgs, merged.args || []);
   return __waCreate(merged);
 };
-// --- fine wrapper create() SAFE ---
-
 
 // --- single-instance lock (evita doppie esecuzioni / spam console) ---
 try {
@@ -130,6 +123,7 @@ try {
   __lock.on('error', () => process.exit(0));
   __lock.listen(LOCK_PORT, '127.0.0.1');
 } catch {}
+
 // ====== tiny logger ======
 const log = (l, m, extra) =>
   (l === 'error' ? console.error : l === 'warn' ? console.warn : console.log)(
@@ -144,25 +138,16 @@ const DEFAULT_DATA_DIR = path.join(
   'configs & dashboard'
 );
 
-// Se bootstrap ha settato APP_DATA_DIR, la usiamo; altrimenti fallback sicuro.
 export const DATA_DIR = process.env.APP_DATA_DIR
   ? path.normalize(process.env.APP_DATA_DIR)
   : DEFAULT_DATA_DIR;
+  
 try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch {}
 
-
-
-// Whitelist file JSON ammessi (estendi se aggiungi nuovi file)
+// Whitelist file JSON ammessi
 const ALLOWED = new Set([
   'config.json',
   'bookings.json',
-  // 'coupons.json',
-  // 'dashboardDump.json',
-  // 'acc-people.json',
-  // 'promotions.json',
-  // 'settings.json',
-  // 'stock.json',
-  // 'waitlist.json'
 ]);
 
 // Risoluzione anti path-traversal
@@ -231,21 +216,7 @@ if (missing.length) {
 }
 
 // ====== licenza ======
-async function tryLoadGenerator() {
-  const candidates = ['./U4.js', './license-generator.js'];
-  for (const rel of candidates) {
-    try {
-      const mod = await import(rel);
-      if (typeof mod.generateLicense === 'function') {
-        return { fn: mod.generateLicense, name: rel.replace('./', '') };
-      }
-    } catch (_) {}
-  }
-  return null;
-}
-
 async function ensureLicense() {
-  // 0) Avviso se hai due sorgenti di public key: usa PEM inline.
   if (process.env.LICENSE_PUBLIC_KEY_PEM && process.env.LICENSE_PUBLIC_KEY_FILE) {
     console.warn('[license] LICENSE_PUBLIC_KEY_PEM e FILE sono entrambi settati: userò PEM inline.');
   }
@@ -309,19 +280,16 @@ async function ensureLicense() {
       } catch {}
     };
 
-    // license.txt a fianco dell'exe
     pushIf(path.join(execDir, 'license.txt'));
-    // *.license.txt a fianco dell'exe e in /licenses
     collectPattern(execDir);
     collectPattern(path.join(execDir, 'licenses'));
-    // Dev: ./licenses del progetto
     collectPattern(path.join(process.cwd(), 'licenses'));
 
     if (cand.length) {
       cand.sort((a, b) => {
         const sa = (fs.statSync(a).mtimeMs || 0);
         const sb = (fs.statSync(b).mtimeMs || 0);
-        return sb - sa; // più recente prima
+        return sb - sa;
       });
 
       for (const file of cand) {
@@ -360,26 +328,51 @@ async function ensureLicense() {
     }
   }
 
-  log('error', 'Licenza mancante: genera LIC/SIG col license-generator allineato alla tua public key, poi usa LICENSE_TEXT/CODE o LICENSE_FILE, oppure incolla da TTY.');
+  log('error', 'Licenza mancante: genera LIC/SIG col license-generator allineato alla tua public key.');
   process.exit(1);
 }
 
+// ====== Helper per IP locale ======
+function getLocalIP() {
+  try {
+    const nets = os.networkInterfaces();
+    for (const name of Object.keys(nets)) {
+      for (const net of nets[name]) {
+        if (net.family === 'IPv4' && !net.internal) {
+          return net.address;
+        }
+      }
+    }
+  } catch {}
+  return '192.168.1.X';
+}
 
 // ====== admin server (health/logs/status) con rate-limit + header di sicurezza ======
-function startAdminServer(stateRef) {
+function startAdminServer(stateRef, actionsRef) {
   const app = express();
 
-  // Header difensivi minimi
+  // Body parser
+  app.use(express.json({ limit: '50kb' }));
+
+  // ✅ UNICO blocco CORS + Security Headers
   app.use((req, res, next) => {
+    // Security headers
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('X-Frame-Options', 'DENY');
     res.setHeader('Referrer-Policy', 'no-referrer');
     res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
+
+    // CORS (dashboard può girare da file://)
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Admin-Token');
+    
+    if (req.method === 'OPTIONS') return res.status(204).end();
     next();
   });
 
-  // Rate limit ingenuo per IP (60 req/min)
-  const bucket = new Map(); // ip -> {count, ts}
+  // Rate limit (60 req/min per IP)
+  const bucket = new Map();
   app.use((req, res, next) => {
     const ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').toString();
     const now = Date.now();
@@ -391,16 +384,88 @@ function startAdminServer(stateRef) {
     next();
   });
 
-  app.get('/health', (_req, res) => res.send('OK'));
-  app.get('/status', (_req, res) => res.json({ online: stateRef.online, lastError: stateRef.lastError }));
-  app.get('/logs', (_req, res) => res.type('text').send('logs not persisted in this minimal build'));
+  // ✅ Logging per debug (puoi commentare dopo il test)
+  app.use((req, res, next) => {
+    const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown';
+    console.log(`[${new Date().toISOString()}] ${req.method} ${req.path} da ${ip}`);
+    next();
+  });
 
-  // Porta sanificata
+  // Endpoints
+  app.get('/health', (_req, res) => {
+    console.log('✅ /health chiamato');
+    res.send('OK');
+  });
+
+  app.get('/status', (_req, res) => {
+    console.log('✅ /status chiamato:', { online: stateRef.online });
+    res.json({ online: stateRef.online, lastError: stateRef.lastError });
+  });
+
+  app.get('/logs', (_req, res) => {
+    res.type('text').send('logs not persisted in this minimal build');
+  });
+
+  // POST /api/send (invio WhatsApp)
+  app.post('/api/send', async (req, res) => {
+    try {
+      const requiredToken = String(process.env.ADMIN_TOKEN || '');
+      const gotToken = String(req.headers['x-admin-token'] || '');
+      
+      if (requiredToken && gotToken !== requiredToken) {
+        console.warn('❌ /api/send: unauthorized (token mismatch)');
+        return res.status(401).json({ ok: false, error: 'unauthorized' });
+      }
+
+      const to = String(req.body?.to || '').trim();
+      const message = String(req.body?.message || req.body?.msg || '').trim();
+
+      if (!to || !message) {
+        console.warn('❌ /api/send: missing to or message');
+        return res.status(400).json({ ok: false, error: 'missing_to_or_message' });
+      }
+      
+      if (!/^\d{5,20}@c\.us$/i.test(to)) {
+        console.warn(`❌ /api/send: invalid to format: ${to}`);
+        return res.status(400).json({ ok: false, error: 'invalid_to_format' });
+      }
+      
+      if (!actionsRef?.sendText) {
+        console.warn('❌ /api/send: client not ready');
+        return res.status(503).json({ ok: false, error: 'client_not_ready' });
+      }
+      
+      if (message.length > 4000) {
+        console.warn('❌ /api/send: message too long');
+        return res.status(413).json({ ok: false, error: 'message_too_long' });
+      }
+
+      console.log(`📤 Invio a ${to}: ${message.slice(0, 50)}${message.length > 50 ? '...' : ''}`);
+      await actionsRef.sendText(to, message);
+      console.log(`✅ Messaggio inviato a ${to}`);
+      return res.json({ ok: true });
+      
+    } catch (e) {
+      console.error('❌ /api/send error:', e);
+      return res.status(500).json({ ok: false, error: e?.message || String(e) });
+    }
+  });
+
   const port = (() => {
     const v = Number(process.env.ADMIN_PORT || 3000);
     return Number.isFinite(v) && v >= 1024 && v <= 65535 ? v : 3000;
   })();
-  app.listen(port, () => log('info', `Admin HTTP su :${port}`));
+
+  // ✅ Ascolta su 0.0.0.0 (tutte le interfacce)
+  app.listen(port, '0.0.0.0', () => {
+    console.log(`\n${'='.repeat(60)}`);
+    console.log(`✅ Admin HTTP Server ATTIVO`);
+    console.log(`${'='.repeat(60)}`);
+    console.log(`📍 Porta: ${port}`);
+    console.log(`🌐 Da questo PC:    http://127.0.0.1:${port}/health`);
+    console.log(`📱 Da telefono:     http://${getLocalIP()}:${port}/health`);
+    console.log(`${'='.repeat(60)}\n`);
+  });
 }
 
 // ====== main ======
@@ -409,10 +474,11 @@ async function main() {
   await warmOllama();
 
   const status = { online: false, lastError: null };
-  startAdminServer(status);
+  const actions = { sendText: null };
+  startAdminServer(status, actions);
 
-  // Hardening: Chrome path e argomenti safe (Windows)
-  const defaultChrome = 'C:\\\\Program Files\\\\Google\\\\Chrome\\\\Application\\\\chrome.exe';
+  // Hardening: Chrome path e argomenti safe
+  const defaultChrome = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
   let chromePath = (process.env.CHROME_PATH || defaultChrome).trim();
   if (!fs.existsSync(chromePath)) {
     log('warn', 'CHROME_PATH non trovato, fallback a default');
@@ -449,26 +515,32 @@ async function main() {
 
   let client;
   try {
-    client = await launchClient(false);        // headful
+    client = await launchClient(false);
   } catch (e1) {
     log('warn', 'Launch headful fallito, riprovo headless=new', e1?.message || e1);
     try {
-      client = await launchClient('new');      // Chrome 112+
+      client = await launchClient('new');
     } catch (e2) {
       log('error', 'Launch headless fallito', e2?.message || e2);
       throw e2;
     }
   }
-setInterval(() => {
-  remind24hTick((to, msg) => client.sendText(to, msg), { graceMinutes: 10, batchLimit: 200 })
-    .catch(err => console.warn("remind24hTick error:", err));
-}, 60_000);
-process.on('uncaughtException', (err) => {
-  console.error('💥 CRASH:', err);
-  process.exit(1); // pm2/nodemon riavvierà automaticamente
-});
 
+  // Tick reminder 24h (ogni minuto)
+  setInterval(() => {
+    remind24hTick((to, msg) => client.sendText(to, msg), { graceMinutes: 10, batchLimit: 200 })
+      .catch(err => console.warn("remind24hTick error:", err));
+  }, 60_000);
+
+  // Uncaught exception handler
+  process.on('uncaughtException', (err) => {
+    console.error('💥 CRASH:', err);
+    process.exit(1);
+  });
+
+  actions.sendText = (to, msg) => client.sendText(to, msg);
   status.online = true;
+  
   debugDataDir();
   log('info', 'WhatsApp pronto per ricevere e rispondere a messaggi!');
 
@@ -478,18 +550,14 @@ process.on('uncaughtException', (err) => {
       try { client.forceRefocus?.(); } catch {}
     }
   });
-// entrypoint (server/index):
 
-// ogni 15 minuti controllo il prossimo "24h":
-// setInterval(() => reminder24hTick((to, msg) => client.sendText(to, msg), { windowMinutes: 15 }), 15 * 60 * 1000);
-
-  // === REVIEW LOOP (ogni 30 min, recupera fino a 3 giorni indietro) ===
+  // === REVIEW LOOP (ogni 30 min) ===
   startReviewFollowupsLoop(client, {
     intervalMinutes: 30,
     lookbackDays: 3,
     minAfterEndMinutes: 15,
     batchLimit: 20,
-    alignToHalfHour: true, // allinea a :00 e :30
+    alignToHalfHour: true,
   });
 
   // === CONFIRM CRON (promemoria conferma pre-appuntamento) ===
@@ -498,8 +566,13 @@ process.on('uncaughtException', (err) => {
     windowMinutes: 15,
     batchLimit: 50
   };
-  try { await confirmAppointmentsTick(safeSend, confirmOpts); }
-  catch (err) { log('warn', '[confirmAppointmentsTick] primo giro fallito', err?.message || err); }
+  
+  try { 
+    await confirmAppointmentsTick(safeSend, confirmOpts); 
+  } catch (err) { 
+    log('warn', '[confirmAppointmentsTick] primo giro fallito', err?.message || err); 
+  }
+  
   setInterval(() => {
     confirmAppointmentsTick(safeSend, confirmOpts)
       .catch(err => log('warn', '[confirmAppointmentsTick] errore', err?.message || err));
@@ -519,8 +592,6 @@ process.on('uncaughtException', (err) => {
         return;
       }
 
-      const state = getState(chatId);
-
       await handleMessage(client, chatId, text);
     } catch (e) {
       status.lastError = e?.message || String(e);
@@ -534,6 +605,7 @@ process.on('uncaughtException', (err) => {
     try { await client?.kill?.(); } catch {}
     process.exit(0);
   };
+  
   process.on('SIGINT', bye);
   process.on('SIGTERM', bye);
 }

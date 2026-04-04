@@ -1,0 +1,12077 @@
+<?php
+/**
+ * Synkris Dashboard + API (PostgreSQL) - single file
+ *
+ * Avvio locale:
+ *   php -S 127.0.0.1:8080 dashboard.php
+ *
+ * Poi apri:
+ *   http://127.0.0.1:8080/
+ *
+ * Endpoints:
+ *   GET /?r=config    -> configurazione dal DB (servizi, professionisti, orari)
+ *   GET /?r=bookings  -> prenotazioni dal DB
+ *
+ * Sicurezza (opzionale):
+ *   Se in .env hai ADMIN_TOKEN=..., allora devi inviare header: X-Admin-Token: <token>
+ */
+
+declare(strict_types=1);
+
+// Errori: abilitati solo in sviluppo
+error_reporting(E_ALL);
+$isProd = (strtolower(env('APP_ENV') ?? 'development') === 'production');
+ini_set('display_errors', $isProd ? '0' : '1');
+ini_set('display_startup_errors', $isProd ? '0' : '1');
+if ($isProd) {
+  ini_set('log_errors', '1'); // logga comunque lato server
+}
+
+header('X-Content-Type-Options: nosniff');
+
+function load_env_file(string $path): void {
+  if (!is_file($path)) return;
+  $lines = file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+  if (!$lines) return;
+  foreach ($lines as $line) {
+    $line = trim($line);
+    if ($line === '' || str_starts_with($line, '#')) continue;
+    $eq = strpos($line, '=');
+    if ($eq === false) continue;
+    $k = trim(substr($line, 0, $eq));
+    $v = trim(substr($line, $eq + 1));
+    // strip inline comments (only if not quoted)
+    if ($v !== '' && ($v[0] === '"' || $v[0] === "'")) {
+      $q = $v[0];
+      if (str_ends_with($v, $q)) $v = substr($v, 1, -1);
+    } else {
+      $hash = strpos($v, ' #');
+      if ($hash !== false) $v = trim(substr($v, 0, $hash));
+    }
+    if ($k === '') continue;
+    if (getenv($k) === false) {
+      putenv($k . '=' . $v);
+      $_ENV[$k] = $v;
+    }
+  }
+}
+
+function env(string $key, ?string $default = null): ?string {
+  $v = getenv($key);
+  if ($v === false || $v === '') return $default;
+  return $v;
+}
+
+function require_admin_token_if_set(): void {
+  $expected = env('ADMIN_TOKEN');
+  if (!$expected) return; // no auth configured
+  $hdr = $_SERVER['HTTP_X_ADMIN_TOKEN'] ?? '';
+  $got = trim((string)$hdr); // solo header, MAI query string (finirebbe nei log del server)
+  if (!hash_equals($expected, $got)) {
+    http_response_code(401);
+    header('Content-Type: application/json; charset=utf-8');
+    echo json_encode(['ok' => false, 'error' => 'unauthorized'], JSON_UNESCAPED_UNICODE);
+    exit;
+  }
+}
+
+function pdo_from_database_url(string $url): PDO {
+  // Supporta postgresql:// e postgres://
+  $url = trim($url);
+  if (str_starts_with($url, 'postgres://')) {
+    $url = 'postgresql://' . substr($url, strlen('postgres://'));
+  }
+
+  $p = parse_url($url);
+  if (!$p || empty($p['host']) || empty($p['path'])) {
+    throw new RuntimeException('DATABASE_URL non valida');
+  }
+
+  $host = (string)$p['host'];
+  $port = (int)($p['port'] ?? 5432);
+  $db   = ltrim((string)$p['path'], '/');
+  $user = isset($p['user']) ? urldecode((string)$p['user']) : '';
+  $pass = isset($p['pass']) ? urldecode((string)$p['pass']) : '';
+
+  // Parametri query (es: ?sslmode=require)
+  $q = [];
+  if (!empty($p['query'])) {
+    parse_str((string)$p['query'], $q);
+  }
+
+  $dsn = "pgsql:host={$host};port={$port};dbname={$db}";
+  if (isset($q['sslmode']) && is_string($q['sslmode']) && $q['sslmode'] !== '') {
+    $dsn .= ";sslmode=" . $q['sslmode'];
+  }
+
+  // PDO
+  $pdo = new PDO($dsn, $user, $pass, [
+    PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+    PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+  ]);
+
+  // timezone coerente
+  $tz = env('TZ', 'Europe/Rome');
+  if ($tz) {
+    try { $pdo->exec("SET TIME ZONE " . $pdo->quote($tz)); } catch (Throwable $e) {}
+  }
+
+  return $pdo;
+}
+
+
+function json_out($data, int $status = 200): void {
+  http_response_code($status);
+  header('Content-Type: application/json; charset=utf-8');
+  echo json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+}
+
+function api_config(PDO $pdo): array {
+  // professionals + emails
+  $pros = [];
+  $proById = []; // id => full_name
+  foreach ($pdo->query("SELECT professional_id, full_name FROM public.professionals ORDER BY professional_id") as $r) {
+    $proById[(int)$r['professional_id']] = (string)$r['full_name'];
+  }
+  $emailsByPro = []; // id => [emails]
+  foreach ($pdo->query("SELECT professional_id, email::text AS email FROM public.professional_emails ORDER BY professional_id") as $r) {
+    $pid = (int)$r['professional_id'];
+    $email = trim((string)$r['email']);
+    if ($email === '') continue;
+    $emailsByPro[$pid] = $emailsByPro[$pid] ?? [];
+    if (!in_array($email, $emailsByPro[$pid], true)) $emailsByPro[$pid][] = $email;
+  }
+  foreach ($emailsByPro as $pid => $emails) {
+    $name = $proById[$pid] ?? ('PRO#'.$pid);
+    foreach ($emails as $email) {
+      $pros[$email] = ['name' => $name];
+    }
+  }
+
+  // services
+  $svcRows = $pdo->query("SELECT service_id, service_name, default_duration_min, base_price AS price, materials_cost FROM public.services ORDER BY service_name")->fetchAll();
+  $svcById = [];
+  foreach ($svcRows as $r) {
+    $sid = (int)$r['service_id'];
+    $name = (string)$r['service_name'];
+    $svcById[$sid] = $name;
+  }
+
+  // synonyms/allergens
+  $synBySid = [];
+  foreach ($pdo->query("SELECT service_id, synonym FROM public.service_synonyms") as $r) {
+    $sid = (int)$r['service_id'];
+    $synBySid[$sid] = $synBySid[$sid] ?? [];
+    $synBySid[$sid][] = (string)$r['synonym'];
+  }
+  $allBySid = [];
+  foreach ($pdo->query("SELECT service_id, allergen FROM public.service_allergens") as $r) {
+    $sid = (int)$r['service_id'];
+    $allBySid[$sid] = $allBySid[$sid] ?? [];
+    $allBySid[$sid][] = (string)$r['allergen'];
+  }
+
+  // service -> professionals
+  $svcPros = []; // sid => [email,...]
+  $q = $pdo->query("SELECT professional_id, service_id FROM public.professional_services");
+  foreach ($q as $r) {
+    $pid = (int)$r['professional_id'];
+    $sid = (int)$r['service_id'];
+    $emails = $emailsByPro[$pid] ?? [];
+    if (!$emails) continue;
+    $svcPros[$sid] = $svcPros[$sid] ?? [];
+    foreach ($emails as $e) {
+      if (!in_array($e, $svcPros[$sid], true)) $svcPros[$sid][] = $e;
+    }
+  }
+
+  // professional durations
+  $pd = []; // sid => [email => duration]
+  $q = $pdo->query("SELECT professional_id, service_id, duration_min FROM public.professional_service_durations");
+  foreach ($q as $r) {
+    $pid = (int)$r['professional_id'];
+    $sid = (int)$r['service_id'];
+    $dur = (int)$r['duration_min'];
+    if ($dur <= 0) continue;
+    $emails = $emailsByPro[$pid] ?? [];
+    foreach ($emails as $e) {
+      $pd[$sid] = $pd[$sid] ?? [];
+      $pd[$sid][$e] = $dur;
+    }
+  }
+
+  $services = [];
+  foreach ($svcRows as $r) {
+    $sid = (int)$r['service_id'];
+    $name = (string)$r['service_name'];
+    $durationMin = (int)$r['default_duration_min'];
+    $price = $r['price'] !== null ? (float)$r['price'] : null;
+    $materialsCost = $r['materials_cost'] !== null ? (float)$r['materials_cost'] : 0.0;
+
+    $services[$name] = [
+      // la dashboard supporta sia durationMin che duration
+      'durationMin' => $durationMin,
+      'duration' => $durationMin,
+      'price' => $price ?? 0,
+      'materialsCost' => $materialsCost,
+      'professionals' => $svcPros[$sid] ?? [],
+      'allergens' => $allBySid[$sid] ?? [],
+      'synonyms' => $synBySid[$sid] ?? [],
+      'professionalDurations' => $pd[$sid] ?? new stdClass(),
+    ];
+  }
+
+  // business hours + closed days
+  $businessHours = [];
+  $closedDays = [];
+  $q = $pdo->query("SELECT weekday, open_time, close_time, is_closed FROM public.salon_business_hours ORDER BY weekday");
+  foreach ($q as $r) {
+    $w = (string)(int)$r['weekday'];
+    $isClosed = (bool)$r['is_closed'];
+    if ($isClosed) {
+      $closedDays[$w] = true;
+      continue;
+    }
+    $open = $r['open_time'] !== null ? substr((string)$r['open_time'], 0, 5) : null;
+    $close = $r['close_time'] !== null ? substr((string)$r['close_time'], 0, 5) : null;
+    if ($open && $close) $businessHours[$w] = [$open, $close];
+  }
+
+  // lunch breaks
+  $lunchBreaks = [];
+  $q = $pdo->query("SELECT weekday, start_time, end_time FROM public.salon_lunch_breaks ORDER BY weekday, start_time");
+  foreach ($q as $r) {
+    $w = (string)(int)$r['weekday'];
+    $s = substr((string)$r['start_time'], 0, 5);
+    $e = substr((string)$r['end_time'], 0, 5);
+    $lunchBreaks[$w] = $lunchBreaks[$w] ?? [];
+    // formato: array flat ["13:00","14:00","17:00","17:30"...]
+    $lunchBreaks[$w][] = $s;
+    $lunchBreaks[$w][] = $e;
+  }
+
+  // closed dates
+  $closedDates = [];
+  foreach ($pdo->query("SELECT day FROM public.salon_closed_dates ORDER BY day") as $r) {
+    $closedDates[] = (string)$r['day'];
+  }
+
+  // unavailability weekdays (full-day off)
+  $unavailability = []; // email => [{type:'day', days:[...]}]
+  $daysByPro = []; // pid => [weekday...]
+  foreach ($pdo->query("SELECT professional_id, weekday FROM public.professional_unavailable_weekdays") as $r) {
+    $pid = (int)$r['professional_id'];
+    $w = (string)(int)$r['weekday'];
+    $daysByPro[$pid] = $daysByPro[$pid] ?? [];
+    if (!in_array($w, $daysByPro[$pid], true)) $daysByPro[$pid][] = $w;
+  }
+  foreach ($daysByPro as $pid => $days) {
+    sort($days);
+    $rule = [['type' => 'day', 'days' => $days]];
+    foreach (($emailsByPro[$pid] ?? []) as $email) {
+      $unavailability[$email] = $rule;
+    }
+  }
+
+  return [
+    'services' => $services,
+    'professionals' => $pros,
+    'unavailability' => $unavailability,
+    'businessHours' => $businessHours,
+    'lunchBreaks' => $lunchBreaks,
+    'closedDays' => $closedDays,
+    'daysOff' => $closedDays, // compat (vecchi client)
+    'closedDates' => $closedDates,
+  ];
+}
+
+function api_bookings(PDO $pdo): array {
+  $limit = isset($_GET['limit']) ? max(1, min(5000, (int)$_GET['limit'])) : 2000;
+
+  $stmt = $pdo->prepare("
+    SELECT id, event_id, phone_key, start_ms, created_at, updated_at, data::text AS data_txt
+    FROM public.bookings
+    ORDER BY start_ms DESC NULLS LAST, id DESC
+    LIMIT :lim
+  ");
+  $stmt->bindValue(':lim', $limit, PDO::PARAM_INT);
+  $stmt->execute();
+
+  $out = [];
+  while ($r = $stmt->fetch()) {
+    $obj = json_decode((string)$r['data_txt'], true);
+    if (!is_array($obj)) $obj = [];
+    // fallback compat
+    if (!isset($obj['eventId']) && !empty($r['event_id'])) $obj['eventId'] = $r['event_id'];
+    if (!isset($obj['startMs']) && $r['start_ms'] !== null) $obj['startMs'] = (int)$r['start_ms'];
+    if (!isset($obj['clientPhone']) && !empty($r['phone_key'])) $obj['clientPhone'] = (string)$r['phone_key'];
+    if (!isset($obj['createdAt']) && !empty($r['created_at'])) $obj['createdAt'] = (string)$r['created_at'];
+    if (!isset($obj['updatedAt']) && !empty($r['updated_at'])) $obj['updatedAt'] = (string)$r['updated_at'];
+
+    $out[] = $obj;
+  }
+  return $out;
+}
+
+// ---- bootstrap env ----
+// Cerca .env in questa cartella e risalendo (utile se dashboard.php sta in "configs & dashboard")
+$dir = __DIR__;
+$seen = [];
+for ($i = 0; $i < 6; $i++) {
+  $p = $dir . DIRECTORY_SEPARATOR . '.env';
+  if (!isset($seen[$p])) {
+    $seen[$p] = true;
+    load_env_file($p);
+  }
+  $parent = dirname($dir);
+  if ($parent === $dir) break;
+  $dir = $parent;
+}
+
+// ---- routing ----
+$uri = $_SERVER['REQUEST_URI'] ?? '/';
+$path = parse_url($uri, PHP_URL_PATH) ?: '/';
+
+$route = $_GET['r'] ?? '';
+$route = is_string($route) ? trim($route) : '';
+
+if ($route === '' && ($path === '/api/config' || str_ends_with($path, '/api/config'))) $route = 'config';
+if ($route === '' && ($path === '/api/bookings' || str_ends_with($path, '/api/bookings'))) $route = 'bookings';
+if ($route === '' && ($path === '/api/health' || str_ends_with($path, '/api/health'))) $route = 'health';
+
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+  // Preflight: restringe l'origine se CORS_ORIGIN è impostato in .env
+  $allowedOrigin = env('CORS_ORIGIN', '*');
+  header('Access-Control-Allow-Origin: ' . $allowedOrigin);
+  header('Access-Control-Allow-Headers: Content-Type, X-Admin-Token');
+  header('Access-Control-Allow-Methods: GET, POST, OPTIONS');
+  exit;
+}
+
+if ($route === 'health') {
+  $allowedOrigin = env('CORS_ORIGIN', '*');
+  header('Access-Control-Allow-Origin: ' . $allowedOrigin);
+  require_admin_token_if_set();
+
+  $dbUrl = env('DATABASE_URL');
+  if (!$dbUrl) {
+    json_out(['ok' => false, 'db' => false, 'error' => 'DATABASE_URL mancante (controlla dove sta .env)'], 500);
+    exit;
+  }
+
+  try {
+    $pdo = pdo_from_database_url($dbUrl);
+    $pdo->query("SELECT 1")->fetch();
+    $counts = [
+      'services' => (int)$pdo->query("SELECT count(*) FROM public.services")->fetchColumn(),
+      'professionals' => (int)$pdo->query("SELECT count(*) FROM public.professionals")->fetchColumn(),
+      'bookings' => (int)$pdo->query("SELECT count(*) FROM public.bookings")->fetchColumn(),
+    ];
+    json_out(['ok' => true, 'db' => true, 'counts' => $counts]);
+    exit;
+  } catch (Throwable $e) {
+    json_out(['ok' => false, 'db' => false, 'error' => $e->getMessage()], 500);
+    exit;
+  }
+}
+
+if ($route === 'config' || $route === 'bookings') {
+  $allowedOrigin = env('CORS_ORIGIN', '*');
+  header('Access-Control-Allow-Origin: ' . $allowedOrigin);
+  require_admin_token_if_set();
+
+  $dbUrl = env('DATABASE_URL');
+  if (!$dbUrl) {
+    json_out(['ok' => false, 'error' => 'DATABASE_URL mancante'], 500);
+    exit;
+  }
+
+  try {
+    $pdo = pdo_from_database_url($dbUrl);
+    if ($route === 'config') {
+      json_out(api_config($pdo));
+      exit;
+    }
+    if ($route === 'bookings') {
+      json_out(api_bookings($pdo));
+      exit;
+    }
+  } catch (Throwable $e) {
+    json_out(['ok' => false, 'error' => $e->getMessage()], 500);
+    exit;
+  }
+}
+
+// ============================================================
+// WRITE ENDPOINTS (POST)
+// ============================================================
+
+/**
+ * Helpers per trovare/creare entità nel DB relazionale
+ */
+
+/** Trova un professionista per email o nome → professional_id oppure null */
+function find_professional_id(PDO $pdo, string $emailOrName): ?int {
+  if (!$emailOrName) return null;
+  // prova prima per email (tabella professional_emails)
+  $s = $pdo->prepare("SELECT professional_id FROM public.professional_emails WHERE lower(email::text) = lower(:v) LIMIT 1");
+  $s->execute([':v' => $emailOrName]);
+  $r = $s->fetchColumn();
+  if ($r !== false) return (int)$r;
+  // poi per nome (tabella professionals)
+  $s = $pdo->prepare("SELECT professional_id FROM public.professionals WHERE lower(full_name) = lower(:v) LIMIT 1");
+  $s->execute([':v' => $emailOrName]);
+  $r = $s->fetchColumn();
+  return $r !== false ? (int)$r : null;
+}
+
+/** Trova un servizio per nome → service_id oppure null */
+function find_service_id(PDO $pdo, string $name): ?int {
+  if (!$name) return null;
+  $s = $pdo->prepare("SELECT service_id FROM public.services WHERE lower(service_name) = lower(:v) LIMIT 1");
+  $s->execute([':v' => $name]);
+  $r = $s->fetchColumn();
+  if ($r !== false) return (int)$r;
+  // prova anche synonyms
+  $s = $pdo->prepare("SELECT service_id FROM public.service_synonyms WHERE lower(synonym) = lower(:v) LIMIT 1");
+  $s->execute([':v' => $name]);
+  $r = $s->fetchColumn();
+  return $r !== false ? (int)$r : null;
+}
+
+/** Trova o crea un cliente per nome → client_id */
+function find_or_create_client(PDO $pdo, string $name, ?string $phoneKey): int {
+  $name = trim($name) ?: 'Cliente';
+
+  // cerca per numero di telefono (più affidabile)
+  if ($phoneKey) {
+    $s = $pdo->prepare("
+      SELECT cc.client_id FROM public.client_contacts cc
+      WHERE cc.type = 'phone' AND cc.value = :ph
+      LIMIT 1
+    ");
+    $s->execute([':ph' => $phoneKey]);
+    $r = $s->fetchColumn();
+    if ($r !== false) return (int)$r;
+  }
+
+  // cerca per nome esatto (case-insensitive)
+  $s = $pdo->prepare("SELECT client_id FROM public.clients WHERE lower(full_name) = lower(:n) LIMIT 1");
+  $s->execute([':n' => $name]);
+  $r = $s->fetchColumn();
+  if ($r !== false) return (int)$r;
+
+  // crea nuovo cliente
+  $s = $pdo->prepare("INSERT INTO public.clients (full_name) VALUES (:n) RETURNING client_id");
+  $s->execute([':n' => $name]);
+  $clientId = (int)$s->fetchColumn();
+
+  // salva contatto telefono se disponibile
+  if ($phoneKey) {
+    try {
+      $s = $pdo->prepare("
+        INSERT INTO public.client_contacts (client_id, type, value)
+        VALUES (:cid, 'phone', :ph)
+        ON CONFLICT DO NOTHING
+      ");
+      $s->execute([':cid' => $clientId, ':ph' => $phoneKey]);
+      // anche whatsapp_chat
+      $chatId = $phoneKey . '@c.us';
+      $s = $pdo->prepare("
+        INSERT INTO public.client_contacts (client_id, type, value)
+        VALUES (:cid, 'whatsapp_chat', :ch)
+        ON CONFLICT DO NOTHING
+      ");
+      $s->execute([':cid' => $clientId, ':ch' => $chatId]);
+    } catch (Throwable $e) { /* ignora conflitti */ }
+  }
+
+  return $clientId;
+}
+
+/** Upsert nell'appointments table; ritorna appointment_id */
+function upsert_appointment(
+  PDO $pdo,
+  int $clientId,
+  int $professionalId,
+  string $startIso,   // ISO 8601
+  string $endIso,
+  string $status,
+  ?string $eventId    // Google Calendar event_id
+): int {
+  // se abbiamo event_id, cerchiamo l'appointment esistente
+  $existingApptId = null;
+  if ($eventId) {
+    $s = $pdo->prepare("
+      SELECT appointment_id FROM public.appointment_calendar
+      WHERE event_id = :eid LIMIT 1
+    ");
+    $s->execute([':eid' => $eventId]);
+    $r = $s->fetchColumn();
+    if ($r !== false) $existingApptId = (int)$r;
+  }
+
+  if ($existingApptId) {
+    // aggiorna
+    $s = $pdo->prepare("
+      UPDATE public.appointments
+      SET client_id       = :cid,
+          professional_id = :pid,
+          start_time      = :st::timestamptz,
+          end_time        = :et::timestamptz,
+          status          = :status,
+          updated_at      = now()
+      WHERE appointment_id = :aid
+    ");
+    $s->execute([
+      ':cid'    => $clientId,
+      ':pid'    => $professionalId,
+      ':st'     => $startIso,
+      ':et'     => $endIso,
+      ':status' => $status,
+      ':aid'    => $existingApptId,
+    ]);
+    return $existingApptId;
+  } else {
+    // crea nuovo
+    $s = $pdo->prepare("
+      INSERT INTO public.appointments (client_id, professional_id, start_time, end_time, status)
+      VALUES (:cid, :pid, :st::timestamptz, :et::timestamptz, :status)
+      RETURNING appointment_id
+    ");
+    $s->execute([
+      ':cid'    => $clientId,
+      ':pid'    => $professionalId,
+      ':st'     => $startIso,
+      ':et'     => $endIso,
+      ':status' => $status,
+    ]);
+    $apptId = (int)$s->fetchColumn();
+
+    // collega event_id in appointment_calendar
+    if ($eventId) {
+      try {
+        $s = $pdo->prepare("
+          INSERT INTO public.appointment_calendar (appointment_id, provider, event_id)
+          VALUES (:aid, 'dashboard', :eid)
+          ON CONFLICT (appointment_id) DO UPDATE SET event_id = EXCLUDED.event_id
+        ");
+        $s->execute([':aid' => $apptId, ':eid' => $eventId]);
+      } catch (Throwable $e) { /* ignora se già esiste */ }
+    }
+
+    return $apptId;
+  }
+}
+
+if (in_array($route, ['booking_save', 'booking_delete', 'booking_status'], true)) {
+  $allowedOrigin = env('CORS_ORIGIN', '*');
+  header('Access-Control-Allow-Origin: ' . $allowedOrigin);
+  header('Access-Control-Allow-Headers: Content-Type, X-Admin-Token');
+  header('Access-Control-Allow-Methods: POST, OPTIONS');
+  require_admin_token_if_set();
+
+  if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+    json_out(['ok' => false, 'error' => 'POST required'], 405);
+    exit;
+  }
+
+  $dbUrl = env('DATABASE_URL');
+  if (!$dbUrl) {
+    json_out(['ok' => false, 'error' => 'DATABASE_URL mancante'], 500);
+    exit;
+  }
+
+  $raw   = file_get_contents('php://input');
+  $body  = json_decode($raw ?: '{}', true);
+  if (!is_array($body)) {
+    json_out(['ok' => false, 'error' => 'JSON non valido'], 400);
+    exit;
+  }
+
+  try {
+    $pdo = pdo_from_database_url($dbUrl);
+
+    // ---- booking_save: upsert sia in bookings (JSONB) sia in appointments (relazionale) ----
+    if ($route === 'booking_save') {
+      $booking  = $body['booking'] ?? $body;
+
+      // eventId: se manca, usa 'id' (nella dashboard spesso id==eventId)
+      $eventId = null;
+      if (isset($booking['eventId']))   $eventId = trim((string)$booking['eventId']);
+      if ((!$eventId || $eventId === '') && isset($booking['event_id'])) $eventId = trim((string)$booking['event_id']);
+      if ((!$eventId || $eventId === '') && isset($booking['id']))       $eventId = trim((string)$booking['id']);
+      if ($eventId === '') $eventId = null;
+
+      $phoneRaw = isset($booking['clientPhone'])   ? trim((string)$booking['clientPhone'])   :
+                 (isset($booking['phone'])         ? trim((string)$booking['phone'])         : null);
+      $phoneKey = $phoneRaw
+        ? preg_replace('/[^\d]/', '', preg_replace('/@c\.us$/i', '', $phoneRaw))
+        : null;
+
+      $startMs  = isset($booking['startMs'])    ? (int)$booking['startMs']  :
+                 (isset($booking['start_ms'])   ? (int)$booking['start_ms'] : null);
+      $endMs    = isset($booking['endMs'])      ? (int)$booking['endMs']    :
+                 (isset($booking['end_ms'])     ? (int)$booking['end_ms']   : null);
+      $durationMin = (int)($booking['durationMin'] ?? $booking['duration_min'] ?? 30);
+
+      // Se la dashboard invia solo ISO (date/end), ricava startMs/endMs
+      $tzName = env('TZ', 'Europe/Rome') ?: 'Europe/Rome';
+      try { $tzObj = new DateTimeZone($tzName); } catch (Throwable $e) { $tzObj = new DateTimeZone('Europe/Rome'); }
+
+      if (!$startMs) {
+        $startStr = null;
+        foreach (['date','startTime','start'] as $k) {
+          if (isset($booking[$k]) && trim((string)$booking[$k]) !== '') { $startStr = trim((string)$booking[$k]); break; }
+        }
+        if ($startStr) {
+          try { $dt = new DateTimeImmutable($startStr, $tzObj); $startMs = $dt->getTimestamp() * 1000; } catch (Throwable $e) {}
+        }
+      }
+
+      if (!$endMs) {
+        $endStr = null;
+        foreach (['end','endTime'] as $k) {
+          if (isset($booking[$k]) && trim((string)$booking[$k]) !== '') { $endStr = trim((string)$booking[$k]); break; }
+        }
+        if ($endStr) {
+          try { $dt = new DateTimeImmutable($endStr, $tzObj); $endMs = $dt->getTimestamp() * 1000; } catch (Throwable $e) {}
+        }
+      }
+
+      // Calcola end_ms se mancante
+      if (!$endMs && $startMs && $durationMin > 0) {
+        $endMs = $startMs + $durationMin * 60000;
+      }
+
+      // Mantieni campi "chiave" dentro JSON (utile al client e per futuri upsert)
+      if ($eventId) $booking['eventId'] = $eventId;
+      if ($startMs) $booking['startMs'] = $startMs;
+      if ($endMs)   $booking['endMs']   = $endMs;
+      if ($phoneRaw && !isset($booking['clientPhone'])) $booking['clientPhone'] = $phoneRaw;
+
+      // Converti ms → ISO 8601
+      $startIso = $startMs ? (new DateTimeImmutable('@' . intdiv($startMs, 1000)))->format('c') : null;
+      $endIso   = $endMs   ? (new DateTimeImmutable('@' . intdiv($endMs,   1000)))->format('c') : null;
+
+      $customerName    = trim((string)($booking['customerName']     ?? $booking['customer_name'] ?? ''));
+      $serviceName     = trim((string)($booking['service']          ?? ''));
+      $proEmail        = trim((string)($booking['professionalEmail'] ?? $booking['professional_email'] ?? ''));
+      $proName         = trim((string)($booking['professionalName']  ?? $booking['professional_name']  ?? ''));
+      $statusRaw       = trim((string)($booking['status'] ?? 'confirmed'));
+      $allowedStatuses = ['confirmed', 'cancelled', 'canceled', 'pending', 'hold'];
+      $status          = in_array($statusRaw, $allowedStatuses, true) ? $statusRaw : 'confirmed';
+
+      // ---- 1. Upsert bookings (JSONB) ----
+// Nota: NON usiamo "ON CONFLICT ON CONSTRAINT ..." perché nel tuo DB i vincoli potrebbero non esistere
+// (vedi errore: constraint ux_bookings_event_id non trovato). Facciamo un upsert "manuale" (UPDATE->INSERT)
+// così funziona anche senza unique constraint.
+$booking['updatedAt'] = date('c');
+$dataJson = json_encode($booking, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+$bookingDbId = null;
+
+try {
+  $pdo->beginTransaction();
+
+  if ($eventId !== null && $eventId !== '') {
+    // prova ad aggiornare l'ultima riga con lo stesso event_id
+    $s = $pdo->prepare("
+      UPDATE public.bookings
+      SET phone_key = :pk,
+          start_ms  = :sms,
+          data      = :data::jsonb,
+          updated_at= now()
+      WHERE id = (
+        SELECT id FROM public.bookings
+        WHERE event_id = :eid
+        ORDER BY id DESC
+        LIMIT 1
+      )
+      RETURNING id
+    ");
+    $s->execute([':eid'=>$eventId, ':pk'=>$phoneKey, ':sms'=>$startMs, ':data'=>$dataJson]);
+    $id = $s->fetchColumn();
+
+    if ($id !== false && $id !== null) {
+      $bookingDbId = (int)$id;
+    } else {
+      // non esiste ancora: inserisci
+      $s = $pdo->prepare("
+        INSERT INTO public.bookings (event_id, phone_key, start_ms, data, created_at, updated_at)
+        VALUES (:eid, :pk, :sms, :data::jsonb, now(), now())
+        RETURNING id
+      ");
+      $s->execute([':eid'=>$eventId, ':pk'=>$phoneKey, ':sms'=>$startMs, ':data'=>$dataJson]);
+      $bookingDbId = (int)$s->fetchColumn();
+    }
+
+  } elseif ($phoneKey && $startMs) {
+    // prova ad aggiornare l'ultima riga con stessa (phone_key, start_ms)
+    $s = $pdo->prepare("
+      UPDATE public.bookings
+      SET event_id  = CASE WHEN :eid IS NOT NULL AND :eid <> '' THEN :eid ELSE event_id END,
+          data      = :data::jsonb,
+          updated_at= now()
+      WHERE id = (
+        SELECT id FROM public.bookings
+        WHERE phone_key = :pk AND start_ms = :sms
+        ORDER BY id DESC
+        LIMIT 1
+      )
+      RETURNING id
+    ");
+    $s->execute([':eid'=>($eventId ?: null), ':pk'=>$phoneKey, ':sms'=>$startMs, ':data'=>$dataJson]);
+    $id = $s->fetchColumn();
+
+    if ($id !== false && $id !== null) {
+      $bookingDbId = (int)$id;
+    } else {
+      $s = $pdo->prepare("
+        INSERT INTO public.bookings (event_id, phone_key, start_ms, data, created_at, updated_at)
+        VALUES (:eid, :pk, :sms, :data::jsonb, now(), now())
+        RETURNING id
+      ");
+      $s->execute([':eid'=>($eventId ?: null), ':pk'=>$phoneKey, ':sms'=>$startMs, ':data'=>$dataJson]);
+      $bookingDbId = (int)$s->fetchColumn();
+    }
+
+  } else {
+    // fallback: inserisci e basta
+    $s = $pdo->prepare("
+      INSERT INTO public.bookings (event_id, phone_key, start_ms, data, created_at, updated_at)
+      VALUES (:eid, :pk, :sms, :data::jsonb, now(), now())
+      RETURNING id
+    ");
+    $s->execute([':eid'=>($eventId ?: null), ':pk'=>$phoneKey, ':sms'=>$startMs, ':data'=>$dataJson]);
+    $bookingDbId = (int)$s->fetchColumn();
+  }
+
+  $pdo->commit();
+} catch (Throwable $e) {
+  if ($pdo->inTransaction()) $pdo->rollBack();
+  throw $e;
+}
+
+// ---- 2. Upsert appointments (relazionale) — solo se abbiamo dati sufficienti ----
+      $apptId = null;
+      $apptWarning = null;
+      if ($customerName && $startIso && $endIso) {
+        $professionalId = find_professional_id($pdo, $proEmail ?: $proName);
+        if (!$professionalId) {
+          $apptWarning = "professionale '$proEmail$proName' non trovato in professionals";
+        } else {
+          $clientId = find_or_create_client($pdo, $customerName, $phoneKey);
+          $apptId   = upsert_appointment($pdo, $clientId, $professionalId, $startIso, $endIso, $status, $eventId);
+
+          // Upsert appointment_services
+          if ($apptId && $serviceName) {
+            $serviceId = find_service_id($pdo, $serviceName);
+            if ($serviceId) {
+              $s = $pdo->prepare("
+                INSERT INTO public.appointment_services (appointment_id, service_id, duration_min)
+                VALUES (:aid, :sid, :dur)
+                ON CONFLICT (appointment_id, service_id)
+                DO UPDATE SET duration_min = EXCLUDED.duration_min
+              ");
+              $s->execute([':aid'=>$apptId, ':sid'=>$serviceId, ':dur'=>$durationMin]);
+            }
+          }
+        }
+      } else {
+        $apptWarning = "dati incompleti per appointments relazionale (cliente, start, end)";
+      }
+
+      json_out([
+        'ok'           => true,
+        'bookingId'    => $bookingDbId,
+        'appointmentId'=> $apptId,
+        'warning'      => $apptWarning,
+      ]);
+      exit;
+    }
+
+    // ---- booking_delete: elimina da bookings E da appointments ----
+    if ($route === 'booking_delete') {
+      $eventId = isset($body['eventId']) ? trim((string)$body['eventId']) : null;
+      $dbId    = isset($body['dbId'])    ? (int)$body['dbId']             : null;
+
+      $deletedBookings = 0;
+      $deletedAppts    = 0;
+
+      // elimina da appointments (via appointment_calendar.event_id)
+      if ($eventId) {
+        $s = $pdo->prepare("
+          DELETE FROM public.appointments
+          WHERE appointment_id IN (
+            SELECT appointment_id FROM public.appointment_calendar WHERE event_id = :eid
+          )
+        ");
+        $s->execute([':eid' => $eventId]);
+        $deletedAppts = $s->rowCount();
+      }
+
+      // elimina da bookings
+      if ($eventId) {
+        $s = $pdo->prepare("DELETE FROM public.bookings WHERE event_id = :eid");
+        $s->execute([':eid' => $eventId]);
+        $deletedBookings = $s->rowCount();
+      }
+      if ($deletedBookings === 0 && $dbId) {
+        $s = $pdo->prepare("DELETE FROM public.bookings WHERE id = :id");
+        $s->execute([':id' => $dbId]);
+        $deletedBookings = $s->rowCount();
+      }
+
+      json_out(['ok' => true, 'deletedBookings' => $deletedBookings, 'deletedAppointments' => $deletedAppts]);
+      exit;
+    }
+
+    // ---- booking_status: aggiorna status in bookings JSONB E in appointments ----
+    if ($route === 'booking_status') {
+      $eventId = isset($body['eventId']) ? trim((string)$body['eventId']) : null;
+      $status  = isset($body['status'])  ? trim((string)$body['status'])  : 'confirmed';
+      $allowed = ['confirmed', 'cancelled', 'canceled', 'pending', 'hold'];
+      if (!in_array($status, $allowed, true)) {
+        json_out(['ok' => false, 'error' => 'status non valido'], 400);
+        exit;
+      }
+      if (!$eventId) {
+        json_out(['ok' => false, 'error' => 'eventId mancante'], 400);
+        exit;
+      }
+
+      // aggiorna bookings JSONB
+      $s = $pdo->prepare("
+        UPDATE public.bookings
+        SET data = jsonb_set(data, '{status}', :status::jsonb),
+            updated_at = now()
+        WHERE event_id = :eid
+      ");
+      $s->execute([':status' => json_encode($status), ':eid' => $eventId]);
+      $updatedBookings = $s->rowCount();
+
+      // aggiorna appointments.status
+      $s = $pdo->prepare("
+        UPDATE public.appointments
+        SET status = :status, updated_at = now()
+        WHERE appointment_id IN (
+          SELECT appointment_id FROM public.appointment_calendar WHERE event_id = :eid
+        )
+      ");
+      $s->execute([':status' => $status, ':eid' => $eventId]);
+      $updatedAppts = $s->rowCount();
+
+      json_out(['ok' => true, 'updatedBookings' => $updatedBookings, 'updatedAppointments' => $updatedAppts]);
+      exit;
+    }
+
+  } catch (Throwable $e) {
+    json_out(['ok' => false, 'error' => $e->getMessage()], 500);
+    exit;
+  }
+}
+// ============================================================
+// GESTIONE DB: professionals, categories, services, appointments
+// ============================================================
+
+if (in_array($route, [
+  'db_professionals','db_professional_save','db_professional_delete',
+  'db_categories','db_category_save','db_category_delete','db_category_services_update',
+  'db_services','db_service_save','db_service_delete',
+  'db_appointments','db_appointment_save','db_appointment_cancel','db_appointment_delete',
+  'db_appointment_statuses',
+], true)) {
+  $allowedOrigin = env('CORS_ORIGIN', '*');
+  header('Access-Control-Allow-Origin: ' . $allowedOrigin);
+  require_admin_token_if_set();
+
+  $dbUrl = env('DATABASE_URL');
+  if (!$dbUrl) { json_out(['ok'=>false,'error'=>'DATABASE_URL mancante'],500); exit; }
+
+  try {
+    $pdo = pdo_from_database_url($dbUrl);
+  } catch (Throwable $e) { json_out(['ok'=>false,'error'=>$e->getMessage()],500); exit; }
+
+  try {
+
+    // ---- PROFESSIONALS ----
+    if ($route === 'db_professionals') {
+      $rows = $pdo->query("
+        SELECT p.professional_id, p.full_name, p.is_active, p.created_at,
+               COALESCE(array_agg(pe.email::text) FILTER (WHERE pe.email IS NOT NULL), '{}') AS emails,
+               COALESCE(array_agg(DISTINCT pu.weekday) FILTER (WHERE pu.weekday IS NOT NULL), '{}') AS off_days,
+               COALESCE(array_agg(DISTINCT ps.service_id) FILTER (WHERE ps.service_id IS NOT NULL), '{}') AS service_ids
+        FROM public.professionals p
+        LEFT JOIN public.professional_emails pe ON pe.professional_id = p.professional_id
+        LEFT JOIN public.professional_unavailable_weekdays pu ON pu.professional_id = p.professional_id
+        LEFT JOIN public.professional_services ps ON ps.professional_id = p.professional_id
+        GROUP BY p.professional_id
+        ORDER BY p.full_name
+      ")->fetchAll();
+      $out = [];
+      foreach ($rows as $r) {
+        $emails = array_filter(array_map('trim', explode(',', trim($r['emails'],'{}'))));
+        $offDays = array_filter(array_map('intval', explode(',', trim($r['off_days'],'{}'))));
+        $svcIds = array_filter(array_map('intval', explode(',', trim($r['service_ids'],'{}'))));
+        $out[] = [
+          'id'         => (int)$r['professional_id'],
+          'full_name'  => $r['full_name'],
+          'is_active'  => (bool)$r['is_active'],
+          'created_at' => $r['created_at'],
+          'emails'     => array_values($emails),
+          'off_days'   => array_values(array_map('intval', array_filter($offDays, fn($x) => $x > 0))),
+          'service_ids'=> array_values(array_map('intval', array_filter($svcIds, fn($x) => $x > 0))),
+        ];
+      }
+      json_out(['ok'=>true,'data'=>$out]); exit;
+    }
+
+    if ($route === 'db_professional_save') {
+      $body = json_decode(file_get_contents('php://input'),true) ?: [];
+      $id        = isset($body['id']) ? (int)$body['id'] : 0;
+      $fullName  = trim((string)($body['full_name'] ?? ''));
+      $isActive  = isset($body['is_active']) ? (bool)$body['is_active'] : true;
+      $emails    = array_filter(array_map('trim', (array)($body['emails'] ?? [])));
+      $offDays   = array_filter(array_map('intval', (array)($body['off_days'] ?? [])));
+      $serviceIds= array_filter(array_map('intval', (array)($body['service_ids'] ?? [])));
+
+      if (!$fullName) { json_out(['ok'=>false,'error'=>'Nome obbligatorio'],400); exit; }
+
+      $pdo->beginTransaction();
+      if ($id > 0) {
+        $s = $pdo->prepare("UPDATE public.professionals SET full_name=:fn, is_active=:ia WHERE professional_id=:id");
+        $s->execute([':fn'=>$fullName,':ia'=>$isActive?'1':'0',':id'=>$id]);
+      } else {
+        $s = $pdo->prepare("INSERT INTO public.professionals(full_name,is_active) VALUES(:fn,:ia) RETURNING professional_id");
+        $s->execute([':fn'=>$fullName,':ia'=>$isActive?'1':'0']);
+        $id = (int)$s->fetchColumn();
+      }
+      // emails
+      $pdo->prepare("DELETE FROM public.professional_emails WHERE professional_id=:id")->execute([':id'=>$id]);
+      foreach ($emails as $email) {
+        if (!$email) continue;
+        $pdo->prepare("INSERT INTO public.professional_emails(professional_id,email) VALUES(:id,:e) ON CONFLICT DO NOTHING")
+            ->execute([':id'=>$id,':e'=>$email]);
+      }
+      // off days
+      $pdo->prepare("DELETE FROM public.professional_unavailable_weekdays WHERE professional_id=:id")->execute([':id'=>$id]);
+      foreach ($offDays as $wd) {
+        if ($wd<1||$wd>7) continue;
+        $pdo->prepare("INSERT INTO public.professional_unavailable_weekdays(professional_id,weekday) VALUES(:id,:wd) ON CONFLICT DO NOTHING")
+            ->execute([':id'=>$id,':wd'=>$wd]);
+      }
+      // services
+      $pdo->prepare("DELETE FROM public.professional_services WHERE professional_id=:id")->execute([':id'=>$id]);
+      foreach ($serviceIds as $sid) {
+        if ($sid<1) continue;
+        $pdo->prepare("INSERT INTO public.professional_services(professional_id,service_id) VALUES(:id,:sid) ON CONFLICT DO NOTHING")
+            ->execute([':id'=>$id,':sid'=>$sid]);
+      }
+      $pdo->commit();
+      json_out(['ok'=>true,'id'=>$id]); exit;
+    }
+
+    if ($route === 'db_professional_delete') {
+      $body = json_decode(file_get_contents('php://input'),true) ?: [];
+      $id = (int)($body['id']??0);
+      if (!$id) { json_out(['ok'=>false,'error'=>'id mancante'],400); exit; }
+      // check if professional has future appointments
+      $stmt = $pdo->prepare("SELECT count(*) FROM public.appointments WHERE professional_id=:id AND status NOT IN ('cancelled','completed','no_show') AND start_time > now()");
+      $stmt->execute([':id'=>$id]);
+      $future = (int)$stmt->fetchColumn();
+      if ($future > 0) {
+        json_out(['ok'=>false,'error'=>"Impossibile eliminare: il professionista ha $future appuntamenti futuri attivi"],409); exit;
+      }
+      $pdo->prepare("DELETE FROM public.professionals WHERE professional_id=:id")->execute([':id'=>$id]);
+      json_out(['ok'=>true]); exit;
+    }
+
+    // ---- CATEGORIES ----
+    if ($route === 'db_categories') {
+      $rows = $pdo->query("
+        SELECT c.category_id, c.category_name, c.slug, c.display_order, c.is_active,
+               count(s.service_id) AS service_count
+        FROM public.service_categories c
+        LEFT JOIN public.services s ON s.category_id = c.category_id AND s.is_active = true
+        GROUP BY c.category_id
+        ORDER BY c.display_order, c.category_name
+      ")->fetchAll();
+      $out = [];
+      foreach ($rows as $r) {
+        $out[] = [
+          'id'            => (int)$r['category_id'],
+          'category_name' => $r['category_name'],
+          'slug'          => $r['slug'] ?? '',
+          'display_order' => (int)$r['display_order'],
+          'is_active'     => (bool)$r['is_active'],
+          'service_count' => (int)$r['service_count'],
+        ];
+      }
+      json_out(['ok'=>true,'data'=>$out]); exit;
+    }
+
+    if ($route === 'db_category_save') {
+      $body = json_decode(file_get_contents('php://input'),true) ?: [];
+      $id    = isset($body['id']) ? (int)$body['id'] : 0;
+      $name  = trim((string)($body['category_name'] ?? ''));
+      $slug  = trim((string)($body['slug'] ?? ''));
+      $order = (int)($body['display_order'] ?? 1000);
+      $active= isset($body['is_active']) ? (bool)$body['is_active'] : true;
+      if (!$name) { json_out(['ok'=>false,'error'=>'Nome categoria obbligatorio'],400); exit; }
+      if (!$slug) $slug = strtolower(preg_replace('/[^a-zA-Z0-9]+/','-', $name));
+      if ($id > 0) {
+        $pdo->prepare("UPDATE public.service_categories SET category_name=:n,slug=:sl,display_order=:o,is_active=:a,updated_at=now() WHERE category_id=:id")
+            ->execute([':n'=>$name,':sl'=>$slug,':o'=>$order,':a'=>$active?'1':'0',':id'=>$id]);
+      } else {
+        $s = $pdo->prepare("INSERT INTO public.service_categories(category_name,slug,display_order,is_active) VALUES(:n,:sl,:o,:a) RETURNING category_id");
+        $s->execute([':n'=>$name,':sl'=>$slug,':o'=>$order,':a'=>$active?'1':'0']);
+        $id = (int)$s->fetchColumn();
+      }
+      json_out(['ok'=>true,'id'=>$id]); exit;
+    }
+
+    if ($route === 'db_category_delete') {
+      $body = json_decode(file_get_contents('php://input'),true) ?: [];
+      $id = (int)($body['id']??0);
+      if (!$id) { json_out(['ok'=>false,'error'=>'id mancante'],400); exit; }
+      $s = $pdo->prepare("SELECT count(*) FROM public.services WHERE category_id=:id AND is_active=true");
+      $s->execute([':id'=>$id]); $cnt = (int)$s->fetchColumn();
+      if ($cnt>0) { json_out(['ok'=>false,'error'=>"Categoria ha $cnt trattamenti attivi: sposta o disattiva prima"],409); exit; }
+      $pdo->prepare("DELETE FROM public.service_categories WHERE category_id=:id")->execute([':id'=>$id]);
+      json_out(['ok'=>true]); exit;
+    }
+
+    if ($route === 'db_category_services_update') {
+      $body = json_decode(file_get_contents('php://input'),true) ?: [];
+      $catId = isset($body['category_id']) && $body['category_id'] ? (int)$body['category_id'] : null;
+      $svcIds = array_map('intval', (array)($body['service_ids'] ?? []));
+      if (!$svcIds) { json_out(['ok'=>false,'error'=>'service_ids mancanti'],400); exit; }
+      // Update each service to belong to this category (or null if catId is null)
+      if ($catId) {
+        $catRow = $pdo->prepare("SELECT category_name FROM public.service_categories WHERE category_id=:id");
+        $catRow->execute([':id'=>$catId]);
+        $catName = ($catRow->fetchColumn()) ?: '';
+      } else {
+        $catName = null;
+      }
+      $placeholders = implode(',', array_fill(0, count($svcIds), '?'));
+      $stmt = $pdo->prepare("UPDATE public.services SET category_id=?, category=? WHERE service_id IN ($placeholders)");
+      $params = array_merge([$catId, $catName], $svcIds);
+      $stmt->execute($params);
+      json_out(['ok'=>true,'updated'=>$stmt->rowCount()]); exit;
+    }
+
+    // ---- SERVICES ----
+    if ($route === 'db_services') {
+      $rows = $pdo->query("
+        SELECT s.service_id, s.service_name, s.default_duration_min, s.base_price, s.materials_cost,
+               s.is_active, s.display_order, s.emoji, s.category_id,
+               c.category_name,
+               COALESCE(array_agg(DISTINCT syn.synonym) FILTER (WHERE syn.synonym IS NOT NULL), '{}') AS synonyms,
+               count(DISTINCT ps.professional_id) AS pro_count
+        FROM public.services s
+        LEFT JOIN public.service_categories c ON c.category_id = s.category_id
+        LEFT JOIN public.service_synonyms syn ON syn.service_id = s.service_id
+        LEFT JOIN public.professional_services ps ON ps.service_id = s.service_id
+        GROUP BY s.service_id, c.category_name, c.display_order
+        ORDER BY c.display_order NULLS LAST, s.display_order, s.service_name
+      ")->fetchAll();
+      $out = [];
+      foreach ($rows as $r) {
+        $syns = array_filter(array_map('trim', explode(',', trim($r['synonyms'],'{}'))));
+        $out[] = [
+          'id'                  => (int)$r['service_id'],
+          'service_name'        => $r['service_name'],
+          'default_duration_min'=> (int)$r['default_duration_min'],
+          'base_price'          => $r['base_price'] !== null ? (float)$r['base_price'] : null,
+          'materials_cost'      => $r['materials_cost'] !== null ? (float)$r['materials_cost'] : null,
+          'is_active'           => (bool)$r['is_active'],
+          'display_order'       => (int)$r['display_order'],
+          'emoji'               => $r['emoji'] ?? '',
+          'category_id'         => $r['category_id'] ? (int)$r['category_id'] : null,
+          'category_name'       => $r['category_name'] ?? '',
+          'synonyms'            => array_values($syns),
+          'pro_count'           => (int)$r['pro_count'],
+        ];
+      }
+      json_out(['ok'=>true,'data'=>$out]); exit;
+    }
+
+    if ($route === 'db_service_save') {
+      $body = json_decode(file_get_contents('php://input'),true) ?: [];
+      $id       = isset($body['id']) ? (int)$body['id'] : 0;
+      $name     = trim((string)($body['service_name'] ?? ''));
+      $dur      = max(1,(int)($body['default_duration_min']??30));
+      $price    = isset($body['base_price']) && $body['base_price']!==null && $body['base_price']!=='' ? (float)$body['base_price'] : null;
+      $matcost  = isset($body['materials_cost']) && $body['materials_cost']!==null && $body['materials_cost']!=='' ? (float)$body['materials_cost'] : null;
+      $active   = isset($body['is_active']) ? (bool)$body['is_active'] : true;
+      $order    = (int)($body['display_order']??1000);
+      $emoji    = trim((string)($body['emoji']??''));
+      $catId    = isset($body['category_id']) && $body['category_id'] ? (int)$body['category_id'] : null;
+      $synonyms = array_filter(array_map('trim', (array)($body['synonyms']??[])));
+      $catName  = '';
+      if (!$name) { json_out(['ok'=>false,'error'=>'Nome trattamento obbligatorio'],400); exit; }
+      if ($catId) {
+        $r = $pdo->prepare("SELECT category_name FROM public.service_categories WHERE category_id=:id");
+        $r->execute([':id'=>$catId]);
+        $catRow = $r->fetch();
+        if ($catRow) $catName = $catRow['category_name'];
+      }
+      $pdo->beginTransaction();
+      if ($id > 0) {
+        $pdo->prepare("UPDATE public.services SET service_name=:n,default_duration_min=:d,base_price=:p,materials_cost=:mc,is_active=:a,display_order=:o,emoji=:e,category_id=:cid,category=:cat WHERE service_id=:id")
+            ->execute([':n'=>$name,':d'=>$dur,':p'=>$price,':mc'=>$matcost,':a'=>$active?'1':'0',':o'=>$order,':e'=>$emoji?:null,':cid'=>$catId,':cat'=>$catName?:null,':id'=>$id]);
+      } else {
+        $s = $pdo->prepare("INSERT INTO public.services(service_name,default_duration_min,base_price,materials_cost,is_active,display_order,emoji,category_id,category) VALUES(:n,:d,:p,:mc,:a,:o,:e,:cid,:cat) RETURNING service_id");
+        $s->execute([':n'=>$name,':d'=>$dur,':p'=>$price,':mc'=>$matcost,':a'=>$active?'1':'0',':o'=>$order,':e'=>$emoji?:null,':cid'=>$catId,':cat'=>$catName?:null]);
+        $id = (int)$s->fetchColumn();
+      }
+      // synonyms
+      $pdo->prepare("DELETE FROM public.service_synonyms WHERE service_id=:id")->execute([':id'=>$id]);
+      foreach ($synonyms as $syn) {
+        if (!$syn) continue;
+        $pdo->prepare("INSERT INTO public.service_synonyms(service_id,synonym) VALUES(:id,:syn) ON CONFLICT DO NOTHING")
+            ->execute([':id'=>$id,':syn'=>$syn]);
+      }
+      $pdo->commit();
+      json_out(['ok'=>true,'id'=>$id]); exit;
+    }
+
+    if ($route === 'db_service_delete') {
+      $body = json_decode(file_get_contents('php://input'),true) ?: [];
+      $id = (int)($body['id']??0);
+      if (!$id) { json_out(['ok'=>false,'error'=>'id mancante'],400); exit; }
+      $s = $pdo->prepare("SELECT count(*) FROM public.appointments a JOIN public.appointment_services aps ON aps.appointment_id=a.appointment_id WHERE aps.service_id=:id AND a.status NOT IN ('cancelled','completed','no_show') AND a.start_time > now()");
+      $s->execute([':id'=>$id]); $cnt = (int)$s->fetchColumn();
+      if ($cnt>0) { json_out(['ok'=>false,'error'=>"Il trattamento ha $cnt appuntamenti futuri attivi"],409); exit; }
+      $pdo->prepare("DELETE FROM public.services WHERE service_id=:id")->execute([':id'=>$id]);
+      json_out(['ok'=>true]); exit;
+    }
+
+    // ---- APPOINTMENTS ----
+    if ($route === 'db_appointments') {
+      $limit = isset($_GET['limit']) ? min(1000,(int)$_GET['limit']) : 200;
+      $status = isset($_GET['status']) ? trim((string)$_GET['status']) : '';
+      $from   = isset($_GET['from'])   ? trim((string)$_GET['from'])   : '';
+      $to_d   = isset($_GET['to'])     ? trim((string)$_GET['to'])     : '';
+
+      $where = ['1=1'];
+      $params = [];
+      if ($status && in_array($status,['pending','confirmed','completed','cancelled','no_show'],true)) {
+        $where[] = 'a.status = :st';
+        $params[':st'] = $status;
+      }
+      if ($from) { $where[] = 'a.start_time >= :fr'; $params[':fr'] = $from; }
+      if ($to_d) { $where[] = 'a.start_time < :to'; $params[':to'] = $to_d; }
+
+      $whereStr = implode(' AND ', $where);
+      $q = $pdo->prepare("
+        SELECT a.appointment_id, a.start_time, a.end_time, a.status, a.notes, a.created_at, a.updated_at,
+               c.client_id, c.full_name AS client_name,
+               p.professional_id, p.full_name AS professional_name,
+               s.service_id, s.service_name,
+               s.base_price,
+               aps.duration_min,
+               ac.event_id AS calendar_event_id
+        FROM public.appointments a
+        JOIN public.clients c ON c.client_id = a.client_id
+        LEFT JOIN public.professionals p ON p.professional_id = a.professional_id
+        JOIN public.services s ON s.service_id = a.service_id
+        LEFT JOIN public.appointment_services aps ON aps.appointment_id = a.appointment_id AND aps.service_id = a.service_id
+        LEFT JOIN public.appointment_calendar ac ON ac.appointment_id = a.appointment_id
+        WHERE $whereStr
+        ORDER BY a.start_time DESC
+        LIMIT :lim
+      ");
+      foreach ($params as $k => $v) $q->bindValue($k, $v);
+      $q->bindValue(':lim', $limit, PDO::PARAM_INT);
+      $q->execute();
+      $rows = $q->fetchAll();
+      $out = [];
+      foreach ($rows as $r) {
+        $out[] = [
+          'id'                 => (int)$r['appointment_id'],
+          'start_time'         => $r['start_time'],
+          'end_time'           => $r['end_time'],
+          'status'             => $r['status'],
+          'notes'              => $r['notes'] ?? '',
+          'created_at'         => $r['created_at'],
+          'updated_at'         => $r['updated_at'],
+          'client_id'          => (int)$r['client_id'],
+          'client_name'        => $r['client_name'],
+          'professional_id'    => $r['professional_id'] ? (int)$r['professional_id'] : null,
+          'professional_name'  => $r['professional_name'] ?? '',
+          'service_id'         => (int)$r['service_id'],
+          'service_name'       => $r['service_name'],
+          'base_price'         => $r['base_price'] !== null ? (float)$r['base_price'] : null,
+          'duration_min'       => $r['duration_min'] ? (int)$r['duration_min'] : null,
+          'calendar_event_id'  => $r['calendar_event_id'] ?? null,
+        ];
+      }
+      json_out(['ok'=>true,'data'=>$out]); exit;
+    }
+
+    if ($route === 'db_appointment_save') {
+      $body = json_decode(file_get_contents('php://input'),true) ?: [];
+      $id         = isset($body['id']) ? (int)$body['id'] : 0;
+      $clientId   = (int)($body['client_id'] ?? 0);
+      $proId      = isset($body['professional_id']) && $body['professional_id'] ? (int)$body['professional_id'] : null;
+      $serviceId  = (int)($body['service_id'] ?? 0);
+      $startTime  = trim((string)($body['start_time'] ?? ''));
+      $endTime    = trim((string)($body['end_time'] ?? ''));
+      $status     = trim((string)($body['status'] ?? 'confirmed'));
+      $notes      = trim((string)($body['notes'] ?? ''));
+      $durationMin= (int)($body['duration_min'] ?? 0);
+      $allowedStatuses = ['pending','confirmed','completed','cancelled','no_show'];
+      if (!in_array($status,$allowedStatuses,true)) $status='confirmed';
+      if (!$clientId || !$serviceId || !$startTime || !$endTime) {
+        json_out(['ok'=>false,'error'=>'Dati obbligatori mancanti (client_id, service_id, start_time, end_time)'],400); exit;
+      }
+      // Compute duration from timestamps if not provided
+      if ($durationMin <= 0) {
+        try {
+          $s1 = new DateTimeImmutable($startTime);
+          $s2 = new DateTimeImmutable($endTime);
+          $durationMin = max(1, (int)(($s2->getTimestamp() - $s1->getTimestamp()) / 60));
+        } catch (Throwable $e) { $durationMin = 30; }
+      }
+      $pdo->beginTransaction();
+      if ($id > 0) {
+        $pdo->prepare("UPDATE public.appointments SET client_id=:cid,professional_id=:pid,service_id=:sid,start_time=:st,end_time=:et,status=:sta,notes=:no,updated_at=now() WHERE appointment_id=:id")
+            ->execute([':cid'=>$clientId,':pid'=>$proId,':sid'=>$serviceId,':st'=>$startTime,':et'=>$endTime,':sta'=>$status,':no'=>$notes?:null,':id'=>$id]);
+      } else {
+        $s = $pdo->prepare("INSERT INTO public.appointments(client_id,professional_id,service_id,start_time,end_time,status,notes) VALUES(:cid,:pid,:sid,:st,:et,:sta,:no) RETURNING appointment_id");
+        $s->execute([':cid'=>$clientId,':pid'=>$proId,':sid'=>$serviceId,':st'=>$startTime,':et'=>$endTime,':sta'=>$status,':no'=>$notes?:null]);
+        $id = (int)$s->fetchColumn();
+      }
+      // upsert appointment_services
+      $pdo->prepare("INSERT INTO public.appointment_services(appointment_id,service_id,duration_min) VALUES(:aid,:sid,:d) ON CONFLICT(appointment_id,service_id) DO UPDATE SET duration_min=EXCLUDED.duration_min")
+          ->execute([':aid'=>$id,':sid'=>$serviceId,':d'=>$durationMin]);
+      $pdo->commit();
+      json_out(['ok'=>true,'id'=>$id]); exit;
+    }
+
+    if ($route === 'db_appointment_cancel') {
+      $body = json_decode(file_get_contents('php://input'),true) ?: [];
+      $id = (int)($body['id']??0);
+      $newStatus = trim((string)($body['status']??'cancelled'));
+      $allowed = ['cancelled','no_show','completed','confirmed','pending'];
+      if (!in_array($newStatus,$allowed,true)) $newStatus='cancelled';
+      if (!$id) { json_out(['ok'=>false,'error'=>'id mancante'],400); exit; }
+      $pdo->prepare("UPDATE public.appointments SET status=:s,updated_at=now() WHERE appointment_id=:id")
+          ->execute([':s'=>$newStatus,':id'=>$id]);
+      json_out(['ok'=>true]); exit;
+    }
+
+    if ($route === 'db_appointment_delete') {
+      $body = json_decode(file_get_contents('php://input'),true) ?: [];
+      $id = (int)($body['id']??0);
+      if (!$id) { json_out(['ok'=>false,'error'=>'id mancante'],400); exit; }
+      $pdo->prepare("DELETE FROM public.appointments WHERE appointment_id=:id")->execute([':id'=>$id]);
+      json_out(['ok'=>true]); exit;
+    }
+
+    if ($route === 'db_appointment_statuses') {
+      json_out(['ok'=>true,'data'=>['pending','confirmed','completed','cancelled','no_show']]); exit;
+    }
+
+  } catch (Throwable $e) {
+    if (isset($pdo) && $pdo->inTransaction()) try { $pdo->rollBack(); } catch (Throwable $e2) {}
+    json_out(['ok'=>false,'error'=>$e->getMessage()],500); exit;
+  }
+}
+
+// default: dashboard HTML
+header('Content-Type: text/html; charset=utf-8');
+echo file_get_contents(__FILE__, false, null, __COMPILER_HALT_OFFSET__);
+exit;
+
+__halt_compiler();
+<!DOCTYPE html>
+<html lang="it" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>synkris Dashboard Pro</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.10/index.global.min.css">
+<script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.10/index.global.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<style>
+/* Skeleton loading animation */
+@keyframes skeleton-shimmer {
+  0%   { background-position: -800px 0; }
+  100% { background-position: 800px 0; }
+}
+.skeleton {
+  background: linear-gradient(90deg, var(--bg-tertiary) 25%, var(--bg-secondary) 50%, var(--bg-tertiary) 75%);
+  background-size: 800px 100%;
+  animation: skeleton-shimmer 1.5s infinite linear;
+  border-radius: var(--radius-md);
+}
+.skeleton-kpi {
+  height: 110px;
+  width: 100%;
+}
+.skeleton-text {
+  height: 16px;
+  margin-bottom: 8px;
+  width: 80%;
+}
+.skeleton-text.short { width: 40%; }
+
+/* Toast stack (multiple toasts) */
+.toast-stack {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: center;
+  pointer-events: none;
+}
+
+/* ========== MODALITÀ FACILE (per utenti meno abituati al digitale) ========== */
+[data-easy-mode="1"] body,
+[data-easy-mode="1"] {
+  font-size: 20px !important;
+  line-height: 1.6 !important;
+}
+
+[data-easy-mode="1"] .form-label {
+  font-size: 17px !important;
+  font-weight: 700 !important;
+  color: var(--text-primary) !important;
+  margin-bottom: 10px !important;
+}
+
+[data-easy-mode="1"] .form-input,
+[data-easy-mode="1"] .form-select,
+[data-easy-mode="1"] .form-textarea {
+  font-size: 19px !important;
+  padding: 16px 20px !important;
+  border-radius: 14px !important;
+  border: 2px solid var(--glass-border) !important;
+  min-height: 58px !important;
+}
+
+[data-easy-mode="1"] .form-input:focus,
+[data-easy-mode="1"] .form-select:focus {
+  border-color: var(--accent) !important;
+  border-width: 3px !important;
+  box-shadow: 0 0 0 4px rgba(0,122,255,0.15) !important;
+}
+
+[data-easy-mode="1"] .btn {
+  font-size: 18px !important;
+  padding: 16px 32px !important;
+  min-height: 56px !important;
+  border-radius: 16px !important;
+  gap: 12px !important;
+}
+
+[data-easy-mode="1"] .btn-icon {
+  width: 54px !important;
+  height: 54px !important;
+  font-size: 22px !important;
+}
+
+[data-easy-mode="1"] .nav-item {
+  font-size: 18px !important;
+  padding: 14px 16px !important;
+  margin-bottom: 6px !important;
+  gap: 14px !important;
+}
+
+[data-easy-mode="1"] .nav-item-icon {
+  font-size: 26px !important;
+  width: 30px !important;
+}
+
+[data-easy-mode="1"] .kpi-value {
+  font-size: 40px !important;
+}
+
+[data-easy-mode="1"] .kpi-label {
+  font-size: 16px !important;
+}
+
+[data-easy-mode="1"] .modal-title {
+  font-size: 28px !important;
+}
+
+[data-easy-mode="1"] .card-title {
+  font-size: 24px !important;
+}
+
+[data-easy-mode="1"] .page-title {
+  font-size: 38px !important;
+}
+
+[data-easy-mode="1"] .badge {
+  font-size: 16px !important;
+  padding: 6px 16px !important;
+}
+
+[data-easy-mode="1"] .modal-close {
+  width: 44px !important;
+  height: 44px !important;
+  font-size: 32px !important;
+}
+
+/* Form hint (testo aiuto sotto i campi) */
+.form-hint {
+  font-size: 13px;
+  color: var(--text-tertiary);
+  margin-top: 5px;
+  display: block;
+}
+[data-easy-mode="1"] .form-hint {
+  font-size: 16px !important;
+  color: var(--text-secondary) !important;
+}
+
+/* Campo obbligatorio */
+.required-star {
+  color: var(--danger);
+  font-size: 18px;
+  margin-left: 3px;
+}
+
+/* Easy-mode toggle pill in sidebar */
+.easy-mode-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  border-radius: var(--radius-md);
+  background: var(--bg-tertiary);
+  cursor: pointer;
+  border: 1px solid var(--glass-border);
+  margin-bottom: 8px;
+  transition: all 0.2s;
+}
+.easy-mode-toggle:hover { background: var(--glass-bg); }
+.easy-mode-toggle .toggle-label {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+[data-easy-mode="1"] .easy-mode-toggle .toggle-label {
+  font-size: 17px !important;
+}
+.toggle-switch {
+  width: 44px; height: 24px;
+  background: var(--text-tertiary);
+  border-radius: 12px;
+  position: relative;
+  transition: background 0.2s;
+  flex-shrink: 0;
+}
+.toggle-switch::after {
+  content: '';
+  position: absolute;
+  width: 18px; height: 18px;
+  background: white;
+  border-radius: 50%;
+  top: 3px; left: 3px;
+  transition: transform 0.2s;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+}
+[data-easy-mode="1"] .toggle-switch {
+  background: var(--accent);
+}
+[data-easy-mode="1"] .toggle-switch::after {
+  transform: translateX(20px);
+}
+
+/* DB Sync indicator */
+.db-sync-bar {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  height: 3px;
+  background: var(--accent);
+  z-index: 9999;
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 0.3s ease, opacity 0.5s ease;
+  opacity: 0;
+}
+.db-sync-bar.syncing {
+  opacity: 1;
+  animation: syncProgress 1.5s ease-in-out infinite;
+}
+.db-sync-bar.sync-ok {
+  opacity: 1;
+  transform: scaleX(1);
+  background: var(--success);
+}
+.db-sync-bar.sync-err {
+  opacity: 1;
+  transform: scaleX(1);
+  background: var(--danger);
+}
+@keyframes syncProgress {
+  0%   { transform: scaleX(0); }
+  50%  { transform: scaleX(0.6); }
+  100% { transform: scaleX(0.9); }
+}
+
+/* Custom confirm dialog (più grande, più chiaro) */
+.confirm-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.7);
+  z-index: 8000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  backdrop-filter: blur(6px);
+  animation: fadeIn 0.2s ease;
+}
+.confirm-box {
+  background: var(--bg-secondary);
+  border-radius: var(--radius-xl);
+  padding: 36px 32px 28px;
+  max-width: 480px;
+  width: 100%;
+  box-shadow: var(--shadow-xl);
+  animation: slideUp 0.25s cubic-bezier(0.4,0,0.2,1);
+}
+.confirm-icon {
+  font-size: 52px;
+  text-align: center;
+  margin-bottom: 16px;
+}
+.confirm-title {
+  font-size: 22px;
+  font-weight: 800;
+  margin-bottom: 10px;
+  text-align: center;
+}
+.confirm-msg {
+  font-size: 16px;
+  color: var(--text-secondary);
+  margin-bottom: 28px;
+  text-align: center;
+  line-height: 1.5;
+}
+.confirm-actions {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+}
+[data-easy-mode="1"] .confirm-title { font-size: 28px !important; }
+[data-easy-mode="1"] .confirm-msg   { font-size: 20px !important; }
+[data-easy-mode="1"] .confirm-box   { padding: 44px 36px 32px !important; }
+
+/* Step wizard per nuova prenotazione */
+.wizard-steps {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 28px;
+  justify-content: center;
+}
+.wizard-step {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: 700;
+  background: var(--bg-tertiary);
+  color: var(--text-tertiary);
+  border: 2px solid transparent;
+  white-space: nowrap;
+}
+.wizard-step.active {
+  background: rgba(0,122,255,0.12);
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.wizard-step.done {
+  background: rgba(52,199,89,0.12);
+  color: var(--success);
+  border-color: var(--success);
+}
+[data-easy-mode="1"] .wizard-step { font-size: 16px !important; padding: 10px 20px !important; }
+
+/* Booking row — in easy mode, mostra label testo sotto l'icona */
+.action-btn-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+.action-btn-label {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  font-weight: 600;
+  white-space: nowrap;
+  display: none;
+}
+[data-easy-mode="1"] .action-btn-label {
+  display: block;
+}
+[data-easy-mode="1"] .action-btn-wrap .btn-icon { width: 50px !important; height: 50px !important; font-size: 22px !important; }
+
+/* Apple-style Variables & Theme */
+:root {
+  --bg-primary: #000000;
+  --bg-secondary: #1c1c1e;
+  --bg-tertiary: #2c2c2e;
+  --text-primary: #ffffff;
+  --text-secondary: #98989d;
+  --text-tertiary: #636366;
+  --accent: #007aff;
+  --accent-hover: #0051d5;
+  --success: #34c759;
+  --warning: #ff9500;
+  --danger: #ff3b30;
+  --purple: #af52de;
+  --pink: #ff2d55;
+  --teal: #5ac8fa;
+  
+  /* Glassmorphism */
+  --glass-bg: rgba(28, 28, 30, 0.8);
+  --glass-border: rgba(255, 255, 255, 0.1);
+  --blur: blur(20px);
+  
+  /* Spacing */
+  --spacing-xs: 4px;
+  --spacing-sm: 8px;
+  --spacing-md: 16px;
+  --spacing-lg: 24px;
+  --spacing-xl: 32px;
+  
+  /* Radius */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 20px;
+  --radius-xl: 28px;
+  
+  /* Shadows */
+  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.12);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.16);
+  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.24);
+  --shadow-xl: 0 16px 48px rgba(0, 0, 0, 0.32);
+}
+
+[data-theme="light"] {
+  --bg-primary: #f5f5f7;
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #f9f9f9;
+  --text-primary: #1d1d1f;
+  --text-secondary: #86868b;
+  --text-tertiary: #b0b0b5;
+  --accent: #007aff;
+  --accent-hover: #0051d5;
+  
+  --glass-bg: rgba(255, 255, 255, 0.8);
+  --glass-border: rgba(0, 0, 0, 0.1);
+  
+  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.04);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.08);
+  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.12);
+}
+
+* { 
+  box-sizing: border-box; 
+  margin: 0; 
+  padding: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', 'Helvetica Neue', Arial, sans-serif;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  line-height: 1.47059;
+  font-size: 17px;
+  font-weight: 400;
+  letter-spacing: -0.022em;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Glassmorphism effect */
+.glass {
+  background: var(--glass-bg);
+  backdrop-filter: saturate(180%) var(--blur);
+  -webkit-backdrop-filter: saturate(180%) var(--blur);
+  border: 1px solid var(--glass-border);
+}
+
+/* Layout */
+.app-container {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  min-height: 100vh;
+}
+
+/* Sidebar */
+.sidebar {
+  background: var(--bg-secondary);
+  padding: var(--spacing-lg);
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+  border-right: 1px solid var(--glass-border);
+  transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.sidebar::-webkit-scrollbar {
+  width: 6px;
+}
+
+.sidebar::-webkit-scrollbar-thumb {
+  background: var(--text-tertiary);
+  border-radius: 3px;
+}
+
+.logo {
+  font-size: 28px;
+  font-weight: 700;
+  margin-bottom: var(--spacing-xl);
+  background: linear-gradient(135deg, var(--accent), var(--teal));
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  letter-spacing: -0.04em;
+}
+
+.nav-section {
+  margin-bottom: var(--spacing-lg);
+}
+
+.nav-section-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: var(--spacing-sm);
+  padding: 0 var(--spacing-md);
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+  padding: 10px var(--spacing-md);
+  margin-bottom: var(--spacing-xs);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  text-decoration: none;
+  color: var(--text-primary);
+  font-size: 15px;
+  font-weight: 500;
+}
+
+.nav-item:hover {
+  background: var(--glass-bg);
+  backdrop-filter: var(--blur);
+  transform: scale(1.02);
+}
+
+.nav-item.active {
+  background: var(--accent);
+  color: white;
+  box-shadow: 0 4px 12px rgba(0, 122, 255, 0.3);
+}
+
+.nav-item-icon {
+  font-size: 20px;
+  width: 24px;
+  text-align: center;
+}
+
+/* Notification Badge */
+.notification-badge {
+  background: var(--danger);
+  color: white;
+  border-radius: 10px;
+  padding: 2px 8px;
+  font-size: 12px;
+  font-weight: 700;
+  margin-left: auto;
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+/* Main Content */
+.main-content {
+  padding: var(--spacing-xl);
+  max-width: 1600px;
+  background: var(--bg-primary);
+}
+
+/* Topbar */
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--spacing-xl);
+  flex-wrap: wrap;
+  gap: var(--spacing-md);
+}
+
+.topbar-left {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+}
+
+.page-title {
+  font-size: 34px;
+  font-weight: 700;
+  letter-spacing: -0.04em;
+  line-height: 1.1;
+}
+
+.page-subtitle {
+  font-size: 15px;
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.topbar-actions {
+  display: flex;
+  gap: var(--spacing-sm);
+  align-items: center;
+}
+
+/* Buttons */
+.btn {
+  padding: 10px 20px;
+  border: none;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 15px;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  text-decoration: none;
+  letter-spacing: -0.01em;
+}
+
+.btn:active {
+  transform: scale(0.96);
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: white;
+  box-shadow: 0 2px 8px rgba(0, 122, 255, 0.3);
+}
+
+.btn-primary:hover {
+  background: var(--accent-hover);
+  box-shadow: 0 4px 16px rgba(0, 122, 255, 0.4);
+  transform: translateY(-2px);
+}
+
+.btn-secondary {
+  background: var(--glass-bg);
+  color: var(--text-primary);
+  border: 1px solid var(--glass-border);
+  backdrop-filter: var(--blur);
+}
+
+.btn-secondary:hover {
+  background: var(--bg-tertiary);
+  border-color: var(--text-tertiary);
+}
+
+.btn-success {
+  background: var(--success);
+  color: white;
+}
+
+.btn-warning {
+  background: var(--warning);
+  color: white;
+}
+
+.btn-danger {
+  background: var(--danger);
+  color: white;
+}
+
+.btn-icon {
+  padding: 10px;
+  width: 40px;
+  height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Cards */
+.card {
+  background: var(--glass-bg);
+  backdrop-filter: saturate(180%) var(--blur);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-lg);
+  padding: var(--spacing-lg);
+  margin-bottom: var(--spacing-lg);
+  box-shadow: var(--shadow-sm);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.card:hover {
+  box-shadow: var(--shadow-md);
+  transform: translateY(-2px);
+}
+
+.card-title {
+  font-size: 22px;
+  font-weight: 700;
+  margin-bottom: var(--spacing-md);
+  letter-spacing: -0.03em;
+}
+
+/* KPI Grid */
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: var(--spacing-lg);
+  margin-bottom: var(--spacing-xl);
+}
+
+.kpi-card {
+  background: var(--glass-bg);
+  backdrop-filter: saturate(180%) var(--blur);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-lg);
+  padding: var(--spacing-lg);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.kpi-card:hover {
+  transform: translateY(-4px);
+  box-shadow: var(--shadow-lg);
+}
+
+.kpi-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  margin-bottom: var(--spacing-md);
+}
+
+.kpi-label {
+  font-size: 14px;
+  color: var(--text-secondary);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.kpi-icon {
+  font-size: 24px;
+  opacity: 0.8;
+}
+
+.kpi-value {
+  font-size: 32px;
+  font-weight: 700;
+  margin-bottom: var(--spacing-xs);
+  letter-spacing: -0.04em;
+}
+
+.kpi-trend {
+  font-size: 14px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.trend-up {
+  color: var(--success);
+}
+
+.trend-down {
+  color: var(--danger);
+}
+
+/* Notification Center */
+.notification-center {
+  position: fixed;
+  top: 80px;
+  right: 20px;
+  width: 380px;
+  max-height: 600px;
+  background: var(--glass-bg);
+  backdrop-filter: saturate(180%) var(--blur);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-xl);
+  z-index: 1000;
+  display: none;
+  flex-direction: column;
+}
+
+.notification-center.show {
+  display: flex;
+  animation: slideIn 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateY(-20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.notification-header {
+  padding: var(--spacing-lg);
+  border-bottom: 1px solid var(--glass-border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.notification-header h3 {
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.notification-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--spacing-md);
+}
+
+.notification-item {
+  padding: var(--spacing-md);
+  margin-bottom: var(--spacing-sm);
+  border-radius: var(--radius-md);
+  background: var(--bg-tertiary);
+  border-left: 3px solid var(--accent);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.notification-item:hover {
+  background: var(--bg-secondary);
+  transform: translateX(4px);
+}
+
+.notification-item.unread {
+  border-left-color: var(--warning);
+  background: rgba(255, 149, 0, 0.1);
+}
+
+.notification-time {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  margin-top: 4px;
+}
+
+/* Calendar Improvements */
+.fc {
+  background: transparent;
+}
+
+.fc .fc-button {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  color: var(--text-primary);
+  padding: 8px 16px;
+  border-radius: var(--radius-md);
+  font-weight: 600;
+  transition: all 0.2s;
+}
+
+.fc .fc-button:hover {
+  background: var(--bg-tertiary);
+  border-color: var(--text-secondary);
+}
+
+.fc .fc-button-primary:not(:disabled).fc-button-active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+
+.fc .fc-daygrid-day-number {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.fc .fc-col-header-cell {
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-weight: 700;
+  text-transform: uppercase;
+  font-size: 12px;
+  letter-spacing: 0.05em;
+}
+
+.fc .fc-daygrid-day {
+  background: var(--bg-secondary);
+}
+
+.fc .fc-daygrid-day:hover {
+  background: var(--bg-tertiary);
+}
+
+.fc .fc-daygrid-day.fc-day-today {
+  background: rgba(0, 122, 255, 0.1);
+}
+
+.fc-event {
+  border-radius: var(--radius-sm);
+  padding: 4px 8px;
+  font-weight: 600;
+  border: 1px solid var(--glass-border);
+  cursor: move;
+}
+
+.fc-event:hover {
+  opacity: 0.9;
+  transform: scale(1.02);
+}
+
+/* Charts Container */
+.charts-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+  gap: var(--spacing-lg);
+  margin-bottom: var(--spacing-xl);
+}
+
+.chart-container {
+  background: var(--glass-bg);
+  backdrop-filter: saturate(180%) var(--blur);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-lg);
+  padding: var(--spacing-lg);
+  height: 350px;
+}
+
+/* Quick Actions Panel */
+.quick-actions {
+  position: fixed;
+  bottom: 30px;
+  right: 30px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+  z-index: 999;
+}
+
+.quick-action-btn {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: white;
+  border: none;
+  font-size: 24px;
+  cursor: pointer;
+  box-shadow: var(--shadow-lg);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.quick-action-btn:hover {
+  transform: scale(1.1);
+  box-shadow: var(--shadow-xl);
+}
+
+.quick-action-btn.main {
+  width: 64px;
+  height: 64px;
+  font-size: 28px;
+}
+
+/* Modal */
+.modal {
+  display: none;
+  position: fixed;
+  z-index: 2000;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(0, 0, 0, 0.8);
+  backdrop-filter: blur(10px);
+  align-items: center;
+  justify-content: center;
+}
+
+.modal.show {
+  display: flex;
+  animation: fadeIn 0.3s;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.modal-content {
+  background: var(--bg-secondary);
+  border-radius: var(--radius-lg);
+  padding: var(--spacing-xl);
+  max-width: 600px;
+  width: 90%;
+  max-height: 90vh;
+  overflow-y: auto;
+  box-shadow: var(--shadow-xl);
+  animation: slideUp 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(40px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--spacing-lg);
+}
+
+.modal-title {
+  font-size: 24px;
+  font-weight: 700;
+}
+
+.modal-close {
+  background: none;
+  border: none;
+  font-size: 28px;
+  cursor: pointer;
+  color: var(--text-secondary);
+  transition: all 0.2s;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+}
+
+.modal-close:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+/* Form Elements */
+.form-group {
+  margin-bottom: var(--spacing-lg);
+}
+
+.form-label {
+  display: block;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: var(--spacing-sm);
+}
+
+.form-input, .form-select, .form-textarea {
+  width: 100%;
+  padding: 12px 16px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-size: 15px;
+  transition: all 0.2s;
+}
+
+.form-input:focus, .form-select:focus, .form-textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(0, 122, 255, 0.1);
+}
+
+.form-textarea {
+  resize: vertical;
+  min-height: 100px;
+}
+
+/* Toast Notifications */
+.toast {
+  position: fixed;
+  bottom: 30px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--glass-bg);
+  backdrop-filter: saturate(180%) var(--blur);
+  border: 1px solid var(--glass-border);
+  color: var(--text-primary);
+  padding: 16px 24px;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-xl);
+  z-index: 3000;
+  animation: toastSlide 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  font-weight: 600;
+}
+
+@keyframes toastSlide {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 20px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+
+/* Badge */
+.badge {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 12px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.badge-success {
+  background: var(--success);
+  color: white;
+}
+
+.badge-warning {
+  background: var(--warning);
+  color: white;
+}
+
+.badge-danger {
+  background: var(--danger);
+  color: white;
+}
+
+.badge-primary {
+  background: var(--accent);
+  color: white;
+}
+
+/* Empty State */
+.empty-state {
+  text-align: center;
+  padding: var(--spacing-xl);
+  color: var(--text-secondary);
+}
+
+.empty-state-icon {
+  font-size: 64px;
+  margin-bottom: var(--spacing-md);
+  opacity: 0.5;
+}
+
+.empty-state-title {
+  font-size: 18px;
+  font-weight: 600;
+  margin-bottom: var(--spacing-sm);
+}
+
+/* Responsive */
+@media (max-width: 1024px) {
+  .app-container {
+    grid-template-columns: 1fr;
+  }
+  
+  .sidebar {
+    position: fixed;
+    transform: translateX(-100%);
+    z-index: 1500;
+  }
+  
+  .sidebar.mobile-open {
+    transform: translateX(0);
+  }
+  
+  .charts-grid {
+    grid-template-columns: 1fr;
+  }
+  
+  .notification-center {
+    width: calc(100% - 40px);
+    right: 20px;
+  }
+}
+
+/* Mobile Sidebar Overlay + Menu Button */
+.sidebar-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+  z-index: 1400;
+}
+
+.sidebar-overlay.show {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.mobile-menu-fab {
+  position: fixed;
+  top: 18px;
+  left: 18px;
+  width: 48px;
+  height: 48px;
+  border-radius: 14px;
+  border: 1px solid var(--glass-border);
+  background: var(--glass-bg);
+  backdrop-filter: saturate(180%) var(--blur);
+  -webkit-backdrop-filter: saturate(180%) var(--blur);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-md);
+  cursor: pointer;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  z-index: 1600;
+}
+
+.mobile-menu-fab:active {
+  transform: scale(0.96);
+}
+
+@media (max-width: 1024px) {
+  .mobile-menu-fab {
+    display: flex;
+  }
+
+  /* più spazio sopra (sidebar/menu fixed) */
+  .main-content {
+    padding-top: 92px;
+  }
+}
+
+/* Quick Actions: menu a scomparsa (fulmine) */
+.quick-actions.collapsed .quick-action-btn:not(.main) {
+  opacity: 0;
+  transform: translateY(10px) scale(0.9);
+  pointer-events: none;
+}
+
+.quick-actions .quick-action-btn:not(.main) {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  transition: all 0.2s ease;
+}
+
+.quick-actions .quick-action-btn.main {
+  transition: transform 0.2s ease;
+}
+
+.quick-actions.expanded .quick-action-btn.main {
+  transform: rotate(45deg);
+}
+
+/* Loading Spinner */
+.spinner {
+  border: 3px solid var(--glass-border);
+  border-top: 3px solid var(--accent);
+  border-radius: 50%;
+  width: 40px;
+  height: 40px;
+  animation: spin 1s linear infinite;
+  margin: 20px auto;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+/* Calendar Layout + Filters */
+.calendar-layout{
+  display:grid;
+  grid-template-columns: 1fr 360px;
+  gap: var(--spacing-lg);
+  align-items:start;
+}
+.calendar-main-card{ min-height: 640px; }
+.calendar-sidebar{
+  display:flex;
+  flex-direction:column;
+  gap: var(--spacing-lg);
+}
+.cal-chip-wrap{
+  display:flex;
+  flex-wrap:wrap;
+  gap: 8px;
+}
+.cal-chip-wrap-scroll{
+  max-height: 240px;
+  overflow:auto;
+  padding-right: 4px;
+}
+.chip.active{
+  color: var(--text-primary);
+  border-color: rgba(10, 132, 255, 0.65);
+  box-shadow: 0 0 0 3px rgba(10, 132, 255, 0.15);
+}
+.cal-stats{
+  display:flex;
+  flex-direction:column;
+  gap: 10px;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+/* Filter blocks (Calendar + Prenotazioni) */
+.filters-toolbar{
+  display:flex;
+  flex-direction:column;
+  gap: 12px;
+}
+.filter-grid{
+  display:grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+}
+.filter-grid-2{
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.filter-field{ min-width: 0; }
+.filter-inline{
+  display:flex;
+  flex-direction:column;
+  justify-content:flex-end;
+  gap: 8px;
+}
+.filter-actions{
+  display:flex;
+  gap: 10px;
+  align-items:flex-end;
+  justify-content:flex-end;
+}
+.quick-chips{
+  display:flex;
+  flex-wrap:wrap;
+  gap: 8px;
+}
+.cal-day-list{
+  margin-top: 10px;
+  display:flex;
+  flex-direction:column;
+  gap: 10px;
+}
+.cal-day-item{
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid var(--glass-border);
+  background: var(--bg-tertiary);
+}
+.cal-day-item .row{
+  display:flex;
+  justify-content:space-between;
+  gap: 10px;
+  align-items:flex-start;
+}
+.cal-day-item .meta{
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 4px;
+  line-height: 1.35;
+}
+.cal-day-item .title{
+  font-weight: 800;
+  font-size: 14px;
+}
+.cal-day-actions{
+  display:flex;
+  gap: 8px;
+  align-items:center;
+}
+@media (max-width: 1024px){
+  .filter-grid-2{ grid-template-columns: 1fr; }
+  .filter-actions{ justify-content:stretch; }
+  .filter-actions .btn{ flex:1; }
+}
+
+/* Responsive calendar sidebar */
+@media (max-width: 1024px){
+  .calendar-layout{ grid-template-columns: 1fr; }
+  .calendar-main-card{ min-height: 520px; }
+}
+
+/* Calendar View Toggle */
+.calendar-view-toggle {
+
+  display: flex;
+  gap: var(--spacing-xs);
+  background: var(--bg-secondary);
+  padding: 4px;
+  border-radius: var(--radius-md);
+  margin-bottom: var(--spacing-md);
+}
+
+.calendar-view-btn {
+  padding: 8px 16px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  font-weight: 600;
+  transition: all 0.2s;
+}
+
+.calendar-view-btn.active {
+  background: var(--accent);
+  color: white;
+}
+
+/* Stats Panel */
+.stats-panel {
+  background: linear-gradient(135deg, var(--accent), var(--purple));
+  border-radius: var(--radius-lg);
+  padding: var(--spacing-xl);
+  color: white;
+  margin-bottom: var(--spacing-xl);
+}
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: var(--spacing-lg);
+  margin-top: var(--spacing-lg);
+}
+
+.stat-item {
+  text-align: center;
+}
+
+.stat-value {
+  font-size: 36px;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.stat-label {
+  font-size: 14px;
+  opacity: 0.9;
+  font-weight: 600;
+}
+
+/* ---------- Tools Modal (Coupon / Magazzino / Lista Attesa / Promemoria) ---------- */
+.modal-content-wide {
+  width: min(1100px, calc(100% - 48px));
+  max-height: calc(100% - 48px);
+  overflow: auto;
+}
+
+.tool-tabs {
+  display: flex;
+  gap: 10px;
+  padding: 0 var(--spacing-lg) var(--spacing-md);
+  margin-top: -4px;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.tool-tab-btn {
+  flex: 0 0 auto;
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--glass-border);
+  background: var(--glass-bg);
+  backdrop-filter: saturate(180%) var(--blur);
+  -webkit-backdrop-filter: saturate(180%) var(--blur);
+  color: var(--text-secondary);
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s;
+  user-select: none;
+}
+
+.tool-tab-btn.active {
+  color: var(--text-primary);
+  border-color: rgba(10, 132, 255, 0.65);
+  box-shadow: 0 0 0 3px rgba(10, 132, 255, 0.15);
+}
+
+.tool-layout {
+  display: grid;
+  grid-template-columns: 1.15fr 0.85fr;
+  gap: var(--spacing-lg);
+  padding: 0 var(--spacing-lg) var(--spacing-lg);
+}
+
+.tool-panel {
+  background: var(--glass-bg);
+  backdrop-filter: saturate(180%) var(--blur);
+  -webkit-backdrop-filter: saturate(180%) var(--blur);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+  overflow: hidden;
+}
+
+.tool-panel-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--spacing-md);
+  padding: var(--spacing-lg);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.tool-panel-title {
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.tool-panel-subtitle {
+  font-size: 13px;
+  color: var(--text-tertiary);
+  margin-top: 2px;
+}
+
+.tool-panel-body {
+  padding: var(--spacing-lg);
+}
+
+.tool-item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--spacing-md);
+  padding: 14px 14px;
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+  margin-bottom: 10px;
+}
+
+.tool-item:hover {
+  border-color: rgba(10, 132, 255, 0.35);
+  background: rgba(10, 132, 255, 0.06);
+}
+
+.tool-item-title {
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+.tool-item-meta {
+  margin-top: 6px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.35;
+}
+
+.tool-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  background: rgba(255, 255, 255, 0.05);
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--text-secondary);
+}
+
+.chip.ok { border-color: rgba(52, 199, 89, 0.35); color: rgba(52, 199, 89, 0.95); background: rgba(52, 199, 89, 0.10); }
+.chip.warn { border-color: rgba(255, 159, 10, 0.35); color: rgba(255, 159, 10, 0.95); background: rgba(255, 159, 10, 0.10); }
+.chip.bad { border-color: rgba(255, 69, 58, 0.35); color: rgba(255, 69, 58, 0.95); background: rgba(255, 69, 58, 0.10); }
+
+.btn-sm {
+  padding: 8px 12px;
+  font-size: 13px;
+  border-radius: 12px;
+}
+
+.btn-ghost {
+  padding: 8px 12px;
+  font-size: 13px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  background: transparent;
+  color: var(--text-secondary);
+}
+
+.btn-ghost:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-primary);
+}
+
+.tool-grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--spacing-md);
+}
+
+.tool-footer {
+  padding: 0 var(--spacing-lg) var(--spacing-lg);
+}
+
+.tool-footer-text {
+  color: var(--text-tertiary);
+  font-size: 13px;
+}
+
+/* ---------- Mobile first polish ---------- */
+@media (max-width: 768px) {
+  .main-content {
+    padding: 16px;
+  }
+
+  .topbar {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .topbar-actions {
+    width: 100%;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+
+  .calendar-view-toggle {
+    width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .calendar-view-btn {
+    flex: 0 0 auto;
+  }
+
+  .btn {
+    width: 100%;
+  }
+
+  .btn.btn-secondary, .btn.btn-success, .btn.btn-warning, .btn.btn-danger, .btn.btn-primary {
+    width: 100%;
+  }
+
+  .modal-content {
+    width: calc(100% - 24px);
+    max-height: calc(100% - 24px);
+    padding: 16px;
+  }
+
+  .modal-content-wide {
+    width: calc(100% - 24px);
+    max-height: calc(100% - 24px);
+  }
+
+  .tool-layout {
+    grid-template-columns: 1fr;
+    padding: 0 14px 14px;
+    gap: 14px;
+  }
+
+  .tool-tabs {
+    padding: 0 14px 14px;
+  }
+
+  .tool-panel-header, .tool-panel-body {
+    padding: 14px;
+  }
+
+  .tool-grid-2 {
+    grid-template-columns: 1fr;
+  }
+
+  .quick-actions {
+    right: 16px;
+    bottom: calc(16px + env(safe-area-inset-bottom));
+    gap: 10px;
+  }
+
+  .quick-action-btn {
+    width: 52px;
+    height: 52px;
+    font-size: 22px;
+  }
+
+  .quick-action-btn.main {
+    width: 58px;
+    height: 58px;
+    font-size: 24px;
+  }
+
+  .nav-item {
+    padding: 14px 14px;
+  }
+}
+
+
+/* ---------- Booking Details (scheda) ---------- */
+.modal.sheet {
+  align-items: center;
+}
+
+.modal-content.booking-card {
+  max-width: 720px;
+}
+
+.bd-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+.bd-notes {
+  grid-column: 1 / -1;
+}
+
+.bd-badges {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 0 0 14px 0;
+}
+
+.bd-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--glass-border);
+  color: var(--text-primary);
+}
+
+.bd-badge.dirty {
+  background: rgba(255, 149, 0, 0.15);
+  border-color: rgba(255, 149, 0, 0.35);
+}
+
+.bd-badge.ok {
+  background: rgba(52, 199, 89, 0.15);
+  border-color: rgba(52, 199, 89, 0.35);
+}
+
+.bd-phonehint {
+  margin-top: 6px;
+  color: var(--text-tertiary);
+  font-size: 13px;
+}
+
+.bd-notify {
+  margin-top: 14px;
+  padding: 14px;
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(90, 200, 250, 0.25);
+  background: rgba(90, 200, 250, 0.08);
+}
+
+.bd-notify-title {
+  font-size: 14px;
+  font-weight: 800;
+  margin-bottom: 6px;
+}
+
+.bd-notify-sub {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-bottom: 10px;
+}
+
+.bd-footer {
+  margin-top: 18px;
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.bd-footer .btn {
+  flex: 1 1 auto;
+  min-width: 160px;
+}
+
+@media (max-width: 768px) {
+  .modal.sheet { align-items: flex-end; }
+
+  .modal.sheet .modal-content {
+    width: 100%;
+    max-width: 100%;
+    border-bottom-left-radius: 0;
+    border-bottom-right-radius: 0;
+    max-height: calc(100% - 12px);
+  }
+
+  .bd-grid { grid-template-columns: 1fr; }
+
+  .bd-footer {
+    position: sticky;
+    bottom: 0;
+    background: var(--bg-secondary);
+    padding: 12px 0 calc(12px + env(safe-area-inset-bottom));
+    margin-top: 12px;
+    border-top: 1px solid var(--glass-border);
+  }
+
+  .bd-footer .btn {
+    width: 100%;
+    min-width: unset;
+  }
+}
+
+
+/* ===================== WhatsApp Center ===================== */
+.grid-2 {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--spacing-lg);
+}
+@media (max-width: 900px) {
+  .grid-2 { grid-template-columns: 1fr; }
+}
+
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+
+.wa-status {
+  padding: 14px 14px;
+  border-radius: 16px;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.10);
+  font-weight: 800;
+}
+
+.wa-status-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+@media (max-width: 520px) {
+  .wa-status-grid { grid-template-columns: 1fr; }
+}
+
+.wa-kv {
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: var(--bg-tertiary);
+  border: 1px solid rgba(255,255,255,0.08);
+}
+.wa-kv .k { font-size: 11px; color: var(--text-tertiary); }
+.wa-kv .v { font-size: 14px; font-weight: 800; margin-top: 2px; word-break: break-word; }
+
+.wa-actions {
+  display:flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.wa-progress {
+  margin-top: 12px;
+  padding: 12px 12px;
+  border-radius: 14px;
+  background: rgba(48,209,88,0.10);
+  border: 1px solid rgba(48,209,88,0.25);
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.wa-preview {
+  padding: 12px 12px;
+  border-radius: 14px;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.10);
+  font-size: 13px;
+  color: var(--text-secondary);
+  max-height: 220px;
+  overflow: auto;
+}
+
+.wa-console-grid {
+  display: grid;
+  grid-template-columns: 120px 1fr 1fr;
+  gap: 12px;
+}
+@media (max-width: 700px) {
+  .wa-console-grid { grid-template-columns: 1fr; }
+}
+
+.wa-console-response {
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding: 12px 12px;
+  border-radius: 14px;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.10);
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  max-height: 260px;
+  overflow: auto;
+}
+
+.wa-templates {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+}
+
+.wa-template-item {
+  padding: 12px 12px;
+  border-radius: 16px;
+  background: var(--bg-secondary);
+  border: 1px solid rgba(255,255,255,0.08);
+}
+
+.wa-template-head {
+  display:flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.wa-template-head input {
+  font-weight: 800;
+}
+
+
+
+/* ============================
+   WhatsApp Center - Extra UI
+   ============================ */
+.wa-split{
+  display:grid;
+  grid-template-columns: 1fr 1.25fr;
+  gap: 14px;
+  align-items: stretch;
+}
+@media (max-width: 900px){
+  .wa-split{ grid-template-columns: 1fr; }
+}
+
+.wa-list{
+  border: 1px solid rgba(255,255,255,0.08);
+  background: rgba(255,255,255,0.02);
+  border-radius: 12px;
+  overflow: hidden;
+  max-height: 420px;
+  overflow-y: auto;
+}
+.wa-row{
+  padding: 10px 12px;
+  display:flex;
+  gap:10px;
+  align-items:center;
+  justify-content: space-between;
+  cursor: pointer;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+.wa-row:last-child{ border-bottom: 0; }
+.wa-row:hover{ background: rgba(255,255,255,0.04); }
+.wa-row.active{ background: rgba(255,255,255,0.06); }
+
+.wa-row .left{
+  display:flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.wa-row .title{
+  font-weight: 800;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.wa-row .sub{
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.wa-badges{
+  display:flex;
+  gap:8px;
+  align-items:center;
+  flex-shrink: 0;
+}
+.wa-badge{
+  font-size: 12px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,0.12);
+  color: var(--text-primary);
+  background: rgba(255,255,255,0.03);
+}
+.wa-badge.ok{ border-color: rgba(0,255,140,0.25); }
+.wa-badge.fail{ border-color: rgba(255,80,80,0.25); }
+.wa-badge.pending{ border-color: rgba(0,122,255,0.25); }
+.wa-badge.unread{ border-color: rgba(255,214,10,0.25); }
+
+.wa-pane{
+  border: 1px solid rgba(255,255,255,0.08);
+  background: rgba(255,255,255,0.02);
+  border-radius: 12px;
+  padding: 12px;
+  min-height: 420px;
+}
+.wa-pane-head{
+  display:flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+.wa-pane-actions{
+  display:flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.wa-chat-meta{
+  margin-top: 10px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.4;
+}
+.wa-messages{
+  border-top: 1px solid rgba(255,255,255,0.08);
+  margin-top: 12px;
+  padding-top: 12px;
+  max-height: 250px;
+  overflow:auto;
+}
+.wa-msg{
+  padding: 10px 12px;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 12px;
+  margin-bottom: 10px;
+  background: rgba(255,255,255,0.02);
+}
+.wa-msg.me{ background: rgba(0,122,255,0.08); border-color: rgba(0,122,255,0.18); }
+.wa-msg .meta{
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+  display:flex;
+  justify-content: space-between;
+  gap:10px;
+}
+.wa-msg .body{
+  white-space: pre-wrap;
+}
+
+.wa-queue{
+  margin-top: 10px;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 12px;
+  overflow:hidden;
+  max-height: 320px;
+  overflow-y:auto;
+}
+.wa-queue-item{
+  display:flex;
+  gap: 10px;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+.wa-queue-item:last-child{ border-bottom:0; }
+.wa-queue-item .left{
+  min-width: 0;
+}
+.wa-queue-item .t{
+  font-weight: 800;
+  white-space: nowrap;
+  overflow:hidden;
+  text-overflow: ellipsis;
+}
+.wa-queue-item .d{
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow:hidden;
+  text-overflow: ellipsis;
+}
+.wa-queue-item .right{
+  display:flex;
+  gap: 8px;
+  align-items:center;
+  flex-shrink: 0;
+}
+.wa-queue-foot{
+  display:flex;
+  gap: 10px;
+  justify-content: flex-end;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+
+.wa-util-grid{
+  display:grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+.wa-util-box{
+  display:flex;
+  align-items:center;
+  gap: 10px;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 12px;
+  background: rgba(255,255,255,0.02);
+}
+.wa-util-box .mono{
+  flex: 1;
+  overflow:hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wa-log{
+  margin-top: 10px;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 12px;
+  overflow:hidden;
+  max-height: 380px;
+  overflow-y:auto;
+}
+.wa-log-item{
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+.wa-log-item:last-child{ border-bottom:0; }
+.wa-log-item .h{
+  display:flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items:center;
+  margin-bottom: 6px;
+}
+.wa-log-item .s{
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.wa-log-item .b{
+  font-size: 13px;
+  white-space: pre-wrap;
+  color: var(--text-primary);
+}
+
+</style>
+</head>
+<body>
+
+<!-- Barra di stato sincronizzazione DB (in cima alla pagina) -->
+<div class="db-sync-bar" id="dbSyncBar"></div>
+
+<!-- App Container -->
+<div class="app-container">
+  <!-- Sidebar -->
+  <aside class="sidebar" id="sidebar">
+    <div class="logo">✨ synkris Pro</div>
+    
+    <div class="nav-section">
+      <div class="nav-section-title">Menu</div>
+      <div class="nav-item active" onclick="showSection('dashboard', this)">
+        <span class="nav-item-icon">📊</span>
+        <span>Dashboard</span>
+      </div>
+      <div class="nav-item" onclick="showSection('calendar', this)">
+        <span class="nav-item-icon">📅</span>
+        <span>Calendario</span>
+        <span class="notification-badge" id="upcomingBadge">0</span>
+      </div>
+      <div class="nav-item" onclick="showSection('bookings', this)">
+        <span class="nav-item-icon">📝</span>
+        <span>Prenotazioni</span>
+      </div>
+      <div class="nav-item" onclick="showSection('clients', this)">
+        <span class="nav-item-icon">👥</span>
+        <span>Clienti</span>
+      </div>
+      <div class="nav-item" onclick="showSection('analytics', this)">
+        <span class="nav-item-icon">📈</span>
+        <span>Statistiche</span>
+      </div>
+    </div>
+    
+    <div class="nav-section">
+      <div class="nav-section-title">Gestione</div>
+      <div class="nav-item" onclick="showSection('gestione-appuntamenti', this)">
+        <span class="nav-item-icon">📋</span>
+        <span>Appuntamenti</span>
+      </div>
+      <div class="nav-item" onclick="showSection('gestione-personale', this)">
+        <span class="nav-item-icon">👩‍🔧</span>
+        <span>Personale</span>
+      </div>
+      <div class="nav-item" onclick="showSection('gestione-categorie', this)">
+        <span class="nav-item-icon">🗂️</span>
+        <span>Categorie</span>
+      </div>
+      <div class="nav-item" onclick="showSection('gestione-trattamenti', this)">
+        <span class="nav-item-icon">💅</span>
+        <span>Trattamenti</span>
+      </div>
+    </div>
+
+    <div class="nav-section">
+      <div class="nav-section-title">Strumenti</div>
+      <div class="nav-item" onclick="showSection('tools', this)">
+        <span class="nav-item-icon">🛠️</span>
+        <span>Strumenti</span>
+      </div>
+      <div class="nav-item" onclick="showSection('reports', this)">
+        <span class="nav-item-icon">📄</span>
+        <span>Report</span>
+      </div>
+      <div class="nav-item" onclick="showSection('whatsapp', this)">
+        <span class="nav-item-icon">💬</span>
+        <span>WhatsApp</span>
+      </div>
+      <div class="nav-item" onclick="showSection('settings', this)">
+        <span class="nav-item-icon">⚙️</span>
+        <span>Impostazioni</span>
+      </div>
+    </div>
+    
+    <div class="nav-section">
+      <div class="nav-section-title">Account</div>
+      <div class="nav-item" onclick="toggleTheme()">
+        <span class="nav-item-icon">🌙</span>
+        <span id="themeText">Tema Scuro</span>
+      </div>
+      <div class="nav-item" onclick="showNotifications()">
+        <span class="nav-item-icon">🔔</span>
+        <span>Notifiche</span>
+        <span class="notification-badge" id="notifBadge">0</span>
+      </div>
+    </div>
+
+    <!-- Modalità Facile toggle -->
+    <div class="nav-section" style="margin-top: auto; padding-top: 16px; border-top: 1px solid var(--glass-border);">
+      <div class="easy-mode-toggle" onclick="toggleEasyMode()" title="Ingrandisce testo e pulsanti">
+        <span class="toggle-label">🔡 Modalità Facile</span>
+        <div class="toggle-switch" id="easyModeSwitch"></div>
+      </div>
+      <div id="dbSyncStatus" style="font-size:12px; color:var(--text-tertiary); padding: 6px 8px; text-align:center;"></div>
+    </div>
+  </aside>
+
+  <!-- Mobile Sidebar Overlay + Menu Button -->
+  <div class="sidebar-overlay" id="sidebarOverlay" onclick="closeSidebar()"></div>
+  <button class="mobile-menu-fab" id="mobileMenuBtn" onclick="toggleSidebar()" title="Menu">☰</button>
+
+  <!-- Main Content -->
+  <main class="main-content">
+    <!-- Dashboard Section -->
+    <div id="section-dashboard" class="section">
+      <div class="topbar">
+        <div class="topbar-left">
+          <h1 class="page-title">Dashboard</h1>
+          <p class="page-subtitle" id="dashboardDate">Oggi</p>
+        </div>
+        <div class="topbar-actions">
+          <button class="btn btn-secondary" onclick="refreshDashboard()">
+            🔄 Aggiorna
+          </button>
+          <button class="btn btn-primary" onclick="quickAddBooking()">
+            ➕ Nuova Prenotazione
+          </button>
+        </div>
+      </div>
+
+      <!-- KPIs -->
+      <div class="kpi-grid">
+        <div class="kpi-card">
+          <div class="kpi-header">
+            <div>
+              <div class="kpi-label">Entrate Oggi</div>
+            </div>
+            <div class="kpi-icon">💰</div>
+          </div>
+          <div class="kpi-value" id="kpiRevenue">€0</div>
+          <div class="kpi-trend trend-up">
+            <span>↑ 12%</span>
+          </div>
+        </div>
+
+        <div class="kpi-card">
+          <div class="kpi-header">
+            <div>
+              <div class="kpi-label">Prenotazioni</div>
+            </div>
+            <div class="kpi-icon">📅</div>
+          </div>
+          <div class="kpi-value" id="kpiBookings">0</div>
+          <div class="kpi-trend trend-up">
+            <span>↑ 8%</span>
+          </div>
+        </div>
+
+        <div class="kpi-card">
+          <div class="kpi-header">
+            <div>
+              <div class="kpi-label">Nuovi Clienti</div>
+            </div>
+            <div class="kpi-icon">👤</div>
+          </div>
+          <div class="kpi-value" id="kpiNewClients">0</div>
+          <div class="kpi-trend trend-up">
+            <span>↑ 15%</span>
+          </div>
+        </div>
+
+        <div class="kpi-card">
+          <div class="kpi-header">
+            <div>
+              <div class="kpi-label">Tasso Occupazione</div>
+            </div>
+            <div class="kpi-icon">⏰</div>
+          </div>
+          <div class="kpi-value" id="kpiOccupancy">0%</div>
+          <div class="kpi-trend trend-down">
+            <span>↓ 3%</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Stats Panel -->
+      <div class="stats-panel">
+        <h2 style="margin-bottom: 8px;">📊 Statistiche Rapide</h2>
+        <p style="opacity: 0.9;">Performance in tempo reale</p>
+        <div class="stats-grid">
+          <div class="stat-item">
+            <div class="stat-value" id="todayBookings">0</div>
+            <div class="stat-label">Oggi</div>
+          </div>
+          <div class="stat-item">
+            <div class="stat-value" id="weekBookings">0</div>
+            <div class="stat-label">Questa Settimana</div>
+          </div>
+          <div class="stat-item">
+            <div class="stat-value" id="monthRevenue">€0</div>
+            <div class="stat-label">Entrate Mese</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Charts -->
+      <div class="charts-grid">
+        <div class="chart-container">
+          <h3 class="card-title">📈 Entrate Settimanali</h3>
+          <canvas id="revenueChart"></canvas>
+        </div>
+        <div class="chart-container">
+          <h3 class="card-title">📊 Servizi Popolari</h3>
+          <canvas id="servicesChart"></canvas>
+        </div>
+      </div>
+
+      <!-- Upcoming Appointments -->
+      <div class="card">
+        <div class="card-title">🕐 Prossimi Appuntamenti</div>
+        <div id="upcomingAppointments"></div>
+      </div>
+
+      <!-- Recent Changes Log -->
+      <div class="card">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--spacing-md);">
+          <div class="card-title" style="margin: 0;">📝 Modifiche Recenti</div>
+          <button class="btn btn-secondary" style="padding: 6px 12px; font-size: 13px;" onclick="viewFullChangeLog()">
+            Vedi Tutte
+          </button>
+        </div>
+        <div id="recentChanges"></div>
+      </div>
+    </div>
+
+    <!-- Calendar Section -->
+    <div id="section-calendar" class="section" style="display:none;">
+      <div class="topbar">
+        <div class="topbar-left">
+          <h1 class="page-title">Calendario</h1>
+          <p class="page-subtitle">Gestisci i tuoi appuntamenti</p>
+        </div>
+        <div class="topbar-actions">
+          <div class="calendar-view-toggle">
+            <button class="calendar-view-btn active" onclick="changeCalendarView('dayGridMonth', this)">Mese</button>
+            <button class="calendar-view-btn" onclick="changeCalendarView('timeGridWeek', this)">Settimana</button>
+            <button class="calendar-view-btn" onclick="changeCalendarView('timeGridDay', this)">Giorno</button>
+          </div>
+          <button class="btn btn-primary" onclick="openNewBookingModal()">
+            ➕ Nuovo Appuntamento
+          </button>
+        </div>
+      </div>
+      
+      <div class="calendar-layout">
+        <div class="card calendar-main-card">
+          <div id="calendar"></div>
+        </div>
+
+        <div class="calendar-sidebar">
+          <div class="card">
+            <h3 class="card-title">RICERCA & FILTRI</h3>
+            <div class="filter-grid">
+              <div class="filter-field">
+                <label class="form-label">Cerca cliente</label>
+                <input type="text" class="form-input" id="calSearchClient" placeholder="🔍 Nome o telefono…">
+              </div>
+              <div class="filter-field">
+                <label class="form-label">Mostra</label>
+                <select class="form-select" id="calWhenFilter">
+                  <option value="all">Tutti</option>
+                  <option value="future">Solo futuri</option>
+                  <option value="past">Solo passati</option>
+                  <option value="today">Solo oggi</option>
+                </select>
+              </div>
+              <div class="filter-field filter-inline">
+                <label class="form-label" style="margin-bottom:0;">
+                  <input type="checkbox" id="calShowCancelled" style="margin-right:8px;">
+                  Mostra annullati
+                </label>
+              </div>
+              <div class="filter-actions">
+                <button class="btn btn-secondary btn-sm" onclick="resetCalendarFilters()">↺ Reset filtri</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <h3 class="card-title">PROFESSIONISTI</h3>
+            <div id="calFilterPros" class="cal-chip-wrap"></div>
+          </div>
+
+          <div class="card">
+            <h3 class="card-title">SERVIZI</h3>
+            <div id="calFilterSvcs" class="cal-chip-wrap cal-chip-wrap-scroll"></div>
+          </div>
+
+          <div class="card">
+            <h3 class="card-title">GIORNO SELEZIONATO</h3>
+            <div id="calDayStats" class="cal-stats"></div>
+            <div id="calDayList" class="cal-day-list"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Bookings Section -->
+    <div id="section-bookings" class="section" style="display:none;">
+      <div class="topbar">
+        <div class="topbar-left">
+          <h1 class="page-title">Prenotazioni</h1>
+          <p class="page-subtitle">Gestisci tutte le prenotazioni</p>
+        </div>
+        <div class="topbar-actions">
+          <input type="text" class="form-input" placeholder="🔍 Cerca cliente..." id="bookingSearch" style="width: 250px;">
+          <button class="btn btn-secondary" onclick="exportBookings()">
+            📥 Esporta
+          </button>
+          <button class="btn btn-primary" onclick="openNewBookingModal()">
+            ➕ Nuova Prenotazione
+          </button>
+        </div>
+      </div>
+
+      <div class="card" style="margin-bottom: var(--spacing-md);">
+        <div class="filters-toolbar">
+          <div class="filter-grid filter-grid-2">
+            <div class="filter-field">
+              <label class="form-label">Periodo</label>
+              <select class="form-select" id="bookingFilterWhen">
+                <option value="all">Tutte</option>
+                <option value="future">Future</option>
+                <option value="past">Passate</option>
+                <option value="today">Oggi</option>
+                <option value="week">Questa settimana</option>
+                <option value="month">Questo mese</option>
+                <option value="range">Intervallo date</option>
+              </select>
+            </div>
+
+            <div class="filter-field">
+              <label class="form-label">Stato</label>
+              <select class="form-select" id="bookingFilterStatus">
+                <option value="all">Tutti</option>
+                <option value="confirmed">Confermato</option>
+                <option value="pending">In attesa</option>
+                <option value="cancelled">Annullato</option>
+              </select>
+            </div>
+
+            <div class="filter-field">
+              <label class="form-label">Professionista</label>
+              <select class="form-select" id="bookingFilterPro">
+                <option value="">Tutti</option>
+              </select>
+            </div>
+
+            <div class="filter-field">
+              <label class="form-label">Servizio</label>
+              <select class="form-select" id="bookingFilterSvc">
+                <option value="">Tutti</option>
+              </select>
+            </div>
+
+            <div class="filter-field">
+              <label class="form-label">Da</label>
+              <input type="date" class="form-input" id="bookingFilterFrom">
+            </div>
+
+            <div class="filter-field">
+              <label class="form-label">A</label>
+              <input type="date" class="form-input" id="bookingFilterTo">
+            </div>
+
+            <div class="filter-field">
+              <label class="form-label">Ordine</label>
+              <select class="form-select" id="bookingSort">
+                <option value="soon">Cronologico</option>
+                <option value="recent">Più recenti prima</option>
+              </select>
+            </div>
+
+            <div class="filter-field filter-inline">
+              <label class="form-label" style="margin-bottom:0;">
+                <input type="checkbox" id="bookingGroupByService" checked style="margin-right:8px;">
+                Raggruppa per servizio
+              </label>
+              <label class="form-label" style="margin:10px 0 0 0;">
+                <input type="checkbox" id="bookingShowCancelled" style="margin-right:8px;">
+                Mostra annullate (se “Stato: Tutti”)
+              </label>
+            </div>
+
+            <div class="filter-actions">
+              <button class="btn btn-secondary btn-sm" onclick="clearBookingFilters()">↺ Reset filtri</button>
+              <button class="btn btn-primary btn-sm" onclick="updateBookingsList()">Applica</button>
+            </div>
+          </div>
+
+          <div class="quick-chips">
+            <span class="chip" onclick="setBookingQuickRange('today')">Oggi</span>
+            <span class="chip" onclick="setBookingQuickRange('week')">Settimana</span>
+            <span class="chip" onclick="setBookingQuickRange('month')">Mese</span>
+            <span class="chip" onclick="setBookingQuickRange('future')">Future</span>
+            <span class="chip" onclick="setBookingQuickRange('past')">Passate</span>
+            <span class="chip" onclick="setBookingQuickRange('all')">Tutte</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div id="bookingsList"></div>
+      </div>
+    </div>
+
+    <!-- Clients Section -->
+    <div id="section-clients" class="section" style="display:none;">
+      <div class="topbar">
+        <div class="topbar-left">
+          <h1 class="page-title">Clienti</h1>
+          <p class="page-subtitle">Database clienti</p>
+        </div>
+        <div class="topbar-actions">
+          <input type="text" class="form-input" placeholder="🔍 Cerca cliente..." id="clientSearch" style="width: 250px;">
+          <button class="btn btn-primary" onclick="addClient()">
+            ➕ Nuovo Cliente
+          </button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div id="clientsList"></div>
+      </div>
+    </div>
+
+    <!-- Analytics Section -->
+    <div id="section-analytics" class="section" style="display:none;">
+      <div class="topbar">
+        <div class="topbar-left">
+          <h1 class="page-title">Analytics</h1>
+          <p class="page-subtitle">Analisi approfondita dei dati</p>
+        </div>
+        <div class="topbar-actions">
+          <button class="btn btn-secondary" onclick="exportReport()">
+            📄 Esporta Report PDF
+          </button>
+        </div>
+      </div>
+
+      <div class="charts-grid">
+        <div class="chart-container">
+          <h3 class="card-title">📈 Trend Mensile</h3>
+          <canvas id="monthlyTrendChart"></canvas>
+        </div>
+        <div class="chart-container">
+          <h3 class="card-title">⏰ Orari Popolari</h3>
+          <canvas id="hoursChart"></canvas>
+        </div>
+      </div>
+
+      <div class="charts-grid">
+        <div class="chart-container">
+          <h3 class="card-title">👥 Clienti per Categoria</h3>
+          <canvas id="clientsChart"></canvas>
+        </div>
+        <div class="chart-container">
+          <h3 class="card-title">💰 Entrate per Servizio</h3>
+          <canvas id="revenueByServiceChart"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tools Section -->
+    <div id="section-tools" class="section" style="display:none;">
+      <div class="topbar">
+        <div class="topbar-left">
+          <h1 class="page-title">Strumenti</h1>
+          <p class="page-subtitle">Strumenti di gestione</p>
+        </div>
+      </div>
+
+      <div class="kpi-grid">
+        <div class="card" style="cursor: pointer;" onclick="manageCoupons()">
+          <div style="font-size: 48px; text-align: center; margin-bottom: 16px;">🎟️</div>
+          <div class="card-title" style="text-align: center;">Coupon</div>
+          <p style="text-align: center; color: var(--text-secondary);">Gestisci sconti e promozioni</p>
+        </div>
+
+        <div class="card" style="cursor: pointer;" onclick="manageWaitlist()">
+          <div style="font-size: 48px; text-align: center; margin-bottom: 16px;">⏳</div>
+          <div class="card-title" style="text-align: center;">Lista d'Attesa</div>
+          <p style="text-align: center; color: var(--text-secondary);">Gestisci lista d'attesa clienti</p>
+        </div>
+
+        <div class="card" style="cursor: pointer;" onclick="manageStock()">
+          <div style="font-size: 48px; text-align: center; margin-bottom: 16px;">📦</div>
+          <div class="card-title" style="text-align: center;">Magazzino</div>
+          <p style="text-align: center; color: var(--text-secondary);">Gestisci inventario prodotti</p>
+        </div>
+
+        <div class="card" style="cursor: pointer;" onclick="manageReminders()">
+          <div style="font-size: 48px; text-align: center; margin-bottom: 16px;">🔔</div>
+          <div class="card-title" style="text-align: center;">Promemoria</div>
+          <p style="text-align: center; color: var(--text-secondary);">Sistema notifiche automatiche</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Reports Section -->
+    <div id="section-reports" class="section" style="display:none;">
+      <div class="topbar">
+        <div class="topbar-left">
+          <h1 class="page-title">Report</h1>
+          <p class="page-subtitle">Genera e scarica report</p>
+        </div>
+      </div>
+
+      <!-- Selettore periodo condiviso da tutti i report -->
+      <div class="card" style="margin-bottom: var(--spacing-lg);">
+        <h3 class="card-title" style="margin-bottom: var(--spacing-md);">📅 Periodo di riferimento</h3>
+        <div style="display:flex; gap: var(--spacing-md); flex-wrap:wrap; align-items: flex-end;">
+          <div class="form-group" style="margin:0; flex:1; min-width:140px;">
+            <label class="form-label">Da</label>
+            <input type="date" class="form-input" id="reportDateFrom">
+          </div>
+          <div class="form-group" style="margin:0; flex:1; min-width:140px;">
+            <label class="form-label">A</label>
+            <input type="date" class="form-input" id="reportDateTo">
+          </div>
+          <div style="display:flex; gap:8px; flex-wrap:wrap;">
+            <button class="btn btn-secondary btn-sm" onclick="setReportRange('month')">Questo mese</button>
+            <button class="btn btn-secondary btn-sm" onclick="setReportRange('quarter')">Ultimo trimestre</button>
+            <button class="btn btn-secondary btn-sm" onclick="setReportRange('year')">Anno corrente</button>
+            <button class="btn btn-secondary btn-sm" onclick="setReportRange('all')">Tutto</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="kpi-grid">
+        <div class="card">
+          <h3 class="card-title">📊 Report Finanziario</h3>
+          <p style="color: var(--text-secondary); margin-bottom: 16px;">Report completo delle entrate e uscite</p>
+          <button class="btn btn-primary" onclick="generateFinancialReport()">📥 Genera PDF</button>
+        </div>
+
+        <div class="card">
+          <h3 class="card-title">👥 Report Clienti</h3>
+          <p style="color: var(--text-secondary); margin-bottom: 16px;">Analisi dettagliata dei clienti</p>
+          <button class="btn btn-primary" onclick="generateClientReport()">📥 Genera PDF</button>
+        </div>
+
+        <div class="card">
+          <h3 class="card-title">📅 Report Prenotazioni</h3>
+          <p style="color: var(--text-secondary); margin-bottom: 16px;">Statistiche prenotazioni e servizi</p>
+          <button class="btn btn-primary" onclick="generateBookingsReport()">📥 Genera PDF</button>
+        </div>
+
+        <div class="card">
+          <h3 class="card-title">⏰ Report Produttività</h3>
+          <p style="color: var(--text-secondary); margin-bottom: 16px;">Analisi ore lavorate e efficienza</p>
+          <button class="btn btn-primary" onclick="generateProductivityReport()">📥 Genera PDF</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- WhatsApp Section -->
+    <div id="section-whatsapp" class="section" style="display:none;">
+      <div class="topbar">
+        <div class="topbar-left">
+          <h1 class="page-title">WhatsApp</h1>
+          <p class="page-subtitle">Invii rapidi, azioni massive e console HTTP (tramite ADMIN API)</p>
+        </div>
+        <div class="topbar-right">
+          <button class="btn" onclick="waRefreshStatus()">🔄 Stato</button>
+          <button class="btn btn-primary" onclick="openWaComposer()">✉️ Nuovo messaggio</button>
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-header">
+            <h3 class="card-title">🚦 Stato bot</h3>
+            <div class="card-actions">
+              <button class="btn btn-secondary btn-sm" onclick="testAdminApi()">🔎 Test</button>
+            </div>
+          </div>
+
+          <div class="wa-status" id="waStatusBox">—</div>
+          <div class="wa-status-grid" id="waStatusGrid"></div>
+          <div class="hint" style="margin-top:10px;">Base: <span class="mono" id="waStatusBase"></span></div>
+          <div class="hint">Token: <span class="mono" id="waStatusToken">—</span></div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h3 class="card-title">⚡ Azioni rapide</h3>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">Template per invii massivi</label>
+            <select class="form-select" id="waBulkTemplate"></select>
+          </div>
+
+          <div class="wa-actions">
+            <button class="btn btn-success" onclick="waBulkForDay(0)">⏰ Promemoria appuntamenti di oggi</button>
+            <button class="btn btn-success" onclick="waBulkForDay(1)">📆 Promemoria appuntamenti di domani</button>
+            <button class="btn" onclick="waBulkReviews()">⭐ Richiesta recensione (ultimi 3 giorni)</button>
+          </div>
+
+          <div class="wa-progress" id="waBulkProgress" style="display:none;"></div>
+          <div class="hint" style="margin-top:10px;">Invii scaglionati (anti-spam). I contatti senza numero vengono saltati.</div>
+        </div>
+      </div>
+
+      <div class="grid-2" style="margin-top: var(--spacing-lg);">
+        <div class="card">
+          <div class="card-header">
+            <h3 class="card-title">📣 Broadcast mirato</h3>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">Segmento</label>
+            <select class="form-select" id="waSegment">
+              <option value="vip">VIP (>=6 visite o >=250€)</option>
+              <option value="recent">Clienti recenti (ultimi 30 giorni)</option>
+              <option value="all">Tutti</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">Messaggio (puoi usare {{nome}})</label>
+            <textarea class="form-textarea" id="waBroadcastMsg" placeholder="Esempio: Ciao {{nome}}! Questa settimana promo..."></textarea>
+          </div>
+
+          <div style="display:flex; gap:12px; flex-wrap:wrap;">
+            <button class="btn btn-primary" onclick="waPreviewBroadcast()">👀 Anteprima</button>
+            <button class="btn btn-success" onclick="waSendBroadcast()">🚀 Invia</button>
+          </div>
+
+          <div class="wa-preview" id="waBroadcastPreview" style="margin-top:12px;"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h3 class="card-title">🧪 Console HTTP WhatsApp</h3>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">Preset</label>
+            <select class="form-select" id="waApiPreset" onchange="waApplyPreset()"></select>
+          </div>
+
+          <div class="wa-console-grid">
+            <div class="form-group">
+              <label class="form-label">Metodo</label>
+              <select class="form-select" id="waApiMethod">
+                <option>GET</option>
+                <option selected>POST</option>
+              </select>
+            </div>
+
+            <div class="form-group" style="grid-column: 2 / span 2;">
+              <label class="form-label">Path (relativo a ADMIN_API_BASE)</label>
+              <input class="form-input mono" id="waApiPath" placeholder="/api/send">
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">Body JSON</label>
+            <textarea class="form-textarea mono" id="waApiBody" style="min-height: 160px;"></textarea>
+          </div>
+
+          <div style="display:flex; gap:12px; flex-wrap:wrap;">
+            <button class="btn btn-primary" onclick="waSendApiRequest()">📡 Invia richiesta</button>
+            <button class="btn" onclick="waCopyCurl()">📋 Copia curl</button>
+            <button class="btn btn-secondary" onclick="waClearApi()">🧹 Pulisci</button>
+          </div>
+
+          <div class="wa-console-response mono" id="waApiResp" style="margin-top:12px;">—</div>
+        </div>
+      </div>
+
+      
+      <div class="grid-2" style="margin-top: var(--spacing-lg);">
+        <div class="card">
+          <div class="card-header">
+            <h3 class="card-title">📥 Inbox & chat</h3>
+            <div class="card-actions">
+              <button class="btn btn-secondary btn-sm" onclick="waInboxLoad()">🔄 Carica</button>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">Cerca</label>
+            <input class="form-input" id="waInboxSearch" placeholder="nome o chatId" oninput="waInboxRender()">
+          </div>
+
+          <div class="wa-split">
+            <div class="wa-list" id="waInboxList"></div>
+
+            <div class="wa-pane">
+              <div class="wa-pane-head">
+                <div style="min-width:0;">
+                  <div class="hint">Selezione</div>
+                  <div class="mono" id="waInboxSelected">—</div>
+                </div>
+
+                <div class="wa-pane-actions">
+                  <button class="btn btn-secondary btn-sm" onclick="waInboxCopyChatId()">📋 Copia</button>
+                  <button class="btn btn-secondary btn-sm" onclick="waInboxSeen()">👁️ Letto</button>
+                  <button class="btn btn-secondary btn-sm" onclick="waInboxTyping()">⌨️ Typing</button>
+                  <button class="btn btn-primary btn-sm" onclick="waInboxMessage()">💬 Scrivi</button>
+                </div>
+              </div>
+
+              <div class="wa-chat-meta" id="waInboxMeta">—</div>
+
+              <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:12px;">
+                <button class="btn" onclick="waInboxFetchMessages()">📜 Ultimi messaggi</button>
+                <button class="btn" onclick="waInboxOpenInConsole()">🧪 Apri in console</button>
+              </div>
+
+              <div class="wa-messages" id="waInboxMessages"></div>
+
+              <div class="hint" style="margin-top:10px;">
+                La lista chat usa <span class="mono">/api/chats</span>. I messaggi provano più endpoint e funzionano solo se esistono nel tuo server.
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h3 class="card-title">🕒 Coda invii & Rate limit</h3>
+            <div class="card-actions">
+              <button class="btn btn-secondary btn-sm" onclick="waQueueRender()">🔄 Aggiorna</button>
+            </div>
+          </div>
+
+          <div class="grid-2" style="gap:12px;">
+            <div class="form-group">
+              <label class="form-label">Template</label>
+              <select class="form-select" id="waQueueTemplate"></select>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Segmento clienti</label>
+              <select class="form-select" id="waQueueSegment">
+                <option value="vip">VIP</option>
+                <option value="recent">Recenti 30 giorni</option>
+                <option value="all" selected>Tutti</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">Messaggio (se vuoto usa il template)</label>
+            <textarea class="form-textarea" id="waQueueMessage" rows="4" placeholder="Testo..."></textarea>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">Destinatari (uno per riga — puoi usare <span class="mono">chatId | Nome</span>)</label>
+            <textarea class="form-textarea mono" id="waQueueRecipients" rows="4" placeholder="39XXXXXXXXXX@c.us | Mario Rossi&#10;+39 3XX XXXXXXX | Laura"></textarea>
+          </div>
+
+          <div class="wa-console-grid" style="margin-top:12px;">
+            <div class="form-group">
+              <label class="form-label">Invia</label>
+              <select class="form-select" id="waQueueSendAtMode" onchange="waQueueUpdateSendAtUI()">
+                <option value="now" selected>Subito</option>
+                <option value="schedule">Programma</option>
+              </select>
+            </div>
+
+            <div class="form-group" id="waQueueSendAtWrap" style="display:none;">
+              <label class="form-label">Data/ora</label>
+              <input class="form-input" type="datetime-local" id="waQueueSendAt">
+            </div>
+
+            <div class="form-group">
+              <label class="form-label">Pausa tra invii (sec)</label>
+              <input class="form-input" type="number" id="waQueueDelaySec" min="1" max="60" value="4">
+            </div>
+          </div>
+
+          <div class="wa-actions" style="margin-top:12px;">
+            <button class="btn" onclick="waQueueFillFromSegment()">👥 Carica segmento</button>
+            <button class="btn btn-primary" onclick="waQueueAddFromForm()">➕ Aggiungi in coda</button>
+            <button class="btn btn-success" onclick="waQueueStart()">▶️ Avvia</button>
+            <button class="btn" onclick="waQueueStop()">⏸️ Pausa</button>
+          </div>
+
+          <div class="form-group" style="margin-top:12px;">
+            <label class="form-label" style="display:flex; align-items:center; gap:10px;">
+              <input type="checkbox" id="waQueueDryRun">
+              Modalità test (non invia, simula)
+            </label>
+          </div>
+
+          <div class="wa-queue" id="waQueueList"></div>
+          <div class="wa-queue-foot">
+            <button class="btn btn-secondary btn-sm" onclick="waQueueClearDone()">🧹 Pulisci inviati</button>
+            <button class="btn btn-secondary btn-sm" onclick="waQueueClearAll()">🗑️ Svuota tutto</button>
+          </div>
+
+          <div class="hint" style="margin-top:10px;">La coda gira solo mentre la dashboard è aperta (non è un job server).</div>
+        </div>
+      </div>
+
+      <div class="grid-2" style="margin-top: var(--spacing-lg);">
+        <div class="card">
+          <div class="card-header">
+            <h3 class="card-title">🔧 Utility numeri</h3>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">Numero o chatId</label>
+            <input class="form-input mono" id="waUtilInput" placeholder="39XXXXXXXXXX@c.us o +39 3XX XXXXXXX" oninput="waUtilUpdate()">
+          </div>
+
+          <div class="wa-util-grid">
+            <div class="wa-util-box">
+              <div class="hint" style="min-width:70px;">Digits</div>
+              <div class="mono" id="waUtilDigits">—</div>
+              <button class="btn btn-secondary btn-sm" onclick="waUtilCopy('waUtilDigits')">📋</button>
+            </div>
+
+            <div class="wa-util-box">
+              <div class="hint" style="min-width:70px;">ChatId</div>
+              <div class="mono" id="waUtilChatId">—</div>
+              <button class="btn btn-secondary btn-sm" onclick="waUtilCopy('waUtilChatId')">📋</button>
+            </div>
+
+            <div class="wa-util-box">
+              <div class="hint" style="min-width:70px;">Display</div>
+              <div class="mono" id="waUtilPretty">—</div>
+              <button class="btn btn-secondary btn-sm" onclick="waUtilCopy('waUtilPretty')">📋</button>
+            </div>
+          </div>
+
+          <div class="hint" style="margin-top:10px;">Suggerimento: per il bot conviene salvare e usare sempre il <span class="mono">chatId</span>.</div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h3 class="card-title">📜 Log invii WhatsApp</h3>
+            <div class="card-actions">
+              <button class="btn btn-secondary btn-sm" onclick="waLogRender()">🔄</button>
+              <button class="btn btn-secondary btn-sm" onclick="waLogExport()">⬇️ Export JSON</button>
+              <button class="btn btn-secondary btn-sm" onclick="waLogClear()">🗑️</button>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">Filtro</label>
+            <input class="form-input" id="waLogFilter" placeholder="nome, chatId, testo" oninput="waLogRender()">
+          </div>
+
+          <div class="wa-log" id="waLogList"></div>
+          <div class="hint" style="margin-top:10px;">Il log è salvato nel browser (localStorage).</div>
+        </div>
+      </div>
+
+<div class="card" style="margin-top: var(--spacing-lg);">
+        <div class="card-header">
+          <h3 class="card-title">🧩 Template messaggi</h3>
+        </div>
+
+        <div class="hint" style="margin-bottom:10px;">Variabili: {{nome}}, {{servizio}}, {{data}}, {{ora}}, {{professionista}}</div>
+        <div class="wa-templates" id="waTemplatesList"></div>
+
+        <div style="display:flex; gap:12px; flex-wrap:wrap; margin-top: 12px;">
+          <button class="btn btn-primary" onclick="waAddTemplate()">➕ Nuovo template</button>
+          <button class="btn" onclick="waResetTemplates()">♻️ Ripristina default</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Settings Section -->
+    <div id="section-settings" class="section" style="display:none;">
+      <div class="topbar">
+        <div class="topbar-left">
+          <h1 class="page-title">Impostazioni</h1>
+          <p class="page-subtitle">Configura l'applicazione</p>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3 class="card-title">⚙️ Impostazioni Generali</h3>
+        
+        <div class="form-group">
+          <label class="form-label">Aliquota IVA (%)</label>
+          <input type="number" class="form-input" id="settingsVat" value="22">
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Ore Lavorative al Giorno</label>
+          <input type="number" class="form-input" id="settingsHoursPerDay" value="8">
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Valuta</label>
+          <select class="form-select" id="settingsCurrency">
+            <option value="EUR">EUR (€)</option>
+            <option value="USD">USD ($)</option>
+            <option value="GBP">GBP (£)</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Notifiche Appuntamenti Imminenti</label>
+          <select class="form-select" id="settingsNotifications">
+            <option value="15">15 minuti prima</option>
+            <option value="30">30 minuti prima</option>
+            <option value="60">1 ora prima</option>
+            <option value="120">2 ore prima</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Backup Automatico</label>
+          <select class="form-select" id="settingsBackup">
+            <option value="daily">Giornaliero</option>
+            <option value="weekly">Settimanale</option>
+            <option value="monthly">Mensile</option>
+            <option value="disabled">Disabilitato</option>
+          </select>
+        </div>
+
+        <button class="btn btn-primary" onclick="saveSettings()">💾 Salva Impostazioni</button>
+      </div>
+      <div class="card">
+        <h3 class="card-title">🤖 Connessione Bot (ADMIN API)</h3>
+
+        <div class="form-group">
+          <label class="form-label">ADMIN_API_BASE</label>
+          <input type="text" class="form-input" id="adminApiBaseInput" placeholder="http://127.0.0.1:3000">
+          <p style="color: var(--text-secondary); font-size: 13px; margin-top: 8px;">
+            PC: <b>http://127.0.0.1:3000</b> • Da telefono: <b>http://IP_DEL_PC:3000</b>
+          </p>
+        </div>
+        <div class="form-group">
+          <label class="form-label">ADMIN_API_TOKEN (opzionale)</label>
+          <input type="password" class="form-input" id="adminApiTokenInput" placeholder="X-Admin-Token">
+          <p class="hint">Se sul server hai abilitato un token, verrà inviato come header <span class="mono">X-Admin-Token</span>.</p>
+        </div>
+
+
+        <div style="display:flex; gap: 12px; flex-wrap: wrap;">
+          <button class="btn btn-primary" onclick="saveAdminApiBase()">💾 Salva</button>
+          <button class="btn" onclick="testAdminApi()">🔎 Test</button>
+        </div>
+
+        <div id="adminApiStatus" style="margin-top: 12px; font-size: 14px; color: var(--text-secondary);"></div>
+      </div>
+
+
+      <div class="card">
+        <h3 class="card-title">📦 Backup e Ripristino</h3>
+        <div style="display: flex; gap: 12px; margin-bottom: 16px;">
+          <button class="btn btn-success" onclick="backupData()">💾 Backup Dati</button>
+          <button class="btn btn-warning" onclick="restoreData()">📥 Ripristina Dati</button>
+          <button class="btn btn-danger" onclick="clearAllData()">🗑️ Cancella Tutti i Dati</button>
+        </div>
+        <p style="color: var(--text-secondary); font-size: 14px;">
+          ⚠️ Il backup salva tutti i dati localmente. Ripristina da file precedente.
+        </p>
+      </div>
+    </div>
+
+    <!-- ===================== GESTIONE APPUNTAMENTI ===================== -->
+    <div id="section-gestione-appuntamenti" class="section" style="display:none;">
+      <div class="topbar">
+        <div class="topbar-left">
+          <h1 class="page-title">📋 Appuntamenti</h1>
+          <p class="page-subtitle">Gestione diretta dal database</p>
+        </div>
+        <div class="topbar-right">
+          <button class="btn btn-primary" onclick="gApptOpenForm(null)">➕ Nuovo</button>
+          <button class="btn btn-secondary" onclick="gApptLoad()">🔄 Aggiorna</button>
+        </div>
+      </div>
+
+      <!-- Filtri -->
+      <div class="card" style="margin-bottom:16px;">
+        <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;">
+          <div class="form-group" style="margin:0;flex:1;min-width:180px;">
+            <label class="form-label">Ricerca</label>
+            <input class="form-input" id="gApptSearch" placeholder="Cliente, trattamento…" oninput="gApptRender()">
+          </div>
+          <div class="form-group" style="margin:0;">
+            <label class="form-label">Stato</label>
+            <select class="form-select" id="gApptStatusFilter" onchange="gApptRender()">
+              <option value="">Tutti</option>
+              <option value="confirmed">Confermati</option>
+              <option value="pending">In attesa</option>
+              <option value="completed">Completati</option>
+              <option value="cancelled">Cancellati</option>
+              <option value="no_show">No-show</option>
+            </select>
+          </div>
+          <div class="form-group" style="margin:0;">
+            <label class="form-label">Periodo</label>
+            <select class="form-select" id="gApptPeriodFilter" onchange="gApptLoad()">
+              <option value="upcoming">Prossimi</option>
+              <option value="all">Tutti (ultimi 200)</option>
+              <option value="past">Passati</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div id="gApptList"></div>
+
+      <!-- Modale form appuntamento -->
+      <div id="gApptModal" class="modal" style="display:none;">
+        <div class="modal-content" style="max-width:600px;">
+          <div class="modal-header">
+            <h2 id="gApptModalTitle">Nuovo Appuntamento</h2>
+            <span class="close" onclick="gApptCloseForm()">&times;</span>
+          </div>
+          <div class="modal-body" id="gApptModalBody"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===================== GESTIONE PERSONALE ===================== -->
+    <div id="section-gestione-personale" class="section" style="display:none;">
+      <div class="topbar">
+        <div class="topbar-left">
+          <h1 class="page-title">👩‍🔧 Personale</h1>
+          <p class="page-subtitle">Professionisti del salone</p>
+        </div>
+        <div class="topbar-right">
+          <button class="btn btn-primary" onclick="gProOpenForm(null)">➕ Aggiungi</button>
+          <button class="btn btn-secondary" onclick="gProLoad()">🔄 Aggiorna</button>
+        </div>
+      </div>
+      <div id="gProList"></div>
+      <div id="gProModal" class="modal" style="display:none;">
+        <div class="modal-content" style="max-width:620px;">
+          <div class="modal-header">
+            <h2 id="gProModalTitle">Nuovo Professionista</h2>
+            <span class="close" onclick="gProCloseForm()">&times;</span>
+          </div>
+          <div class="modal-body" id="gProModalBody"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===================== GESTIONE CATEGORIE ===================== -->
+    <div id="section-gestione-categorie" class="section" style="display:none;">
+      <div class="topbar">
+        <div class="topbar-left">
+          <h1 class="page-title">🗂️ Categorie</h1>
+          <p class="page-subtitle">Categorie dei trattamenti</p>
+        </div>
+        <div class="topbar-right">
+          <button class="btn btn-primary" onclick="gCatOpenForm(null)">➕ Aggiungi</button>
+          <button class="btn btn-secondary" onclick="gCatLoad()">🔄 Aggiorna</button>
+        </div>
+      </div>
+      <div id="gCatList"></div>
+      <div id="gCatModal" class="modal" style="display:none;">
+        <div class="modal-content" style="max-width:500px;">
+          <div class="modal-header">
+            <h2 id="gCatModalTitle">Nuova Categoria</h2>
+            <span class="close" onclick="gCatCloseForm()">&times;</span>
+          </div>
+          <div class="modal-body" id="gCatModalBody"></div>
+        </div>
+      </div>
+      <div id="gCatSvcModal" class="modal" style="display:none;">
+        <div class="modal-content" style="max-width:560px;">
+          <div class="modal-header">
+            <h2 id="gCatSvcModalTitle">Trattamenti categoria</h2>
+            <span class="close" onclick="gCatSvcCloseModal()">&times;</span>
+          </div>
+          <div class="modal-body" id="gCatSvcModalBody"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===================== GESTIONE TRATTAMENTI ===================== -->
+    <div id="section-gestione-trattamenti" class="section" style="display:none;">
+      <div class="topbar">
+        <div class="topbar-left">
+          <h1 class="page-title">💅 Trattamenti</h1>
+          <p class="page-subtitle">Servizi offerti dal salone</p>
+        </div>
+        <div class="topbar-right">
+          <button class="btn btn-primary" onclick="gSvcOpenForm(null)">➕ Aggiungi</button>
+          <button class="btn btn-secondary" onclick="gSvcLoad()">🔄 Aggiorna</button>
+        </div>
+      </div>
+      <!-- Filtri -->
+      <div class="card" style="margin-bottom:16px;">
+        <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;">
+          <div class="form-group" style="margin:0;flex:1;min-width:160px;">
+            <label class="form-label">Cerca</label>
+            <input class="form-input" id="gSvcSearch" placeholder="Nome trattamento…" oninput="gSvcRender()">
+          </div>
+          <div class="form-group" style="margin:0;">
+            <label class="form-label">Categoria</label>
+            <select class="form-select" id="gSvcCatFilter" onchange="gSvcRender()">
+              <option value="">Tutte</option>
+            </select>
+          </div>
+          <div class="form-group" style="margin:0;">
+            <label class="form-label">Stato</label>
+            <select class="form-select" id="gSvcActiveFilter" onchange="gSvcRender()">
+              <option value="">Tutti</option>
+              <option value="1">Attivi</option>
+              <option value="0">Inattivi</option>
+            </select>
+          </div>
+        </div>
+      </div>
+      <div id="gSvcList"></div>
+      <div id="gSvcModal" class="modal" style="display:none;">
+        <div class="modal-content" style="max-width:640px;">
+          <div class="modal-header">
+            <h2 id="gSvcModalTitle">Nuovo Trattamento</h2>
+            <span class="close" onclick="gSvcCloseForm()">&times;</span>
+          </div>
+          <div class="modal-body" id="gSvcModalBody"></div>
+        </div>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<!-- Quick Actions -->
+<div class="quick-actions">
+  <button class="quick-action-btn" onclick="openNewBookingModal()" title="Nuova Prenotazione">
+    📅
+  </button>
+  <button class="quick-action-btn" onclick="quickAddClient()" title="Nuovo Cliente">
+    👤
+  </button>
+  <button class="quick-action-btn main" onclick="toggleQuickActions()" title="Menu Rapido">
+    ⚡
+  </button>
+</div>
+
+<!-- Notification Center -->
+<div class="notification-center" id="notificationCenter">
+  <div class="notification-header">
+    <h3>🔔 Notifiche</h3>
+    <button class="modal-close" onclick="hideNotifications()">✕</button>
+  </div>
+  <div class="notification-list" id="notificationList">
+    <!-- Notifications will be inserted here -->
+  </div>
+</div>
+
+<!-- Reschedule Confirmation Modal -->
+<div class="modal" id="rescheduleModal">
+  <div class="modal-content">
+    <div class="modal-header">
+      <h2 class="modal-title">🔄 Conferma Spostamento</h2>
+      <button class="modal-close" onclick="closeRescheduleModal()">✕</button>
+    </div>
+    
+    <div id="rescheduleDetails" style="margin-bottom: var(--spacing-lg);"></div>
+    
+    <div class="form-group">
+      <label class="form-label">
+        <input type="checkbox" id="notifyClient" checked style="margin-right: 8px;">
+        Notifica il cliente via WhatsApp
+      </label>
+    </div>
+
+    <div class="form-group">
+      <label class="form-label">Messaggio personalizzato (opzionale)</label>
+      <textarea class="form-textarea" id="rescheduleMessage" placeholder="Es: Ci scusiamo per l'inconveniente..."></textarea>
+    </div>
+
+    <div style="padding: 12px; background: rgba(255, 149, 0, 0.1); border-radius: var(--radius-md); margin-bottom: var(--spacing-lg); border-left: 3px solid var(--warning);">
+      <div style="font-size: 14px; font-weight: 600; margin-bottom: 4px;">⚠️ Attenzione</div>
+      <div style="font-size: 13px; color: var(--text-secondary);">
+        Il cliente riceverà una notifica automatica con i nuovi dettagli dell'appuntamento.
+      </div>
+    </div>
+
+    <div style="display: flex; gap: 12px;">
+      <button class="btn btn-primary" onclick="confirmReschedule()">✓ Conferma e Notifica</button>
+      <button class="btn btn-secondary" onclick="cancelReschedule()">✕ Annulla</button>
+    </div>
+  </div>
+</div>
+
+<!-- New Booking Modal -->
+<div class="modal" id="bookingModal">
+  <div class="modal-content">
+    <div class="modal-header">
+      <h2 class="modal-title">➕ Nuova Prenotazione</h2>
+      <button class="modal-close" onclick="closeBookingModal()" title="Chiudi (Esc)">✕</button>
+    </div>
+
+    <div class="form-group">
+      <label class="form-label">👤 Nome Cliente <span class="required-star">*</span></label>
+      <input type="text" class="form-input" id="bookingClient" placeholder="Es: Maria Rossi" autocomplete="off">
+      <span class="form-hint">Scrivi il nome e cognome del cliente</span>
+    </div>
+
+    <div class="form-group">
+      <label class="form-label">💅 Servizio <span class="required-star">*</span></label>
+      <select class="form-select" id="bookingService">
+        <option value="">— Scegli servizio —</option>
+      </select>
+      <span class="form-hint">Seleziona il tipo di trattamento</span>
+    </div>
+
+    <div class="form-group">
+      <label class="form-label">👩 Professionista</label>
+      <select class="form-select" id="bookingPro">
+        <option value="">— Qualsiasi —</option>
+      </select>
+      <span class="form-hint">Lascia vuoto se non c'è preferenza</span>
+    </div>
+
+    <div class="form-group">
+      <label class="form-label">📅 Data <span class="required-star">*</span></label>
+      <input type="date" class="form-input" id="bookingDate">
+      <span class="form-hint">Giorno dell'appuntamento</span>
+    </div>
+
+    <div class="form-group">
+      <label class="form-label">🕐 Ora <span class="required-star">*</span></label>
+      <input type="time" class="form-input" id="bookingTime">
+      <span class="form-hint">Orario di inizio (es: 10:30)</span>
+    </div>
+
+    <div class="form-group">
+      <label class="form-label">📞 Telefono WhatsApp</label>
+      <input type="tel" class="form-input" id="bookingPhone" placeholder="Es: 393661234567">
+      <span class="form-hint">Numero per inviare messaggi WhatsApp (solo cifre, con prefisso)</span>
+    </div>
+
+    <div class="form-group">
+      <label class="form-label">📝 Note</label>
+      <textarea class="form-textarea" id="bookingNotes" placeholder="Note aggiuntive, allergie, richieste particolari..."></textarea>
+    </div>
+
+    <div style="display: flex; gap: 12px; margin-top: 4px;">
+      <button class="btn btn-primary" onclick="saveBooking()" style="flex:1;">💾 Salva Prenotazione</button>
+      <button class="btn btn-secondary" onclick="closeBookingModal()">✕ Annulla</button>
+    </div>
+  </div>
+</div>
+
+
+<!-- Booking Details / Edit Modal (scheda) -->
+<datalist id="serviceList"></datalist>
+<div class="modal sheet" id="bookingDetailsModal">
+  <div class="modal-content booking-card">
+    <div class="modal-header">
+      <h2 class="modal-title" id="bdTitle">📋 Prenotazione</h2>
+      <button class="modal-close" onclick="closeBookingDetailsModal()">✕</button>
+    </div>
+
+    <div class="bd-badges" id="bdBadges"></div>
+
+    <div class="bd-grid">
+      <div class="form-group">
+        <label class="form-label">👤 Cliente</label>
+        <input type="text" class="form-input" id="bdCustomer" placeholder="Nome cliente">
+        <span class="form-hint">Nome e cognome</span>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">📞 Telefono (WhatsApp)</label>
+        <input type="text" class="form-input" id="bdPhone" placeholder="Es: 393661234567">
+        <div class="bd-phonehint" id="bdPhoneHint"></div>
+        <span class="form-hint">Numero WhatsApp solo cifre con prefisso internazionale</span>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Servizio</label>
+        <input type="text" class="form-input" id="bdService" list="serviceList" placeholder="Servizio">
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Professionista</label>
+        <input type="text" class="form-input" id="bdPro" placeholder="Es: Diana">
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Data</label>
+        <input type="date" class="form-input" id="bdDate">
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Ora</label>
+        <input type="time" class="form-input" id="bdTime">
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Durata (min)</label>
+        <input type="number" class="form-input" id="bdDuration" min="1" step="5">
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Prezzo</label>
+        <input type="number" class="form-input" id="bdPrice" min="0" step="0.5">
+      </div>
+      <div class="form-group bd-notes">
+        <label class="form-label">Note</label>
+        <textarea class="form-textarea" id="bdNotes" placeholder="Note..."></textarea>
+      </div>
+    </div>
+
+    <div class="bd-notify" id="bdNotifyBox" style="display:none;">
+      <div class="bd-notify-title">📲 Avvisa su WhatsApp</div>
+      <div class="bd-notify-sub">Il messaggio è precompilato in base alle modifiche. Puoi modificarlo prima di inviare.</div>
+      <textarea class="form-textarea" id="bdNotifyMsg" style="min-height: 120px;"></textarea>
+      <button class="btn btn-success" id="bdNotifyBtn" onclick="notifyBookingWhatsApp()">💾 Salva e Avvisa su WhatsApp</button>
+    </div>
+
+    <div class="bd-footer">
+      <button class="btn btn-primary" id="bdSaveBtn" onclick="saveBookingEdits(false)">💾 Salva modifiche</button>
+      <button class="btn btn-danger" onclick="deleteBookingFromDetails()">🗑️ Elimina</button>
+      <button class="btn btn-secondary" onclick="closeBookingDetailsModal()">Chiudi</button>
+    </div>
+  </div>
+</div>
+
+<!-- Tools Modal -->
+<div class="modal" id="toolsModal">
+  <div class="modal-content modal-content-wide">
+    <div class="modal-header">
+      <h2 class="modal-title" id="toolsModalTitle">🧰 Strumenti</h2>
+      <button class="modal-close" onclick="closeToolsModal()">✕</button>
+    </div>
+
+    <div class="tool-tabs" role="tablist" aria-label="Strumenti">
+      <button class="tool-tab-btn" data-tool="coupons" onclick="openToolsModal('coupons')">🎟️ Coupon</button>
+      <button class="tool-tab-btn" data-tool="stock" onclick="openToolsModal('stock')">📦 Magazzino</button>
+      <button class="tool-tab-btn" data-tool="waitlist" onclick="openToolsModal('waitlist')">⏳ Lista d'attesa</button>
+      <button class="tool-tab-btn" data-tool="reminders" onclick="openToolsModal('reminders')">🔔 Promemoria</button>
+    </div>
+
+    <div class="tool-layout">
+      <div class="tool-panel tool-list">
+        <div class="tool-panel-header">
+          <div>
+            <div class="tool-panel-title" id="toolListTitle">Elenco</div>
+            <div class="tool-panel-subtitle" id="toolListSubtitle">—</div>
+          </div>
+          <button class="btn btn-primary btn-sm" id="toolAddBtn" onclick="toolAddNew()">➕ Aggiungi</button>
+        </div>
+        <div id="toolListContainer" class="tool-panel-body"></div>
+      </div>
+
+      <div class="tool-panel tool-form">
+        <div class="tool-panel-header">
+          <div>
+            <div class="tool-panel-title" id="toolFormTitle">Dettagli</div>
+            <div class="tool-panel-subtitle" id="toolFormSubtitle">—</div>
+          </div>
+          <button class="btn btn-secondary btn-sm" id="toolResetBtn" onclick="toolResetForm()">↺ Reset</button>
+        </div>
+        <div id="toolFormContainer" class="tool-panel-body"></div>
+      </div>
+    </div>
+
+    <div class="tool-footer">
+      <div class="tool-footer-text">💾 Salvataggio locale (browser). Backup/Ripristino disponibili in “Impostazioni”.</div>
+    </div>
+  </div>
+</div>
+
+<script>
+// Global State
+const APP = {
+  cfg: null,          // <— configurazione DB (servizi/professionisti)
+  bookings: [],
+  clients: [],
+  settings: {
+    vatRate: 22,
+    hoursPerDay: 8,
+    currency: 'EUR',
+    notifications: 30,
+    backup: 'daily'
+  },
+  calendar: null,
+  charts: {},
+  notifications: [],
+  pendingReschedule: null, // Store pending reschedule info
+  changeLog: [], // Log of all changes
+  tools: {
+    coupons: [],
+    stock: [],
+    waitlist: [],
+    reminders: {
+      enabled24h: true,
+      enabled2h: false,
+      enabledReview: true,
+      reviewLink: "",
+      templates: {
+        reminder24h: "Ciao {name}! Ti ricordiamo l'appuntamento di {date} alle {time} per {service}. Se non riesci a venire rispondi 'sposta'.",
+        reminder2h: "Ciao {name}! Tra poco ti aspettiamo: oggi alle {time} per {service}.",
+        review: "Ciao {name}! Com'è andato il trattamento {service}? Se ti va, lasciaci una recensione: {link}"
+      }
+    }
+  }
+};
+async function loadData() {
+  try {
+    // 1) Carica configurazione dal DB
+    const cfg = await fetchJsonSafe(DATA_URLS.config);
+    if (!cfg) {
+      console.warn("Configurazione non caricata. Apri ?r=health per diagnosticare DB/env.");
+      const b = document.createElement('div');
+      b.style.cssText = 'position:fixed;left:12px;right:12px;bottom:12px;padding:12px 14px;border-radius:12px;background:rgba(255,59,48,0.15);border:1px solid rgba(255,59,48,0.35);backdrop-filter:blur(12px);z-index:9999;';
+      b.innerHTML = '<b>Errore:</b> configurazione DB non caricata. Apri <code>?r=health</code> per diagnosticare.';
+      document.body.appendChild(b);
+    }
+    if (cfg && typeof cfg === "object") {
+      APP.cfg = cfg;
+    } else {
+      APP.cfg = null;
+      showToast("⚠️ Impossibile caricare la configurazione dal database");
+    }
+
+    // 2) Carica SEMPRE lo storage (non perdere settings/notifiche/log)
+    APP.clients = JSON.parse(localStorage.getItem("clients") || "[]") || [];
+    APP.settings = Object.assign(
+      {},
+      APP.settings,
+      JSON.parse(localStorage.getItem("settings") || "{}") || {}
+    );
+    APP.notifications = JSON.parse(localStorage.getItem("notifications") || "[]") || [];
+    APP.changeLog = JSON.parse(localStorage.getItem("changeLog") || "[]") || [];
+
+    // Tools (Coupon / Magazzino / Lista d'attesa / Promemoria)
+    APP.tools = APP.tools || {};
+    APP.tools.coupons = JSON.parse(localStorage.getItem("coupons") || "[]") || [];
+    APP.tools.stock = JSON.parse(localStorage.getItem("stock") || "[]") || [];
+    APP.tools.waitlist = JSON.parse(localStorage.getItem("waitlist") || "[]") || [];
+    APP.tools.reminders = Object.assign(
+      {},
+      (APP.tools.reminders || {}),
+      JSON.parse(localStorage.getItem("reminders") || "{}") || {}
+    );
+
+    // 3) Carica prenotazioni dal DB
+    const rawBookings = await fetchJsonSafe(DATA_URLS.bookings);
+
+    if (Array.isArray(rawBookings)) {
+      APP.bookings = rawBookings.map(normalizeSynkrisBooking);
+    } else {
+      APP.bookings = (JSON.parse(localStorage.getItem("bookings") || "[]") || []).map(
+        normalizeDashboardBooking
+      );
+    }
+
+    // Assicura end/duration coerenti
+    APP.bookings = (APP.bookings || []).map(normalizeDashboardBooking);
+
+    if (APP.bookings.length === 0) {
+      console.info("[loadData] Nessuna prenotazione trovata nel database.");
+    }
+
+    saveData();
+
+    populateServiceSelectFromConfig();
+    populateBookingFiltersFromConfig();
+    wireBookingFiltersOnce();
+  } catch (error) {
+    console.error("Error loading data:", error);
+    showToast("⚠️ Errore nel caricamento dei dati");
+  }
+}
+
+// Initialize
+
+// ===================== WhatsApp Center (Dashboard) =====================
+const WA_TEMPLATES_KEY = "WA_TEMPLATES_V1";
+
+const WA_DEFAULT_TEMPLATES = [
+  {
+    id: "reminder",
+    name: "Promemoria appuntamento",
+    text: "Ciao {{nome}} 😊\nTi ricordo l’appuntamento per *{{servizio}}* il *{{data}}* alle *{{ora}}*{{professionista}}.\nSe hai bisogno di spostarlo, scrivici qui."
+  },
+  {
+    id: "confirm",
+    name: "Richiesta conferma",
+    text: "Ciao {{nome}} 👋\nConfermi l’appuntamento per *{{servizio}}* il *{{data}}* alle *{{ora}}*{{professionista}}?\nRispondi con *SI* per confermare oppure scrivici per modificare."
+  },
+  {
+    id: "review",
+    name: "Richiesta recensione",
+    text: "Ciao {{nome}} ✨\nCom’è andato il trattamento *{{servizio}}*?\nSe ti va, lasciaci una recensione: {{link}}\nGrazie di cuore 💖"
+  },
+  {
+    id: "promo",
+    name: "Promo generica",
+    text: "Ciao {{nome}} 💅\nQuesta settimana abbiamo una promo speciale! Scrivici per info o per prenotare."
+  }
+];
+
+function waLoadTemplates() {
+  try {
+    const raw = localStorage.getItem(WA_TEMPLATES_KEY);
+    const list = raw ? JSON.parse(raw) : null;
+    if (Array.isArray(list) && list.length) return list;
+  } catch {}
+  return JSON.parse(JSON.stringify(WA_DEFAULT_TEMPLATES));
+}
+
+function waSaveTemplates(list) {
+  const clean = (list || []).map(t => ({
+    id: String(t.id || ("tpl_" + Date.now() + "_" + Math.random().toString(16).slice(2))).trim(),
+    name: String(t.name || "Template").trim(),
+    text: String(t.text || "").trim()
+  }));
+  localStorage.setItem(WA_TEMPLATES_KEY, JSON.stringify(clean));
+  return clean;
+}
+
+function waResetTemplates() {
+  waSaveTemplates(JSON.parse(JSON.stringify(WA_DEFAULT_TEMPLATES)));
+  waRenderTemplates();
+  waPopulateTemplateSelects();
+  showToast("✓ Template ripristinati");
+}
+
+function waAddTemplate() {
+  const list = waLoadTemplates();
+  list.unshift({ id: "tpl_" + Date.now(), name: "Nuovo template", text: "" });
+  waSaveTemplates(list);
+  waRenderTemplates();
+  waPopulateTemplateSelects();
+}
+
+function waRenderTemplates() {
+  const wrap = document.getElementById("waTemplatesList");
+  if (!wrap) return;
+
+  const list = waLoadTemplates();
+
+  wrap.innerHTML = list.map(t => {
+    const id = escHtml(t.id);
+    return `
+      <div class="wa-template-item">
+        <div class="wa-template-head">
+          <input class="form-input" data-wa-name="${id}" placeholder="Nome template">
+          <div style="display:flex; gap:8px;">
+            <button class="btn btn-secondary btn-sm" onclick="waDuplicateTemplate('${id}')">⎘</button>
+            <button class="btn-danger btn-sm" onclick="waDeleteTemplate('${id}')">🗑️</button>
+          </div>
+        </div>
+        <textarea class="form-textarea mono" data-wa-text="${id}" style="min-height: 120px;" placeholder="Testo..."></textarea>
+      </div>
+    `;
+  }).join("");
+
+  // Valori senza HTML escaping (così non vedi &amp; ecc.)
+  list.forEach(t => {
+    const id = String(t.id || "");
+    const nameEl = wrap.querySelector(`input[data-wa-name="${CSS.escape(id)}"]`);
+    if (nameEl) {
+      nameEl.value = t.name || "";
+      nameEl.oninput = () => waUpdateTemplateName(id, nameEl.value);
+    }
+
+    const textEl = wrap.querySelector(`textarea[data-wa-text="${CSS.escape(id)}"]`);
+    if (textEl) {
+      textEl.value = t.text || "";
+      textEl.oninput = () => waUpdateTemplateText(id, textEl.value);
+    }
+  });
+}
+
+
+function waUpdateTemplateName(id, v) {
+  const list = waLoadTemplates();
+  const i = list.findIndex(x => x.id === id);
+  if (i === -1) return;
+  list[i].name = String(v || "").trim();
+  waSaveTemplates(list);
+  waPopulateTemplateSelects();
+}
+
+function waUpdateTemplateText(id, v) {
+  const list = waLoadTemplates();
+  const i = list.findIndex(x => x.id === id);
+  if (i === -1) return;
+  list[i].text = String(v || "");
+  waSaveTemplates(list);
+  waPopulateTemplateSelects();
+}
+
+function waDeleteTemplate(id) {
+  if (!confirm("Eliminare questo template?")) return;
+  const list = waLoadTemplates().filter(x => x.id !== id);
+  waSaveTemplates(list);
+  waRenderTemplates();
+  waPopulateTemplateSelects();
+}
+
+function waDuplicateTemplate(id) {
+  const list = waLoadTemplates();
+  const t = list.find(x => x.id === id);
+  if (!t) return;
+  list.unshift({ id: "tpl_" + Date.now(), name: (t.name || "Template") + " (copia)", text: t.text || "" });
+  waSaveTemplates(list);
+  waRenderTemplates();
+  waPopulateTemplateSelects();
+}
+
+function waPopulateTemplateSelects() {
+  const list = waLoadTemplates();
+  const bulkSel = document.getElementById("waBulkTemplate");
+  const tplSel = document.getElementById("waTplSelect");
+  const queueSel = document.getElementById("waQueueTemplate");
+  const opts = list.map(t => `<option value="${escHtml(t.id)}">${escHtml(t.name)}</option>`).join("");
+
+  if (bulkSel) bulkSel.innerHTML = opts;
+  if (tplSel) tplSel.innerHTML = `<option value="">(nessuno)</option>` + opts;
+  if (queueSel) queueSel.innerHTML = `<option value="">(usa testo sopra)</option>` + opts;
+
+  // selezioni di default
+  try {
+    if (bulkSel && !bulkSel.value) bulkSel.value = "reminder";
+  } catch {}
+  try {
+    if (queueSel && !queueSel.value) queueSel.value = "reminder";
+  } catch {}
+}
+
+
+// ---- Template rendering (vars) ----
+function waRenderText(tpl, ctx = {}) {
+  let out = String(tpl || "");
+  const get = (k) => (ctx && (k in ctx)) ? String(ctx[k] ?? "") : "";
+
+  const safePro = get("professionista");
+  const proPart = safePro ? (" con " + safePro) : "";
+
+  const map = {
+    nome: get("nome"),
+    servizio: get("servizio"),
+    data: get("data"),
+    ora: get("ora"),
+    professionista: proPart,
+    link: get("link")
+  };
+
+  out = out.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_, k) => {
+    const key = String(k || "").trim();
+    return (key in map) ? map[key] : "";
+  });
+
+  return out.trim();
+}
+
+// ---- WhatsApp Composer ----
+APP.waComposerCtx = null;
+
+function openWaComposer(opts = {}) {
+  const modal = document.getElementById("waComposerModal");
+  if (!modal) return;
+
+  const toEl = document.getElementById("waTo");
+  const msgEl = document.getElementById("waMsg");
+  const hint = document.getElementById("waToHint");
+  const resp = document.getElementById("waComposerResp");
+  const mediaUrl = document.getElementById("waMediaUrl");
+  const mediaName = document.getElementById("waMediaName");
+
+  APP.waComposerCtx = null;
+  if (resp) { resp.style.display = "none"; resp.textContent = "—"; }
+
+  const to = String(opts.to || "").trim();
+  if (toEl) toEl.value = to;
+  if (hint) hint.textContent = to ? ("ChatId: " + (phoneToChatId(to) || "—")) : "";
+
+  if (mediaUrl) mediaUrl.value = "";
+  if (mediaName) mediaName.value = "";
+
+  waPopulateTemplateSelects();
+
+  // se arriva da una prenotazione, prepariamo contesto per variabili
+  if (opts.bookingId) {
+    const b = (APP.bookings || []).find(x => String(x.id || "") === String(opts.bookingId || ""));
+    if (b) APP.waComposerCtx = { booking: b };
+  }
+
+  // messaggio di default
+  if (msgEl) {
+    const tplId = document.getElementById("waTplSelect")?.value || "";
+    if (tplId) waFillFromTemplate();
+    else msgEl.value = (String(opts.message || "") || "").trim();
+  }
+
+  modal.classList.add("show");
+}
+
+function closeWaComposer() {
+  const modal = document.getElementById("waComposerModal");
+  if (!modal) return;
+  modal.classList.remove("show");
+  APP.waComposerCtx = null;
+}
+
+function waFillFromTemplate() {
+  const tplId = String(document.getElementById("waTplSelect")?.value || "").trim();
+  const msgEl = document.getElementById("waMsg");
+  if (!msgEl) return;
+
+  const list = waLoadTemplates();
+  const tpl = list.find(t => t.id === tplId);
+  if (!tpl) return;
+
+  const ctx = waContextFromComposer();
+  msgEl.value = waRenderText(tpl.text || "", ctx);
+}
+
+function waContextFromBooking(b) {
+  const s = bookingStartDate(b);
+  return {
+    nome: b?.customerName || "",
+    servizio: b?.service || "",
+    data: s ? formatDate(s) : "",
+    ora: s ? formatTime(s) : "",
+    professionista: b?.professionalName || "",
+    link: "https://shorturl.at/es4kd"
+  };
+}
+
+function waContextFromComposer() {
+  const ctx = { link: "https://shorturl.at/es4kd" };
+  const b = APP.waComposerCtx?.booking;
+  if (b) return Object.assign(ctx, waContextFromBooking(b));
+  return ctx;
+}
+
+async function waSendFromComposer() {
+  const toRaw = String(document.getElementById("waTo")?.value || "").trim();
+  const msg = String(document.getElementById("waMsg")?.value || "").trim();
+  const resp = document.getElementById("waComposerResp");
+  const url = String(document.getElementById("waMediaUrl")?.value || "").trim();
+  const filename = String(document.getElementById("waMediaName")?.value || "").trim();
+
+  if (!toRaw) return showToast("⚠️ Inserisci un destinatario");
+  if (!msg && !url) return showToast("⚠️ Inserisci un messaggio o un media");
+
+  const chatId = phoneToChatId(toRaw);
+  if (!chatId) return showToast("⚠️ Numero/ChatId non valido");
+
+  try {
+    // se c'è URL media, prova prima endpoint media; altrimenti testo
+    if (url) {
+      // tenta i path più comuni; se fallisce, manda testo come fallback
+      const payload = { to: chatId, caption: msg, message: msg, url, fileUrl: url, filename: filename || undefined, name: filename || undefined };
+      const candidates = ["/api/sendMedia", "/api/sendFile", "/api/sendImage"];
+
+      let ok = false;
+      let lastErr = "";
+      for (const p of candidates) {
+        try {
+          const r = await adminRequest(p, { method: "POST", body: payload });
+          ok = true;
+          if (resp) { resp.style.display = "block"; resp.textContent = JSON.stringify(r.data || {}, null, 2); }
+          break;
+        } catch (e) {
+          lastErr = String(e?.message || e);
+        }
+      }
+
+      if (!ok) {
+        // fallback testo
+        await adminSendText(chatId, msg || ("📎 " + url));
+        if (resp) { resp.style.display = "block"; resp.textContent = "Media non supportato dal server (" + lastErr + ").\nInviato testo come fallback.";}
+      }
+
+      showToast("✓ Inviato");
+      addNotification("✅ WhatsApp inviato (" + (chatId || "chat") + ")", "success");
+      return;
+    }
+
+    await adminSendText(chatId, msg);
+
+    showToast("✓ Inviato");
+    addNotification("✅ WhatsApp inviato (" + (chatId || "chat") + ")", "success");
+    waLogAdd({ ok: true, type: "composer", to: chatId, name: "", message: msg || ("[media] " + url), ts: waNowMs() });
+  } catch (e) {
+    const err = String(e?.message || e);
+    if (resp) { resp.style.display = "block"; resp.textContent = "ERRORE: " + err; }
+    showToast("⚠️ Invio fallito");
+    addNotification("⚠️ Invio WhatsApp fallito: " + err, "error");
+  }
+}
+
+// ---- Bulk sends ----
+function waBookingsForOffsetDays(offsetDays) {
+  const out = [];
+  const now = new Date();
+  const base = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+  const dayStart = new Date(base.getTime() + offsetDays * 86400000);
+  const dayEnd = new Date(dayStart.getTime() + 86400000);
+
+  (APP.bookings || []).forEach(b => {
+    const s = bookingStartDate(b);
+    if (!s || !Number.isFinite(s.getTime())) return;
+    if (s >= dayStart && s < dayEnd) out.push(b);
+  });
+
+  out.sort((a,b) => bookingStartDate(a).getTime() - bookingStartDate(b).getTime());
+  return out;
+}
+
+function waUniqueRecipientsFromBookings(bookings) {
+  const m = new Map();
+  (bookings || []).forEach(b => {
+    const chatId = phoneToChatId(b?.phone || "");
+    if (!chatId) return;
+    if (!m.has(chatId)) m.set(chatId, b);
+  });
+  return Array.from(m.entries()).map(([chatId, b]) => ({ chatId, booking: b }));
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+async function waSendBatch(items, makeMsg, opts = {}) {
+  const progress = document.getElementById("waBulkProgress");
+  const total = items.length;
+  let ok = 0, fail = 0;
+
+  if (progress) {
+    progress.style.display = "block";
+    progress.textContent = "Preparazione invii...";
+  }
+
+  for (let i = 0; i < total; i++) {
+    const it = items[i];
+    const chatId = it.chatId;
+    const msg = makeMsg(it);
+
+    try {
+      await adminSendText(chatId, msg);
+            waLogAdd({ ok: true, type: "batch", to: chatId, name: (it?.booking?.customerName || it?.client?.name || ""), message: msg, ts: waNowMs() });
+ok++;
+    } catch (e) {
+      fail++;
+      waLogAdd({ ok: false, type: "batch", to: chatId, name: (it?.booking?.customerName || it?.client?.name || ""), message: msg, error: String(e?.message || e), ts: waNowMs() });
+    }
+
+    if (progress) {
+      progress.textContent = `Invio ${i + 1}/${total} • OK ${ok} • FAIL ${fail}`;
+    }
+
+    // rate limit: 850-1200ms
+    const jitter = 850 + Math.floor(Math.random() * 350);
+    await sleep(jitter);
+  }
+
+  if (progress) {
+    progress.textContent = `Finito ✅ • OK ${ok} • FAIL ${fail}`;
+    setTimeout(() => { progress.style.display = "none"; }, 4000);
+  }
+
+  showToast(`✓ Invii completati (OK ${ok}, FAIL ${fail})`);
+}
+
+function waBulkForDay(offsetDays) {
+  const tplId = String(document.getElementById("waBulkTemplate")?.value || "reminder").trim();
+  const tpl = waLoadTemplates().find(t => t.id === tplId) || waLoadTemplates()[0];
+
+  const bookings = waBookingsForOffsetDays(offsetDays);
+  const rec = waUniqueRecipientsFromBookings(bookings);
+
+  const label = offsetDays === 0 ? "oggi" : "domani";
+  if (!rec.length) return showToast("Nessun appuntamento " + label);
+
+  const sample = rec.slice(0, 5).map(x => {
+    const b = x.booking;
+    const s = bookingStartDate(b);
+    return `• ${b.customerName || "Cliente"} • ${formatTime(s)} • ${b.service || "Servizio"}`;
+  }).join("\n");
+
+  if (!confirm(`Inviare promemoria a ${rec.length} contatti per ${label}?\n\nAnteprima (prime 5):\n${sample}`)) return;
+
+  waSendBatch(rec, (it) => waRenderText(tpl.text || "", waContextFromBooking(it.booking)));
+}
+
+function waBulkReviews() {
+  const tpl = waLoadTemplates().find(t => t.id === "review") || waLoadTemplates()[0];
+
+  const now = new Date();
+  const since = new Date(now.getTime() - 3 * 86400000);
+
+  const past = (APP.bookings || [])
+    .map(b => ({ b, end: bookingEndDate(b) || bookingStartDate(b) }))
+    .filter(x => x.end && x.end >= since && x.end <= now)
+    .map(x => x.b);
+
+  const rec = waUniqueRecipientsFromBookings(past);
+  if (!rec.length) return showToast("Nessun appuntamento negli ultimi 3 giorni");
+
+  const sample = rec.slice(0, 5).map(x => `• ${x.booking.customerName || "Cliente"}`).join("\n");
+  if (!confirm(`Inviare richiesta recensione a ${rec.length} contatti?\n\nAnteprima (prime 5):\n${sample}`)) return;
+
+  waSendBatch(rec, (it) => waRenderText(tpl.text || "", waContextFromBooking(it.booking)));
+}
+
+// ---- Broadcast (segmenti) ----
+function waBuildClientsIndex() {
+  const byName = new Map();
+
+  (APP.bookings || []).forEach(booking => {
+    const nameRaw = String(booking.customerName || '').trim();
+    if (!nameRaw) return;
+    const key = nameRaw.toLowerCase();
+
+    const start = bookingStartDate(booking);
+    const price = Number(booking.price || 0) || 0;
+
+    if (!byName.has(key)) {
+      byName.set(key, {
+        name: nameRaw,
+        phone: booking.phone || '',
+        bookings: 0,
+        totalSpent: 0,
+        lastVisit: start
+      });
+    }
+
+    const c = byName.get(key);
+    c.name = nameRaw || c.name;
+    c.phone = booking.phone || c.phone;
+    c.bookings += 1;
+    c.totalSpent += price;
+
+    if (start && Number.isFinite(start.getTime())) {
+      if (!c.lastVisit || start > c.lastVisit) c.lastVisit = start;
+    }
+  });
+
+  return Array.from(byName.values());
+}
+
+function waSegmentClients(segment) {
+  const list = waBuildClientsIndex();
+
+  const now = new Date();
+  const recentSince = new Date(now.getTime() - 30 * 86400000);
+
+  return list.filter(c => {
+    const vip = c.bookings >= 6 || c.totalSpent >= 250;
+    const recent = c.lastVisit && c.lastVisit >= recentSince;
+
+    if (segment === "vip") return vip;
+    if (segment === "recent") return recent;
+    return true;
+  }).filter(c => phoneToChatId(c.phone));
+}
+
+function waPreviewBroadcast() {
+  const seg = String(document.getElementById("waSegment")?.value || "vip");
+  const msg = String(document.getElementById("waBroadcastMsg")?.value || "").trim();
+  const box = document.getElementById("waBroadcastPreview");
+  if (!box) return;
+
+  const targets = waSegmentClients(seg);
+  if (!msg) { box.textContent = "Scrivi un messaggio per vedere l’anteprima."; return; }
+
+  const sample = targets.slice(0, 8).map(c => {
+    const text = waRenderText(msg, { nome: c.name });
+    return `• ${c.name}: ${text}`;
+  }).join("\n\n");
+
+  box.textContent = `Destinatari: ${targets.length}\n\n${sample || "(nessuno)"}`;
+}
+
+async function waSendBroadcast() {
+  const seg = String(document.getElementById("waSegment")?.value || "vip");
+  const msg = String(document.getElementById("waBroadcastMsg")?.value || "").trim();
+  if (!msg) return showToast("⚠️ Messaggio vuoto");
+
+  const targets = waSegmentClients(seg);
+  if (!targets.length) return showToast("Nessun destinatario nel segmento");
+
+  const sampleNames = targets.slice(0, 10).map(c => "• " + c.name).join("\n");
+  if (!confirm(`Inviare broadcast a ${targets.length} contatti?\n\nPrime 10:\n${sampleNames}`)) return;
+
+  const items = targets.map(c => ({ chatId: phoneToChatId(c.phone), client: c }));
+  await waSendBatch(items, (it) => waRenderText(msg, { nome: it.client.name }));
+}
+
+
+// ============================
+// WhatsApp Center - Inbox / Queue / Log / Utilities
+// ============================
+const WA_LOG_KEY = "WA_SEND_LOG_V1";
+const WA_QUEUE_KEY = "WA_SEND_QUEUE_V1";
+
+let WA_INBOX_STATE = { chats: [], selectedChatId: "", messages: [] };
+let WA_QUEUE_COOLDOWN_UNTIL = 0;
+let WA_QUEUE_RUNNING = false;
+let WA_QUEUE_TICKING = false;
+let WA_QUEUE_TIMER = null;
+
+function waNowMs() { return Date.now(); }
+
+function waTryParseJson(s, fallback) {
+  try { return JSON.parse(s); } catch { return fallback; }
+}
+
+async function waClipboardWrite(text) {
+  const s = String(text || "");
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(s);
+      return true;
+    }
+  } catch {}
+  // fallback: textarea
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = s;
+    ta.style.position = "fixed";
+    ta.style.left = "-9999px";
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    return !!ok;
+  } catch {}
+  return false;
+}
+
+function waLogLoad() {
+  const raw = localStorage.getItem(WA_LOG_KEY);
+  const list = waTryParseJson(raw || "[]", []);
+  return Array.isArray(list) ? list : [];
+}
+function waLogSave(list) {
+  try { localStorage.setItem(WA_LOG_KEY, JSON.stringify(list || [])); } catch {}
+}
+function waLogAdd(entry) {
+  const e = entry || {};
+  const list = waLogLoad();
+  list.unshift({
+    ts: Number(e.ts || waNowMs()),
+    ok: !!e.ok,
+    type: String(e.type || "send"),
+    to: String(e.to || ""),
+    name: String(e.name || ""),
+    message: String(e.message || ""),
+    error: String(e.error || ""),
+    meta: e.meta || null
+  });
+  // cap
+  while (list.length > 200) list.pop();
+  waLogSave(list);
+  if (document.getElementById("waLogList")) waLogRender();
+}
+function waLogClear() {
+  localStorage.removeItem(WA_LOG_KEY);
+  waLogRender();
+  showToast("🗑️ Log svuotato");
+}
+async function waLogExport() {
+  const list = waLogLoad();
+  const blob = new Blob([JSON.stringify(list, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "wa_log.json";
+  a.click();
+  URL.revokeObjectURL(url);
+}
+function waFmtTs(ts) {
+  const d = new Date(Number(ts || 0));
+  if (isNaN(d.getTime())) return "—";
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${pad(d.getDate())}/${pad(d.getMonth()+1)} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+function waLogRender() {
+  const box = document.getElementById("waLogList");
+  if (!box) return;
+
+  const q = String(document.getElementById("waLogFilter")?.value || "").trim().toLowerCase();
+  const list = waLogLoad().filter(it => {
+    if (!q) return true;
+    return (
+      String(it.to || "").toLowerCase().includes(q) ||
+      String(it.name || "").toLowerCase().includes(q) ||
+      String(it.message || "").toLowerCase().includes(q) ||
+      String(it.error || "").toLowerCase().includes(q)
+    );
+  });
+
+  if (!list.length) {
+    box.innerHTML = `<div class="hint" style="padding:12px;">Nessun invio registrato.</div>`;
+    return;
+  }
+
+  box.innerHTML = list.map(it => {
+    const badge = it.ok ? `<span class="wa-badge ok">OK</span>` : `<span class="wa-badge fail">FAIL</span>`;
+    const to = escHtml(String(it.to || "—"));
+    const name = it.name ? (" • " + escHtml(it.name)) : "";
+    const msg = escHtml(String(it.message || "")).slice(0, 600);
+    const err = it.ok ? "" : `<div class="s">Errore: ${escHtml(String(it.error || ""))}</div>`;
+    return `
+      <div class="wa-log-item">
+        <div class="h">
+          <div class="s">${waFmtTs(it.ts)} • ${to}${name}</div>
+          ${badge}
+        </div>
+        ${err}
+        <div class="b">${msg}</div>
+      </div>
+    `;
+  }).join("");
+}
+
+// ----------------------------
+// Utilities
+// ----------------------------
+function waUtilUpdate() {
+  const input = document.getElementById("waUtilInput");
+  const raw = String(input?.value || "").trim();
+  const digits = waPhoneDigits(raw);
+  const chatId = phoneToChatId(raw);
+  const pretty = formatPhoneDisplay(raw) || (digits ? ("+" + digits) : "");
+  const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v || "—"; };
+  set("waUtilDigits", digits || "—");
+  set("waUtilChatId", chatId || "—");
+  set("waUtilPretty", pretty || "—");
+}
+async function waUtilCopy(id) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const ok = await waClipboardWrite(el.textContent || "");
+  showToast(ok ? "📋 Copiato" : "⚠️ Copia fallita");
+}
+
+// ----------------------------
+// Inbox (Chats)
+// ----------------------------
+function waInboxSelected() {
+  return String(WA_INBOX_STATE.selectedChatId || "").trim();
+}
+function waInboxSetSelected(chatId) {
+  WA_INBOX_STATE.selectedChatId = String(chatId || "").trim();
+  const sel = document.getElementById("waInboxSelected");
+  if (sel) sel.textContent = WA_INBOX_STATE.selectedChatId || "—";
+  waInboxRenderSelectedMeta();
+  waInboxRender();
+}
+function waInboxNormalizeChats(data) {
+  const arr = Array.isArray(data) ? data : (data?.chats || data?.items || data?.data || []);
+  return Array.isArray(arr) ? arr : [];
+}
+function waInboxChatId(chat) {
+  if (!chat) return "";
+  const id = chat.chatId || chat.id || chat._id || chat.chat_id;
+  if (typeof id === "string") return id;
+  if (id && typeof id === "object") return id._serialized || id.user || id.id || "";
+  if (chat?.contact?.id?._serialized) return chat.contact.id._serialized;
+  return "";
+}
+function waInboxChatTitle(chat) {
+  return String(chat?.name || chat?.title || chat?.formattedTitle || chat?.contact?.name || chat?.contact?.pushname || "").trim();
+}
+function waInboxChatSub(chat) {
+  const last = chat?.lastMessage || chat?.last_message || chat?.last || null;
+  const body = (last && (last.body || last.text || last.message || last.content)) || chat?.lastMessageBody || chat?.lastMessageText || "";
+  return String(body || "").trim();
+}
+function waInboxChatUnread(chat) {
+  const n = chat?.unreadCount ?? chat?.unread ?? chat?.unreadMessages ?? chat?.unread_count;
+  const v = Number(n || 0);
+  return Number.isFinite(v) ? v : 0;
+}
+
+
+function waInboxInit() {
+  const listBox = document.getElementById("waInboxList");
+  const meta = document.getElementById("waInboxMeta");
+  const sel = document.getElementById("waInboxSelected");
+  const msg = document.getElementById("waInboxMessages");
+
+  if (listBox && !String(listBox.innerHTML || "").trim()) {
+    listBox.innerHTML = `<div class="hint" style="padding:12px;">Premi <b>Carica</b> per leggere le chat dal bot.</div>`;
+  }
+  if (meta && !String(meta.innerHTML || "").trim()) meta.textContent = "—";
+  if (sel && !String(sel.textContent || "").trim()) sel.textContent = "—";
+  if (msg) msg.innerHTML = "";
+}
+
+async function waInboxLoad() {
+  const listBox = document.getElementById("waInboxList");
+  if (listBox) listBox.innerHTML = `<div class="hint" style="padding:12px;">Caricamento...</div>`;
+
+  try {
+    const r = await adminRequest("/api/chats", { method: "GET" });
+    const chats = waInboxNormalizeChats(r.data || r);
+    WA_INBOX_STATE.chats = chats;
+    if (!waInboxSelected() && chats.length) {
+      const firstId = waInboxChatId(chats[0]);
+      if (firstId) WA_INBOX_STATE.selectedChatId = firstId;
+    }
+    waInboxRender();
+    waInboxRenderSelectedMeta();
+    showToast(`✅ Chat caricate: ${chats.length}`);
+  } catch (e) {
+    WA_INBOX_STATE.chats = [];
+    waInboxRender();
+    waInboxRenderSelectedMeta();
+    showToast("⚠️ /api/chats non disponibile");
+  }
+}
+
+function waInboxRender() {
+  const box = document.getElementById("waInboxList");
+  if (!box) return;
+
+  const q = String(document.getElementById("waInboxSearch")?.value || "").trim().toLowerCase();
+  const selected = waInboxSelected();
+
+  const rows = (WA_INBOX_STATE.chats || []).map((chat) => {
+    const id = waInboxChatId(chat);
+    const title = waInboxChatTitle(chat) || id || "Chat";
+    const sub = waInboxChatSub(chat);
+    const unread = waInboxChatUnread(chat);
+
+    const hay = (title + " " + id + " " + sub).toLowerCase();
+    if (q && !hay.includes(q)) return null;
+
+    const active = id && selected && id === selected;
+    const badges = [];
+    if (unread > 0) badges.push(`<span class="wa-badge unread">${unread} unread</span>`);
+    return `
+      <div class="wa-row ${active ? "active" : ""}" onclick="waInboxSetSelected(${jsArg(id)})">
+        <div class="left">
+          <div class="title">${escHtml(title)}</div>
+          <div class="sub">${escHtml(id)}</div>
+        </div>
+        <div class="wa-badges">${badges.join("")}</div>
+      </div>
+    `;
+  }).filter(Boolean);
+
+  if (!rows.length) {
+    box.innerHTML = `<div class="hint" style="padding:12px;">Nessuna chat trovata.</div>`;
+    return;
+  }
+  box.innerHTML = rows.join("");
+}
+
+function waInboxRenderSelectedMeta() {
+  const meta = document.getElementById("waInboxMeta");
+  const msgBox = document.getElementById("waInboxMessages");
+  if (msgBox) msgBox.innerHTML = "";
+  if (!meta) return;
+
+  const selected = waInboxSelected();
+  if (!selected) {
+    meta.textContent = "—";
+    return;
+  }
+
+  const chat = (WA_INBOX_STATE.chats || []).find(c => waInboxChatId(c) === selected) || null;
+  if (!chat) {
+    meta.textContent = "—";
+    return;
+  }
+
+  const title = waInboxChatTitle(chat);
+  const sub = waInboxChatSub(chat);
+  const unread = waInboxChatUnread(chat);
+
+  const parts = [];
+  if (title) parts.push(`<b>${escHtml(title)}</b>`);
+  parts.push(`<span class="mono">${escHtml(selected)}</span>`);
+  if (unread) parts.push(`• ${unread} non letti`);
+  if (sub) parts.push(`<br><span style="opacity:.9;">Ultimo: ${escHtml(sub).slice(0, 200)}</span>`);
+  meta.innerHTML = parts.join(" ");
+}
+
+async function waInboxCopyChatId() {
+  const id = waInboxSelected();
+  if (!id) return showToast("Seleziona una chat");
+  const ok = await waClipboardWrite(id);
+  showToast(ok ? "📋 Copiato" : "⚠️ Copia fallita");
+}
+
+async function waInboxSeen() {
+  const id = waInboxSelected();
+  if (!id) return showToast("Seleziona una chat");
+  try {
+    await adminRequest("/api/seen", { method: "POST", body: { chatId: id } });
+    showToast("👁️ Segnato come letto");
+  } catch (e) {
+    showToast("⚠️ Endpoint /api/seen non disponibile");
+  }
+}
+
+async function waInboxTyping() {
+  const id = waInboxSelected();
+  if (!id) return showToast("Seleziona una chat");
+  try {
+    await adminRequest("/api/typing", { method: "POST", body: { chatId: id, on: true } });
+    showToast("⌨️ Typing ON");
+    setTimeout(() => {
+      adminRequest("/api/typing", { method: "POST", body: { chatId: id, on: false } }).catch(() => {});
+    }, 2500);
+  } catch (e) {
+    showToast("⚠️ Endpoint /api/typing non disponibile");
+  }
+}
+
+function waInboxMessage() {
+  const id = waInboxSelected();
+  if (!id) return showToast("Seleziona una chat");
+  openWaComposer({ to: id });
+}
+
+function waInboxOpenInConsole() {
+  const id = waInboxSelected();
+  if (!id) return showToast("Seleziona una chat");
+
+  const method = document.getElementById("waApiMethod");
+  const path = document.getElementById("waApiPath");
+  const body = document.getElementById("waApiBody");
+  if (method) method.value = "POST";
+  if (path) path.value = "/api/seen";
+  if (body) body.value = JSON.stringify({ chatId: id }, null, 2);
+
+  showToast("🧪 Preset pronto in Console HTTP");
+}
+
+function waInboxNormalizeMessages(data) {
+  const arr = Array.isArray(data) ? data : (data?.messages || data?.items || data?.data || []);
+  return Array.isArray(arr) ? arr : [];
+}
+function waInboxMsgBody(m) {
+  return String(m?.body || m?.text || m?.message || m?.content || m?.caption || "").trim();
+}
+function waInboxMsgTs(m) {
+  const t = m?.timestamp ?? m?.t ?? m?.time ?? m?.date ?? m?.ts;
+  const n = Number(t || 0);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  // se sembra in secondi
+  return n < 2e12 ? (n * 1000) : n;
+}
+function waInboxMsgFromMe(m) {
+  return !!(m?.fromMe ?? m?.from_me ?? m?.mine);
+}
+
+async function waInboxFetchMessages() {
+  const id = waInboxSelected();
+  const box = document.getElementById("waInboxMessages");
+  if (!box) return;
+  if (!id) return showToast("Seleziona una chat");
+
+  box.innerHTML = `<div class="hint">Caricamento messaggi...</div>`;
+
+  const enc = encodeURIComponent(id);
+  const tries = [
+    { method: "GET", path: `/api/messages?chatId=${enc}&limit=30`, body: null },
+    { method: "GET", path: `/api/chatMessages?chatId=${enc}&limit=30`, body: null },
+    { method: "POST", path: `/api/messages`, body: { chatId: id, limit: 30 } },
+    { method: "POST", path: `/api/chatMessages`, body: { chatId: id, limit: 30 } },
+    { method: "POST", path: `/api/chat`, body: { chatId: id, limit: 30 } }
+  ];
+
+  let lastErr = null;
+  for (const t of tries) {
+    try {
+      const r = await adminRequest(t.path, { method: t.method, body: t.body });
+      const msgs = waInboxNormalizeMessages(r.data || r);
+      WA_INBOX_STATE.messages = msgs;
+      waInboxRenderMessages();
+      return;
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+
+  box.innerHTML = `<div class="hint">⚠️ Nessun endpoint messaggi trovato. Usa la Console HTTP o aggiungi un endpoint sul server.</div>`;
+  showToast("⚠️ Messaggi non disponibili");
+}
+
+function waInboxRenderMessages() {
+  const box = document.getElementById("waInboxMessages");
+  if (!box) return;
+
+  const msgs = (WA_INBOX_STATE.messages || []).slice(0, 40);
+  if (!msgs.length) {
+    box.innerHTML = `<div class="hint">Nessun messaggio.</div>`;
+    return;
+  }
+
+  box.innerHTML = msgs.map(m => {
+    const me = waInboxMsgFromMe(m);
+    const ts = waInboxMsgTs(m);
+    const body = waInboxMsgBody(m);
+    const who = me ? "Tu" : "Cliente";
+    return `
+      <div class="wa-msg ${me ? "me" : ""}">
+        <div class="meta"><span>${escHtml(who)}</span><span>${escHtml(waFmtTs(ts))}</span></div>
+        <div class="body">${escHtml(body || "—")}</div>
+      </div>
+    `;
+  }).join("");
+}
+
+// ----------------------------
+// Queue
+// ----------------------------
+function waQueueLoad() {
+  const raw = localStorage.getItem(WA_QUEUE_KEY);
+  const list = waTryParseJson(raw || "[]", []);
+  return Array.isArray(list) ? list : [];
+}
+function waQueueSave(list) {
+  try { localStorage.setItem(WA_QUEUE_KEY, JSON.stringify(list || [])); } catch {}
+}
+function waQueueId() {
+  return "q_" + Math.random().toString(16).slice(2) + "_" + Date.now().toString(16);
+}
+function waQueueDelayMs() {
+  const sec = Number(document.getElementById("waQueueDelaySec")?.value || 4);
+  const v = Math.max(1, Math.min(60, sec || 4));
+  return v * 1000;
+}
+function waQueueSendAtMs() {
+  const mode = String(document.getElementById("waQueueSendAtMode")?.value || "now");
+  if (mode !== "schedule") return waNowMs();
+  const v = String(document.getElementById("waQueueSendAt")?.value || "").trim();
+  const ms = v ? Date.parse(v) : NaN;
+  return Number.isFinite(ms) ? ms : waNowMs();
+}
+function waQueueUpdateSendAtUI() {
+  const mode = String(document.getElementById("waQueueSendAtMode")?.value || "now");
+  const wrap = document.getElementById("waQueueSendAtWrap");
+  if (wrap) wrap.style.display = (mode === "schedule") ? "" : "none";
+}
+function waQueueParseRecipients(text) {
+  const lines = String(text || "").split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+  const out = [];
+  const seen = new Set();
+
+  for (const line of lines) {
+    // support "value | name"
+    const parts = line.split("|").map(s => s.trim());
+    const raw = parts[0] || "";
+    const name = parts.slice(1).join(" | ").trim();
+    const to = phoneToChatId(raw);
+    if (!to) continue;
+    if (seen.has(to)) continue;
+    seen.add(to);
+    out.push({ to, name });
+  }
+  return out;
+}
+function waQueueFillFromSegment() {
+  const seg = String(document.getElementById("waQueueSegment")?.value || "all");
+  const segment = (seg === "all") ? "all" : seg;
+  const list = waSegmentClients(segment).slice(0, 500);
+  const txt = list.map(c => `${phoneToChatId(c.phone)} | ${c.name || "Cliente"}`).join("\n");
+  const ta = document.getElementById("waQueueRecipients");
+  if (ta) ta.value = txt;
+  showToast(`👥 Caricati ${list.length} contatti`);
+}
+
+function waQueueRender() {
+  const box = document.getElementById("waQueueList");
+  if (!box) return;
+
+  const q = waQueueLoad();
+  const counts = { pending: 0, sent: 0, failed: 0 };
+  for (const it of q) {
+    if (it.status === "sent") counts.sent++;
+    else if (it.status === "failed") counts.failed++;
+    else counts.pending++;
+  }
+
+  if (!q.length) {
+    box.innerHTML = `<div class="hint" style="padding:12px;">Coda vuota.</div>`;
+    return;
+  }
+
+  box.innerHTML = q.slice(0, 120).map(it => {
+    const badge =
+      it.status === "sent" ? `<span class="wa-badge ok">Inviato</span>` :
+      it.status === "failed" ? `<span class="wa-badge fail">Errore</span>` :
+      `<span class="wa-badge pending">In attesa</span>`;
+
+    const when = it.sendAt ? waFmtTs(it.sendAt) : "—";
+    const to = escHtml(String(it.to || "—"));
+    const name = it.name ? (" • " + escHtml(it.name)) : "";
+    const preview = escHtml(String(it.messagePreview || it.message || "")).slice(0, 80);
+
+    const btnRetry = it.status === "failed" ? `<button class="btn btn-secondary btn-sm" onclick="waQueueRetry(${jsArg(it.id)})">↻</button>` : "";
+    const btnDel = `<button class="btn btn-secondary btn-sm" onclick="waQueueRemove(${jsArg(it.id)})">✕</button>`;
+
+    return `
+      <div class="wa-queue-item">
+        <div class="left">
+          <div class="t">${to}${name}</div>
+          <div class="d">${when} • ${preview || "—"}</div>
+        </div>
+        <div class="right">
+          ${badge}
+          ${btnRetry}
+          ${btnDel}
+        </div>
+      </div>
+    `;
+  }).join("");
+}
+
+function waQueueRemove(id) {
+  const q = waQueueLoad().filter(it => String(it.id) !== String(id));
+  waQueueSave(q);
+  waQueueRender();
+}
+
+function waQueueRetry(id) {
+  const q = waQueueLoad();
+  const it = q.find(x => String(x.id) === String(id));
+  if (!it) return;
+  it.status = "pending";
+  it.error = "";
+  it.attempts = Number(it.attempts || 0) + 1;
+  // invia subito
+  it.sendAt = waNowMs();
+  waQueueSave(q);
+  waQueueRender();
+  showToast("↻ Riprovato (messo in coda)");
+}
+
+function waQueueClearDone() {
+  const q = waQueueLoad().filter(it => it.status !== "sent");
+  waQueueSave(q);
+  waQueueRender();
+}
+function waQueueClearAll() {
+  localStorage.removeItem(WA_QUEUE_KEY);
+  waQueueRender();
+  showToast("🗑️ Coda svuotata");
+}
+
+function waQueueAddFromForm() {
+  const tplId = String(document.getElementById("waQueueTemplate")?.value || "").trim();
+  const tpl = waLoadTemplates().find(t => t.id === tplId) || null;
+
+  const msgRaw = String(document.getElementById("waQueueMessage")?.value || "").trim();
+  const recipientsText = String(document.getElementById("waQueueRecipients")?.value || "");
+  const rec = waQueueParseRecipients(recipientsText);
+
+  if (!rec.length) return showToast("⚠️ Nessun destinatario valido");
+
+  const sendAt = waQueueSendAtMs();
+  const q = waQueueLoad();
+
+  for (const r of rec) {
+    const ctx = { nome: r.name || "" };
+    const text = msgRaw ? msgRaw : (tpl ? (tpl.text || "") : "");
+    const rendered = waRenderText(text, ctx);
+    q.push({
+      id: waQueueId(),
+      createdAt: waNowMs(),
+      sendAt,
+      to: r.to,
+      name: r.name || "",
+      templateId: tpl ? tpl.id : "",
+      message: text,
+      messagePreview: rendered,
+      status: "pending",
+      attempts: 0,
+      error: ""
+    });
+  }
+
+  waQueueSave(q);
+  waQueueRender();
+  showToast(`➕ Aggiunti ${rec.length} in coda`);
+}
+
+function waQueueStart() {
+  if (WA_QUEUE_RUNNING) return showToast("▶️ Coda già in esecuzione");
+  WA_QUEUE_RUNNING = true;
+  if (WA_QUEUE_TIMER) clearInterval(WA_QUEUE_TIMER);
+  WA_QUEUE_TIMER = setInterval(() => waQueueTick().catch(() => {}), 800);
+  showToast("▶️ Coda avviata");
+}
+
+function waQueueStop() {
+  WA_QUEUE_RUNNING = false;
+  if (WA_QUEUE_TIMER) clearInterval(WA_QUEUE_TIMER);
+  WA_QUEUE_TIMER = null;
+  showToast("⏸️ Coda in pausa");
+}
+
+async function waQueueTick() {
+  if (!WA_QUEUE_RUNNING) return;
+  if (WA_QUEUE_TICKING) return;
+  if (waNowMs() < WA_QUEUE_COOLDOWN_UNTIL) return;
+
+  const q = waQueueLoad();
+  const now = waNowMs();
+  const next = q.find(it => (it.status === "pending") && Number(it.sendAt || 0) <= now);
+  if (!next) return;
+
+  WA_QUEUE_TICKING = true;
+  try {
+    const dry = !!document.getElementById("waQueueDryRun")?.checked;
+    const ctx = { nome: next.name || "" };
+    const rendered = waRenderText(next.message || "", ctx);
+
+    if (dry) {
+      next.status = "sent";
+      next.sentAt = now;
+      next.error = "";
+      waLogAdd({ ok: true, type: "queue(dry)", to: next.to, name: next.name, message: rendered, ts: now });
+      showToast("🧪 Simulato: " + (next.name || next.to));
+    } else {
+      try {
+        await adminSendText(next.to, rendered);
+        next.status = "sent";
+        next.sentAt = now;
+        next.error = "";
+        waLogAdd({ ok: true, type: "queue", to: next.to, name: next.name, message: rendered, ts: now });
+      } catch (e) {
+        next.status = "failed";
+        next.error = String(e?.message || e);
+        next.attempts = Number(next.attempts || 0) + 1;
+        waLogAdd({ ok: false, type: "queue", to: next.to, name: next.name, message: rendered, error: next.error, ts: now });
+      }
+    }
+
+    waQueueSave(q);
+    waQueueRender();
+
+    WA_QUEUE_COOLDOWN_UNTIL = waNowMs() + waQueueDelayMs();
+  } finally {
+    WA_QUEUE_TICKING = false;
+  }
+}
+
+function waQueueInit() {
+  waQueueUpdateSendAtUI();
+  waQueueRender();
+}
+
+
+// ---- Status rendering ----
+async function waRefreshStatus() {
+  const baseEl = document.getElementById("waStatusBase");
+  const tokEl = document.getElementById("waStatusToken");
+  if (baseEl) baseEl.textContent = getAdminApiBase();
+  if (tokEl) tokEl.textContent = getAdminApiToken() ? "✓ impostato" : "—";
+
+  const box = document.getElementById("waStatusBox");
+  const grid = document.getElementById("waStatusGrid");
+
+  try {
+    const r = await adminRequest("/status", { method: "GET" });
+    const j = r.data || {};
+
+    const online = !!j.online;
+    const line = online ? "✅ Bot online" : "⚠️ Bot offline";
+    if (box) box.textContent = line + (j.lastError ? (" • " + String(j.lastError)) : "");
+
+    if (grid) {
+      const kv = [];
+      const put = (k, v) => kv.push(`<div class="wa-kv"><div class="k">${escHtml(k)}</div><div class="v">${escHtml(v)}</div></div>`);
+      put("online", String(online));
+      if (j.me) put("me", typeof j.me === "object" ? (j.me?.id || j.me?.wid || JSON.stringify(j.me)) : String(j.me));
+      if (j.phone) put("phone", typeof j.phone === "object" ? JSON.stringify(j.phone) : String(j.phone));
+      if (j.battery) put("battery", typeof j.battery === "object" ? JSON.stringify(j.battery) : String(j.battery));
+      if (j.uptime) put("uptime", String(j.uptime));
+      if (j.session) put("session", String(j.session));
+      put("raw keys", Object.keys(j || {}).slice(0, 12).join(", "));
+      grid.innerHTML = kv.join("");
+    }
+  } catch (e) {
+    if (box) box.textContent = "⚠️ Stato non disponibile (" + String(e?.message || e) + ")";
+    if (grid) grid.innerHTML = "";
+  }
+}
+
+// ---- HTTP Console ----
+const WA_API_PRESETS = [
+  {
+    name: "Invia testo (/api/send)",
+    method: "POST",
+    path: "/api/send",
+    body: { to: "39XXXXXXXXXX@c.us", message: "Ciao! 👋", msg: "Ciao! 👋" }
+  },
+  {
+    name: "Invia immagine (/api/sendImage)",
+    method: "POST",
+    path: "/api/sendImage",
+    body: { to: "39XXXXXXXXXX@c.us", imageUrl: "https://...", caption: "Foto 📸" }
+  },
+  {
+    name: "Invia file (/api/sendFile)",
+    method: "POST",
+    path: "/api/sendFile",
+    body: { to: "39XXXXXXXXXX@c.us", fileUrl: "https://...", filename: "promo.pdf", caption: "Ecco il PDF" }
+  },
+  {
+    name: "Segna come letto (/api/seen)",
+    method: "POST",
+    path: "/api/seen",
+    body: { chatId: "39XXXXXXXXXX@c.us" }
+  },
+  {
+    name: "Typing ON (/api/typing)",
+    method: "POST",
+    path: "/api/typing",
+    body: { chatId: "39XXXXXXXXXX@c.us", on: true }
+  },
+  {
+    name: "Lista chat (/api/chats)",
+    method: "GET",
+    path: "/api/chats",
+    body: null
+  },
+  {
+    name: "Stato bot (/status)",
+    method: "GET",
+    path: "/status",
+    body: null
+  }
+];
+
+function waInitApiPresets() {
+  const sel = document.getElementById("waApiPreset");
+  if (!sel) return;
+  sel.innerHTML = WA_API_PRESETS.map((p, i) => `<option value="${i}">${escHtml(p.name)}</option>`).join("");
+  waApplyPreset();
+}
+
+function waApplyPreset() {
+  const sel = document.getElementById("waApiPreset");
+  const i = Number(sel?.value || 0) || 0;
+  const p = WA_API_PRESETS[Math.max(0, Math.min(WA_API_PRESETS.length - 1, i))];
+
+  const m = document.getElementById("waApiMethod");
+  const pathEl = document.getElementById("waApiPath");
+  const bodyEl = document.getElementById("waApiBody");
+  const resp = document.getElementById("waApiResp");
+
+  if (m) m.value = p.method || "POST";
+  if (pathEl) pathEl.value = p.path || "/api/send";
+  if (bodyEl) bodyEl.value = (p.body === null || p.body === undefined) ? "" : JSON.stringify(p.body, null, 2);
+  if (resp) resp.textContent = "—";
+}
+
+function waClearApi() {
+  const bodyEl = document.getElementById("waApiBody");
+  const resp = document.getElementById("waApiResp");
+  if (bodyEl) bodyEl.value = "";
+  if (resp) resp.textContent = "—";
+}
+
+async function waSendApiRequest() {
+  const method = String(document.getElementById("waApiMethod")?.value || "POST").toUpperCase();
+  const path = String(document.getElementById("waApiPath")?.value || "").trim();
+  const bodyRaw = String(document.getElementById("waApiBody")?.value || "").trim();
+  const resp = document.getElementById("waApiResp");
+
+  let body = null;
+  if (bodyRaw) {
+    try { body = JSON.parse(bodyRaw); }
+    catch { return showToast("⚠️ Body JSON non valido"); }
+  }
+
+  try {
+    const r = await adminRequest(path || "/status", { method, body });
+    if (resp) resp.textContent = JSON.stringify(r.data || {}, null, 2);
+    showToast("✓ Richiesta OK");
+  } catch (e) {
+    const err = String(e?.message || e);
+    if (resp) resp.textContent = "ERRORE: " + err;
+    showToast("⚠️ Errore richiesta");
+  }
+}
+
+function waCopyCurl() {
+  const method = String(document.getElementById("waApiMethod")?.value || "POST").toUpperCase();
+  const path = String(document.getElementById("waApiPath")?.value || "").trim();
+  const bodyRaw = String(document.getElementById("waApiBody")?.value || "").trim();
+  const base = getAdminApiBase();
+  const token = getAdminApiToken();
+
+  const url = base + (path.startsWith("/") ? path : ("/" + path));
+  const headers = [];
+  if (token) headers.push(`-H "X-Admin-Token: ${token.replace(/"/g, '\\\"')}"`);
+  if (method !== "GET") headers.push('-H "Content-Type: application/json"');
+
+  const bodyPart = (method === "GET" || !bodyRaw) ? "" : (" \\\n  --data '" + bodyRaw.replace(/'/g, "'\\''") + "'");
+  const cmd = `curl -X ${method} "\${url}" \\\n  ${headers.join(" \\\n  ")}${bodyPart}`;
+
+  navigator.clipboard?.writeText(cmd).then(() => showToast("✓ curl copiato")).catch(() => showToast("⚠️ Copia non riuscita"));
+}
+
+// ---- Quick buttons hooks from lists ----
+function openWaComposerFromBooking(id) {
+  const b = (APP.bookings || []).find(x => String(x.id || "") === String(id || ""));
+  if (!b) return;
+  const chat = b.phone || "";
+  openWaComposer({ to: chat, bookingId: b.id });
+}
+
+function openWaComposerToClient(phone, name) {
+  const to = String(phone || "").trim();
+  openWaComposer({ to, message: name ? ("Ciao " + name + " 😊\n") : "" });
+}
+
+// ---- Init WhatsApp Center ----
+function waInit() {
+  waPopulateTemplateSelects();
+  waRenderTemplates();
+  waInitApiPresets();
+  waRefreshStatus();
+
+  // Extra tools
+  try { waInboxInit(); } catch {}
+  try { waQueueInit(); } catch {}
+  try { waLogRender(); } catch {}
+  try { waUtilUpdate(); } catch {}
+}
+
+
+
+// ============================================================
+// DB SYNC — sincronizza le modifiche con il backend PostgreSQL
+// ============================================================
+const dbSync = {
+  _bar: null,
+  _statusEl: null,
+  _timer: null,
+
+  _getBar() {
+    if (!this._bar) this._bar = document.getElementById('dbSyncBar');
+    return this._bar;
+  },
+  _getStatus() {
+    if (!this._statusEl) this._statusEl = document.getElementById('dbSyncStatus');
+    return this._statusEl;
+  },
+
+  _setState(state) { // 'syncing' | 'ok' | 'err' | ''
+    const bar = this._getBar();
+    if (!bar) return;
+    bar.className = 'db-sync-bar' + (state ? ' ' + state : '');
+    if (state === 'ok' || state === 'err') {
+      clearTimeout(this._timer);
+      this._timer = setTimeout(() => { bar.className = 'db-sync-bar'; }, 2500);
+    }
+  },
+
+  _setStatus(msg, color) {
+    const el = this._getStatus();
+    if (!el) return;
+    el.textContent = msg;
+    el.style.color = color || 'var(--text-tertiary)';
+    if (msg) {
+      clearTimeout(el._timer);
+      el._timer = setTimeout(() => { el.textContent = ''; }, 5000);
+    }
+  },
+
+
+  async _post(route, body) {
+    // Salva sullo stesso backend della dashboard (stesso origin).
+    // Evita CORS e mismatch tra "API bot" e "API dashboard".
+    const token = (localStorage.getItem('ADMIN_API_TOKEN') || '').trim();
+    const url = `?r=${route}`;
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { 'X-Admin-Token': token } : {})
+      },
+      body: JSON.stringify(body)
+    });
+    if (!resp.ok) {
+      const txt = await resp.text().catch(() => resp.statusText);
+      throw new Error(`HTTP ${resp.status}: ${txt}`);
+    }
+    return resp.json();
+  },
+
+
+  // Salva (upsert) un booking nel DB
+  async saveBooking(booking) {
+    if (!booking) return;
+    this._setState('syncing');
+    try {
+      const r = await this._post('booking_save', { booking });
+      if (!r || r.ok !== true) {
+        throw new Error('API booking_save: ok=false');
+      }
+      this._setState('ok');
+      this._setStatus('✓ Salvato nel database', 'var(--success)');
+      return r;
+    } catch (e) {
+      console.warn('[dbSync] saveBooking failed:', e);
+      this._setState('err');
+      this._setStatus('⚠️ Non salvato nel DB (verifica connessione)', 'var(--danger)');
+      return null;
+    }
+  },
+
+  // Elimina un booking dal DB
+  async deleteBooking(booking) {
+    if (!booking) return;
+    const eventId = booking.eventId || booking.event_id || null;
+    if (!eventId) return; // niente da cancellare se non abbiamo event_id
+    this._setState('syncing');
+    try {
+      const r = await this._post('booking_delete', { eventId });
+      this._setState('ok');
+      this._setStatus('✓ Eliminato dal database', 'var(--success)');
+      return r;
+    } catch (e) {
+      console.warn('[dbSync] deleteBooking failed:', e);
+      this._setState('err');
+      this._setStatus('⚠️ Non eliminato dal DB', 'var(--danger)');
+      return null;
+    }
+  },
+
+  // Aggiorna solo lo status nel DB
+  async updateStatus(booking, status) {
+    const eventId = booking?.eventId || booking?.event_id || null;
+    if (!eventId) return;
+    try {
+      await this._post('booking_status', { eventId, status });
+    } catch (e) {
+      console.warn('[dbSync] updateStatus failed:', e);
+    }
+  },
+
+  // Sincronizza in batch tutti i booking con _dirty=true
+  async syncDirty() {
+    const dirty = (APP.bookings || []).filter(b => b._dirty && !b._syncPending);
+    if (!dirty.length) return;
+    for (const b of dirty) {
+      b._syncPending = true;
+      const r = await this.saveBooking(b);
+      if (r && r.ok) {
+        b._dirty = false;
+        b._syncPending = false;
+      } else {
+        b._syncPending = false;
+      }
+    }
+  }
+};
+
+// Sincronizzazione automatica ogni 30 secondi per i booking _dirty
+setInterval(() => { try { dbSync.syncDirty(); } catch {} }, 30000);
+
+// ============================================================
+// EASY MODE — Modalità Facile per utenti meno esperti
+// ============================================================
+function initEasyMode() {
+  const stored = localStorage.getItem('easyMode');
+  if (stored === '1') {
+    document.documentElement.setAttribute('data-easy-mode', '1');
+  }
+}
+
+function toggleEasyMode() {
+  const isOn = document.documentElement.getAttribute('data-easy-mode') === '1';
+  if (isOn) {
+    document.documentElement.removeAttribute('data-easy-mode');
+    localStorage.setItem('easyMode', '0');
+    showToast('Modalità standard attivata');
+  } else {
+    document.documentElement.setAttribute('data-easy-mode', '1');
+    localStorage.setItem('easyMode', '1');
+    showToast('✅ Modalità Facile attivata — tutto più grande!');
+  }
+}
+
+initEasyMode();
+
+// ============================================================
+// DIALOGO DI CONFERMA PERSONALIZZATO (più chiaro del confirm() browser)
+// ============================================================
+function showConfirm(opts) {
+  // opts: { icon, title, message, confirmLabel, confirmClass, cancelLabel, onConfirm, onCancel }
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.className = 'confirm-overlay';
+    overlay.innerHTML = `
+      <div class="confirm-box" role="dialog" aria-modal="true">
+        <div class="confirm-icon">${opts.icon || '❓'}</div>
+        <div class="confirm-title">${opts.title || 'Sei sicuro?'}</div>
+        <div class="confirm-msg">${opts.message || ''}</div>
+        <div class="confirm-actions">
+          <button class="btn btn-secondary" id="_cfCancel" style="min-width:120px;">${opts.cancelLabel || 'Annulla'}</button>
+          <button class="btn ${opts.confirmClass || 'btn-primary'}" id="_cfOk" style="min-width:140px;">${opts.confirmLabel || 'Conferma'}</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+
+    const close = (result) => {
+      overlay.remove();
+      resolve(result);
+      if (result && opts.onConfirm) opts.onConfirm();
+      if (!result && opts.onCancel) opts.onCancel();
+    };
+
+    overlay.querySelector('#_cfOk').addEventListener('click', () => close(true));
+    overlay.querySelector('#_cfCancel').addEventListener('click', () => close(false));
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(false); });
+    document.addEventListener('keydown', function esc(e) {
+      if (e.key === 'Escape') { document.removeEventListener('keydown', esc); close(false); }
+    });
+
+    // Focus sul tasto principale
+    setTimeout(() => overlay.querySelector('#_cfOk').focus(), 50);
+  });
+}
+
+document.addEventListener('DOMContentLoaded', async () => {
+
+// ---- Skeleton loading: mostra placeholder mentre i dati arrivano ----
+(function showLoadingSkeletons() {
+  const kpiGrid = document.querySelector('.kpi-grid');
+  if (kpiGrid && !kpiGrid.dataset.loaded) {
+    kpiGrid.querySelectorAll('.kpi-value').forEach(el => {
+      el.innerHTML = '<div class="skeleton skeleton-text short"></div>';
+    });
+    kpiGrid.querySelectorAll('.kpi-trend').forEach(el => {
+      el.innerHTML = '<div class="skeleton skeleton-text" style="width:60%; height:12px;"></div>';
+    });
+  }
+})();
+
+await loadData();
+// initCalendar() viene chiamato quando apri la sezione Calendario
+initCharts();
+updateDashboard();
+checkUpcomingAppointments();
+startNotificationChecker();
+  
+  // Set default date for booking
+  const today = new Date().toISOString().split('T')[0];
+  if (document.getElementById('bookingDate')) {
+    document.getElementById('bookingDate').value = today;
+  }
+  
+  // Load theme
+  const theme = localStorage.getItem('theme') || 'dark';
+  document.documentElement.setAttribute('data-theme', theme);
+  
+  initMobileUI();
+  initAdminApiUI();
+    waInit();
+
+  // Search inputs
+  const bs = document.getElementById('bookingSearch');
+  if (bs && !bs._wired) {
+    bs.addEventListener('input', () => updateBookingsList());
+    bs._wired = true;
+  }
+  const cs = document.getElementById('clientSearch');
+  if (cs && !cs._wired) {
+    cs.addEventListener('input', () => updateClientsList());
+    cs._wired = true;
+  }
+
+  startBookingsWatcher();
+
+  // ---- Routing da URL hash (es: #calendar, #bookings) ----
+  (function initHashRouting() {
+    const VALID_SECTIONS = ['dashboard', 'calendar', 'bookings', 'clients', 'analytics', 'tools', 'reports', 'whatsapp', 'settings'];
+
+    function activateSectionFromHash() {
+      const hash = window.location.hash.replace('#', '').trim();
+      if (hash && VALID_SECTIONS.includes(hash)) {
+        // trova il nav-item corrispondente e attivalo
+        const navItem = Array.from(document.querySelectorAll('.nav-item'))
+          .find(el => el.getAttribute('onclick') && el.getAttribute('onclick').includes("'" + hash + "'"));
+        showSection(hash, navItem || null);
+      }
+    }
+
+    // Ripristina sezione all'apertura (es: link diretto o F5)
+    activateSectionFromHash();
+
+    // Gestisce tasto Back/Forward del browser
+    window.addEventListener('popstate', activateSectionFromHash);
+  })();
+
+  // ---- Escape chiude qualsiasi modal aperto ----
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    const openModals = document.querySelectorAll('.modal.show');
+    openModals.forEach(m => m.classList.remove('show'));
+    // chiudi anche sidebar mobile
+    if (typeof closeSidebar === 'function') closeSidebar();
+  });
+
+  // -------------------- WATCHER: sync da DB (modifiche clienti/bot) --------------------
+  function bookingSig(b) {
+    const s = bookingStartDate(b);
+    const e = bookingEndDate(b);
+    const obj = {
+      id: String(b?.id || ""),
+      customerName: String(b?.customerName || ""),
+      service: String(b?.service || ""),
+      professionalName: String(b?.professionalName || ""),
+      professionalEmail: String(b?.professionalEmail || ""),
+      phone: String(b?.phone || ""),
+      price: Number(b?.price || 0) || 0,
+      durationMin: Number(b?.durationMin || 0) || 0,
+      start: s ? toLocalIsoNoZ(s) : "",
+      end: e ? toLocalIsoNoZ(e) : "",
+      notes: String(b?.notes || ""),
+      status: String(b?.status || "")
+    };
+    return JSON.stringify(obj);
+  }
+
+  function mergeBookingInPlace(dst, src) {
+    // non toccare i locali “dirty”
+    if (dst && dst._dirty) return false;
+
+    const before = bookingSig(dst);
+    const keys = ["customerName","service","professionalName","professionalEmail","phone","price","durationMin","date","end","notes","status"];
+    keys.forEach(k => { if (src && (k in src)) dst[k] = src[k]; });
+
+    dst._origin = "remote";
+    dst._dirty = false;
+
+    // assicura end coerente
+    const s = bookingStartDate(dst);
+    const dur = Math.max(1, Number(dst.durationMin || 30) || 30);
+    const e = bookingEndDate(dst) || (s ? new Date(s.getTime() + dur * 60000) : null);
+    if (s && e) {
+      dst.date = toLocalIsoNoZ(s);
+      dst.end = toLocalIsoNoZ(e);
+      dst.durationMin = dur;
+    }
+
+    return before !== bookingSig(dst);
+  }
+
+  function startBookingsWatcher() {
+    if (startBookingsWatcher._started) return;
+    startBookingsWatcher._started = true;
+
+    const POLL_MS = 7000;
+    let lastOk = 0;
+
+    setInterval(async () => {
+      // evita spam se tab è in background
+      if (document.hidden) return;
+
+      const raw = await fetchJsonSafe(DATA_URLS.bookings);
+      if (!Array.isArray(raw)) return;
+
+      const remote = raw.map(normalizeSynkrisBooking);
+      const remoteMap = new Map(remote.map(b => [String(b.id || ""), b]));
+
+      const local = (APP.bookings || []);
+      const localMap = new Map(local.map(b => [String(b.id || ""), b]));
+
+      // A) Aggiunti (clienti/bot)
+      for (const [id, rb] of remoteMap.entries()) {
+        if (!id) continue;
+        if (isDeletedBookingId(id)) continue;
+        if (!localMap.has(id)) {
+          rb._origin = "remote";
+          rb._dirty = false;
+          APP.bookings.push(rb);
+
+          APP.changeLog.push({
+            id: "LOG" + Date.now() + "_" + Math.random().toString(16).slice(2),
+            bookingId: rb.id,
+            customerName: rb.customerName,
+            changeType: "created",
+            oldSnapshot: null,
+            newSnapshot: JSON.parse(JSON.stringify(rb)),
+            timestamp: new Date().toISOString(),
+            notificationSent: false
+          });
+        }
+      }
+
+      // B) Rimossi (solo se erano remote e NON dirty)
+      for (const [id, lb] of localMap.entries()) {
+        if (!id) continue;
+        if (!remoteMap.has(id)) {
+          if (lb && lb._origin === "remote" && !lb._dirty) {
+            APP.bookings = APP.bookings.filter(x => String(x.id || "") !== id);
+
+            APP.changeLog.push({
+              id: "LOG" + Date.now() + "_" + Math.random().toString(16).slice(2),
+              bookingId: lb.id,
+              customerName: lb.customerName,
+              changeType: "deleted",
+              oldSnapshot: JSON.parse(JSON.stringify(lb)),
+              newSnapshot: null,
+              timestamp: new Date().toISOString(),
+              notificationSent: false
+            });
+          }
+        }
+      }
+
+      // C) Modificati (clienti/bot) -> aggiorna se non dirty
+      for (const [id, rb] of remoteMap.entries()) {
+        if (isDeletedBookingId(id)) continue;
+        const lb = localMap.get(id);
+        if (!lb) continue;
+
+        const a = bookingSig(lb);
+        const b = bookingSig(rb);
+
+        if (a !== b) {
+          if (lb._dirty) {
+            // conflitto: segnala ma non sovrascrivere
+            // (evitiamo di distruggere modifiche fatte dalla dashboard)
+            // opzionale: showToast("⚠️ Conflitto: esiste una modifica locale non sincronizzata");
+            continue;
+          }
+
+          const oldSnapshot = JSON.parse(JSON.stringify(lb));
+          const changed = mergeBookingInPlace(lb, rb);
+
+          if (changed) {
+            // diff (riusa bdDiff)
+            const cur = {
+              customerName: lb.customerName || "",
+              phone: lb.phone || "",
+              service: lb.service || "",
+              professionalName: lb.professionalName || "",
+              start: bookingStartDate(lb),
+              durationMin: Math.max(1, Number(lb.durationMin || 30) || 30),
+              price: Number(lb.price || 0) || 0,
+              notes: lb.notes || ""
+            };
+            const diff = bdDiff(oldSnapshot || {}, cur);
+
+            APP.changeLog.push({
+              id: "LOG" + Date.now() + "_" + Math.random().toString(16).slice(2),
+              bookingId: lb.id,
+              customerName: lb.customerName,
+              changeType: "edit",
+              changes: diff.changes,
+              oldSnapshot,
+              newSnapshot: JSON.parse(JSON.stringify(lb)),
+              timestamp: new Date().toISOString(),
+              notificationSent: false
+            });
+          }
+        }
+      }
+
+      lastOk = Date.now();
+      saveData();
+
+      // aggiorna UI “soft”
+      if (APP.calendar) refreshCalendarEvents();
+      updateDashboard();
+      // se sei nella sezione bookings/clients, aggiorna
+      try { updateBookingsList(); } catch {}
+      try { updateClientsList(); } catch {}
+    }, POLL_MS);
+  }
+
+  showToast('✨ Dashboard caricata con successo!');
+});
+
+// Data Management
+const DATA_URLS = { config: "?r=config", bookings: "?r=bookings" }
+;
+
+
+// Se i tuoi startTime sono salvati con "Z" ma in realtà rappresentano ORA LOCALE,
+// lascia true (molto comune nei bot). Se sono davvero UTC, metti false.
+const ASSUME_Z_IS_LOCAL = true;
+
+async function fetchJsonSafe(url) {
+  try {
+    const bust = (url.includes('?') ? '&' : '?') + 't=' + Date.now();
+    const safeUrl = encodeURI(url);
+const apiToken = localStorage.getItem('ADMIN_API_TOKEN') || '';
+    const res = await fetch(safeUrl + bust, { cache: 'no-store', headers: (apiToken ? { 'X-Admin-Token': apiToken } : {}) });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+function parseIsoMaybeLocal(iso) {
+  if (!iso) return null;
+
+  if (iso instanceof Date) {
+    return Number.isFinite(iso.getTime()) ? iso : null;
+  }
+
+  if (typeof iso === "number" && Number.isFinite(iso)) {
+    const ms = iso < 1e12 ? iso * 1000 : iso;
+    const d = new Date(ms);
+    return Number.isFinite(d.getTime()) ? d : null;
+  }
+
+  const s0 = String(iso).trim();
+  if (!s0) return null;
+
+  // A) ISO "locale" senza timezone: YYYY-MM-DD o YYYY-MM-DDTHH:mm[:ss][.ms]
+  //    -> forza interpretazione come ORA LOCALE (evita shift e valori che cambiano tra refresh/browser)
+  {
+    const m = s0.match(/^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2}))?(?:\.(\d{1,3}))?)?$/);
+    // Solo se NON c'è offset/Z (questa regex non include +/-)
+    if (m) {
+      const y = Number(m[1]), mo = Number(m[2]) - 1, da = Number(m[3]);
+      const hh = Number(m[4] ?? 0), mm = Number(m[5] ?? 0), ss = Number(m[6] ?? 0);
+      const ms = Number(String(m[7] ?? "0").padEnd(3, "0"));
+      const dt = new Date(y, mo, da, hh, mm, ss, ms);
+      return Number.isFinite(dt.getTime()) ? dt : null;
+    }
+  }
+
+  // B) "Z" finale ma in realtà ORA LOCALE (ignora timezone)
+  if (ASSUME_Z_IS_LOCAL && /Z$/.test(s0)) {
+    const m = s0.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?(?:\.(\d{1,3}))?Z$/);
+    if (m) {
+      const y = Number(m[1]), mo = Number(m[2]) - 1, da = Number(m[3]);
+      const hh = Number(m[4]), mm = Number(m[5]), ss = Number(m[6] || 0);
+      const ms = Number(String(m[7] || "0").padEnd(3, "0"));
+      const dt = new Date(y, mo, da, hh, mm, ss, ms);
+      return Number.isFinite(dt.getTime()) ? dt : null;
+    }
+  }
+
+  // C) ISO standard (con timezone/offset) -> Date.parse
+  let t = Date.parse(s0);
+  if (Number.isFinite(t)) {
+    const d = new Date(t);
+    return Number.isFinite(d.getTime()) ? d : null;
+  }
+
+  // D) "YYYY-MM-DD HH:mm[:ss]"
+  const m1 = s0.match(/^(\d{4})-(\d{2})-(\d{2})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+  if (m1) {
+    const y = Number(m1[1]), mo = Number(m1[2]) - 1, da = Number(m1[3]);
+    const hh = Number(m1[4]), mm = Number(m1[5]), ss = Number(m1[6] || 0);
+    const dt = new Date(y, mo, da, hh, mm, ss, 0);
+    return Number.isFinite(dt.getTime()) ? dt : null;
+  }
+
+  // E) "DD/MM/YYYY" (o "DD/MM/YYYY HH:mm")
+  const m2 = s0.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{2}))?$/);
+  if (m2) {
+    const da = Number(m2[1]), mo = Number(m2[2]) - 1, y = Number(m2[3]);
+    const hh = Number(m2[4] || 0), mm = Number(m2[5] || 0);
+    const dt = new Date(y, mo, da, hh, mm, 0, 0);
+    return Number.isFinite(dt.getTime()) ? dt : null;
+  }
+
+  return null;
+}
+
+function pad2(n) { return String(n).padStart(2, '0'); }
+
+// ISO locale SENZA timezone (FullCalendar lo interpreta come ora locale, evitando shift di 1h)
+function toLocalIsoNoZ(d) {
+  if (!(d instanceof Date) || !Number.isFinite(d.getTime())) return "";
+  return (
+    [d.getFullYear(), pad2(d.getMonth() + 1), pad2(d.getDate())].join("-") +
+    "T" +
+    [pad2(d.getHours()), pad2(d.getMinutes()), pad2(d.getSeconds())].join(":")
+  );
+}
+
+// Date helpers coerenti per tutto il file
+function bookingStartDate(b) {
+  return parseIsoMaybeLocal(b && (b.date || b.startTime || b.start)) || new Date();
+}
+
+function bookingEndDate(b) {
+  const start = bookingStartDate(b);
+  const explicitEnd = parseIsoMaybeLocal(b && (b.end || b.endTime));
+  if (explicitEnd) return explicitEnd;
+
+  const meta = cfgServiceMeta(b && b.service);
+  const dur = Math.max(
+    1,
+    Number(b && (b.durationMin ?? b.duration)) ||
+      Number(meta?.durationMin ?? meta?.duration) ||
+      30
+  );
+
+  return new Date(start.getTime() + dur * 60000);
+}
+
+// Persistenza base su localStorage (fallback se non riesci a fetchare i JSON)
+function saveData() {
+  try {
+    localStorage.setItem('bookings', JSON.stringify(APP.bookings || []));
+    localStorage.setItem('clients', JSON.stringify(APP.clients || []));
+    localStorage.setItem('settings', JSON.stringify(APP.settings || {}));
+    localStorage.setItem('notifications', JSON.stringify(APP.notifications || []));
+    localStorage.setItem('changeLog', JSON.stringify(APP.changeLog || []));
+    localStorage.setItem('coupons', JSON.stringify((APP.tools && APP.tools.coupons) || []));
+    localStorage.setItem('stock', JSON.stringify((APP.tools && APP.tools.stock) || []));
+    localStorage.setItem('waitlist', JSON.stringify((APP.tools && APP.tools.waitlist) || []));
+    localStorage.setItem('reminders', JSON.stringify((APP.tools && APP.tools.reminders) || {}));
+
+  } catch (e) {
+    console.warn('saveData failed', e);
+  }
+}
+
+// Normalizza prenotazioni già salvate in localStorage (o create dalla UI)
+function normalizeDashboardBooking(raw) {
+  const obj = (raw && typeof raw === 'object') ? raw : {};
+
+  const start =
+    parseIsoMaybeLocal(obj.date || obj.startTime || obj.start) ||
+    (Number.isFinite(obj.startMs) ? new Date(obj.startMs) : null) ||
+    new Date();
+
+  const meta = cfgServiceMeta(obj.service);
+
+  const proEmail = String(obj.professionalEmail || "").trim();
+
+  const dur = Math.max(
+    1,
+    Number(obj.durationMin ?? cfgServiceDurationMin(obj.service, proEmail) ?? meta?.durationMin ?? meta?.duration ?? 30) || 30
+  );
+  const end =
+    parseIsoMaybeLocal(obj.end) ||
+    new Date(start.getTime() + dur * 60000);
+
+  const price = Number(obj.price ?? meta?.price ?? 0) || 0;
+
+  const customerName = (obj.customerName && String(obj.customerName).trim())
+    ? String(obj.customerName).trim()
+    : 'Cliente (senza nome)';
+
+  return {
+    id: obj.id || obj.eventId || ("BK" + Date.now() + "_" + Math.random().toString(16).slice(2)),
+    customerName,
+    service: obj.service || "Servizio",
+    price,
+    date: toLocalIsoNoZ(start),
+    end: toLocalIsoNoZ(end),
+    durationMin: dur,
+
+    // extra utili (colori calendario / filtri futuri)
+    professionalName: obj.professionalName || "",
+    professionalEmail: obj.professionalEmail || "",
+
+    phone: obj.phone || obj.clientPhone || "",
+    status: obj.status || "confirmed",
+    notes: obj.notes || "",
+
+    // sync/watch
+    _origin: obj._origin || "local",
+    _dirty: !!obj._dirty
+  };
+}
+
+function cfgServiceMeta(serviceName) {
+  return (APP.cfg && APP.cfg.services && APP.cfg.services[serviceName]) ? APP.cfg.services[serviceName] : null;
+}
+
+function cfgProEmailFromInput(v) {
+  const s = String(v || "").trim();
+  if (!s) return "";
+  const lower = s.toLowerCase();
+  const pros = APP.cfg?.professionals || {};
+  // 1) match per email
+  for (const email of Object.keys(pros)) {
+    if (String(email).toLowerCase() === lower) return email;
+  }
+  // 2) match per nome (case-insensitive)
+  for (const [email, meta] of Object.entries(pros)) {
+    const name = String(meta?.name || "").trim().toLowerCase();
+    if (name && name === lower) return email;
+  }
+  return "";
+}
+
+function cfgProNameFromEmail(email) {
+  const e = String(email || "").trim();
+  if (!e) return "";
+  const meta = APP.cfg?.professionals?.[e];
+  return String(meta?.name || "").trim();
+}
+
+function cfgServicePrice(serviceName) {
+  const meta = cfgServiceMeta(serviceName);
+  return Number(meta?.price || 0) || 0;
+}
+
+function cfgServiceDurationMin(serviceName, proEmail) {
+  const meta = cfgServiceMeta(serviceName);
+  if (!meta) return 30;
+
+  const base = Number(meta.durationMin ?? meta.duration ?? 30) || 30;
+
+  const pe = String(proEmail || "").trim();
+  const pd = meta.professionalDurations || {};
+  if (pe && pd && Object.prototype.hasOwnProperty.call(pd, pe)) {
+    const v = Number(pd[pe]);
+    if (Number.isFinite(v) && v > 0) return v;
+  }
+
+  return base;
+}
+
+function cfgServiceProfessionals(serviceName) {
+  const meta = cfgServiceMeta(serviceName);
+  const arr = Array.isArray(meta?.professionals) ? meta.professionals : [];
+  return arr
+    .map((email) => {
+      const name = cfgProNameFromEmail(email) || email;
+      return { email, name };
+    });
+}
+
+function normalizeSynkrisBooking(raw) {
+  const r = (raw && typeof raw === 'object') ? raw : {};
+
+  const start =
+    parseIsoMaybeLocal(r.startTime || r.date || r.start) ||
+    (Number.isFinite(r.startMs) ? new Date(r.startMs) : null) ||
+    new Date();
+
+  const meta = cfgServiceMeta(r.service);
+
+  const proEmail = String(r.professionalEmail || "").trim();
+
+  const dur = Math.max(
+    1,
+    Number(r.durationMin ?? cfgServiceDurationMin(r.service, proEmail) ?? meta?.durationMin ?? meta?.duration ?? 30) || 30
+  );
+  const end = new Date(start.getTime() + dur * 60000);
+  const price = Number(r.price ?? meta?.price ?? 0) || 0;
+
+  const customerName = (r.customerName && String(r.customerName).trim())
+    ? String(r.customerName).trim()
+    : 'Cliente (senza nome)';
+
+  return {
+    id: r.eventId || r.id || ("BK" + Date.now() + "_" + Math.random().toString(16).slice(2)),
+    customerName,
+    service: r.service || "Servizio",
+    price,
+    date: toLocalIsoNoZ(start),
+    end: toLocalIsoNoZ(end),
+    durationMin: dur,
+
+    // dal tuo schema Synkris
+    professionalName: r.professionalName || "",
+    professionalEmail: r.professionalEmail || "",
+
+    phone: r.clientPhone || r.phone || "",
+    status: r.status || "confirmed",
+    notes: r.notes || "",
+
+    // sync/watch
+    _origin: r._origin || "remote",
+    _dirty: false
+  };
+}
+
+function populateBookingProSelectForService(serviceName) {
+  const proSel = document.getElementById("bookingPro");
+  if (!proSel) return;
+
+  const svc = String(serviceName || "").trim();
+  if (!svc) {
+    proSel.innerHTML = `<option value="">Auto (da servizio)</option>`;
+    proSel.value = "";
+    return;
+  }
+
+  const pros = cfgServiceProfessionals(svc); // [{email,name}]
+  if (!pros.length) {
+    proSel.innerHTML = `<option value="">Auto (nessun pro in config)</option>`;
+    proSel.value = "";
+    return;
+  }
+
+  const opts = pros
+    .map(p => `<option value="${escHtml(p.email)}">${escHtml(p.name)}</option>`)
+    .join("");
+
+  proSel.innerHTML = `<option value="">Auto (da servizio)</option>` + opts;
+
+  // Se c'è un solo pro -> seleziona automaticamente
+  if (pros.length === 1) proSel.value = pros[0].email;
+}
+
+function wireBookingServiceToProsOnce() {
+  const sel = document.getElementById("bookingService");
+  if (!sel || sel._wiredPros) return;
+  sel.addEventListener("change", () => {
+    populateBookingProSelectForService(sel.value);
+  });
+  sel._wiredPros = true;
+}
+
+function populateServiceSelectFromConfig() {
+  const sel = document.getElementById('bookingService');
+  if (!sel) return;
+
+  const services = APP.cfg?.services ? Object.keys(APP.cfg.services) : [];
+  if (!services.length) return;
+
+  const options = services
+    .sort((a, b) => a.localeCompare(b, 'it'))
+    .map((name) => {
+      const meta = APP.cfg.services[name] || {};
+      const emoji = meta?.emoji || "";
+      const p = Number(meta.price || 0) || 0;
+      return `<option value="${name}">${emoji ? (emoji + " ") : ""}${name}${p ? ` (€${p})` : ''}</option>`;
+    })
+    .join('');
+
+  sel.innerHTML = `<option value="">Seleziona servizio</option>` + options;
+
+  wireBookingServiceToProsOnce();
+  populateBookingProSelectForService(sel.value);
+}
+
+// Section Navigation
+function showSection(sectionName, el) {
+  document.querySelectorAll('.section').forEach(section => {
+    section.style.display = 'none';
+  });
+
+  document.querySelectorAll('.nav-item').forEach(item => {
+    item.classList.remove('active');
+  });
+
+  const target = document.getElementById('section-' + sectionName);
+  if (target) target.style.display = 'block';
+
+  const clicked = el || (typeof event !== 'undefined' ? event.currentTarget : null);
+  if (clicked && clicked.classList) clicked.classList.add('active');
+
+  // Aggiorna URL hash per navigazione e deep-link
+  if (window.location.hash !== '#' + sectionName) {
+    history.pushState({ section: sectionName }, '', '#' + sectionName);
+  }
+
+  // Chiudi sidebar su mobile dopo selezione
+  if (typeof isMobileUI === 'function' && isMobileUI()) {
+    closeSidebar();
+  }
+
+
+  // Update specific sections
+  if (sectionName === 'calendar') {
+    if (!APP.calendar) {
+      initCalendar();
+    } else {
+      APP.calendar.render();
+      APP.calendar.updateSize();
+      try { wireCalendarSearchOnce(); } catch {}
+      try { renderCalDayPanel(APP.calSelectedDate || new Date()); } catch {}
+    }
+  } else if (sectionName === 'analytics') {
+    updateAnalytics();
+  } else if (sectionName === 'bookings') {
+    populateBookingFiltersFromConfig();
+    wireBookingFiltersOnce();
+    updateBookingsList();
+  } else if (sectionName === 'clients') {
+    updateClientsList();
+  }
+}
+
+// Calendar Functions
+
+// --- Calendar coloring helpers (più colori) ---
+const CALENDAR_COLORS = [
+  "#007aff", // blue
+  "#34c759", // green
+  "#ff9500", // orange
+  "#af52de", // purple
+  "#ff2d55", // pink
+  "#5ac8fa", // teal
+  "#ffd60a", // yellow
+  "#a2845e"  // brown
+];
+
+function hashString(str) {
+  const s = String(str || "");
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+  return Math.abs(h);
+}
+
+function pickCalendarColor(key) {
+  const idx = hashString(key) % CALENDAR_COLORS.length;
+  return CALENDAR_COLORS[idx];
+}
+
+function hexToRgba(hex, alpha) {
+  const h = String(hex || "").replace("#", "");
+  if (h.length !== 6) return String(hex || "");
+  const r = parseInt(h.slice(0, 2), 16);
+  const g = parseInt(h.slice(2, 4), 16);
+  const b = parseInt(h.slice(4, 6), 16);
+  const a = Math.max(0, Math.min(1, Number(alpha)));
+  return `rgba(${r}, ${g}, ${b}, ${a})`;
+}
+
+function calendarStyleForBooking(b) {
+  const status = String(b?.status || "confirmed").toLowerCase();
+
+  // Preferisci colore per professionista (se presente), altrimenti per servizio
+  const proKey = String(b?.professionalEmail || b?.professionalName || "").trim();
+  const svcKey = String(b?.service || "").trim();
+  const base = pickCalendarColor(proKey || svcKey || b?.id);
+
+  if (status === "cancelled" || status === "canceled") {
+    return {
+      bg: hexToRgba("#ff3b30", 0.35),
+      border: "#ff3b30",
+      text: "#ffffff",
+      dash: true,
+      strike: true
+    };
+  }
+
+  if (status === "pending" || status === "hold" || status === "tentative") {
+    return {
+      bg: hexToRgba(base, 0.35),
+      border: base,
+      text: "#ffffff",
+      dash: true
+    };
+  }
+
+  // confirmed / default
+  return {
+    bg: hexToRgba(base, 0.92),
+    border: base,
+    text: "#ffffff"
+  };
+}
+
+function calendarTitleForBooking(b) {
+  const cust = (b?.customerName && String(b.customerName).trim()) ? String(b.customerName).trim() : "Cliente";
+  const svc = (b?.service && String(b.service).trim()) ? String(b.service).trim() : "Servizio";
+  const pro = (b?.professionalName && String(b.professionalName).trim()) ? String(b.professionalName).trim() : "";
+  return pro ? `${cust} • ${svc} (${pro})` : `${cust} • ${svc}`;
+}
+
+function calendarTooltipForBooking(b, start, end) {
+  const cust = (b?.customerName && String(b.customerName).trim()) ? String(b.customerName).trim() : "Cliente";
+  const svc = (b?.service && String(b.service).trim()) ? String(b.service).trim() : "Servizio";
+  const pro = (b?.professionalName && String(b.professionalName).trim()) ? String(b.professionalName).trim() : "";
+  const dur = Math.max(1, Number(b?.durationMin) || 0);
+
+  const s = (start instanceof Date) ? `${formatDate(start)} ${formatTime(start)}` : "";
+  const e = (end instanceof Date) ? `${formatTime(end)}` : "";
+
+  return [
+    cust,
+    pro ? `${svc} • ${pro}` : svc,
+    `${s}${e ? "–" + e : ""} • ${dur} min`
+  ].filter(Boolean).join("\n");
+}
+
+// -------------------- Calendar Filters (Professionisti/Servizi) --------------------
+APP.calFilters = APP.calFilters || { pros: new Set(), svcs: new Set(), q: "", when: "all", showCancelled: false };
+APP.calSelectedDate = APP.calSelectedDate || new Date();
+
+function calendarRangeForStats() {
+  // Default: settimana corrente
+  const now = new Date();
+  const start = startOfWeekMonday(now);
+  const end = new Date(start.getTime() + 7 * 24 * 60 * 60 * 1000);
+  return { start, end };
+}
+
+function occupancyPercentForPro(emailOrName, rangeStart, rangeEnd) {
+  const rs = rangeStart instanceof Date ? rangeStart : new Date(rangeStart);
+  const re = rangeEnd instanceof Date ? rangeEnd : new Date(rangeEnd);
+  if (!Number.isFinite(rs.getTime()) || !Number.isFinite(re.getTime()) || re <= rs) return 0;
+
+  const workMinPerDay = Math.max(1, Number(APP.settings?.hoursPerDay || 8) * 60);
+  const days = Math.max(1, Math.round((re - rs) / (24 * 60 * 60 * 1000)));
+  const cap = days * workMinPerDay;
+
+  const key = String(emailOrName || '').trim().toLowerCase();
+
+  let busy = 0;
+  (APP.bookings || []).forEach(b => {
+    const s = bookingStartDate(b);
+    if (!s || !Number.isFinite(s.getTime())) return;
+    if (s < rs || s >= re) return;
+
+    const em = String(b?.professionalEmail || '').trim().toLowerCase();
+    const nm = String(b?.professionalName || '').trim().toLowerCase();
+
+    if (!key) return;
+    if (key !== em && key !== nm) return;
+
+    busy += bookingMinutes(b);
+  });
+
+  return Math.max(0, Math.min(100, Math.round((busy / cap) * 100)));
+}
+
+function renderCalendarFilters() {
+  const prosWrap = document.getElementById('calFilterPros');
+  const svcsWrap = document.getElementById('calFilterSvcs');
+  if (!prosWrap || !svcsWrap) return;
+
+  const { start, end } = calendarRangeForStats();
+
+  const pros = APP.cfg?.professionals ? Object.entries(APP.cfg.professionals) : [];
+  const svcs = APP.cfg?.services ? Object.keys(APP.cfg.services) : [];
+
+  const proChips = [];
+  proChips.push(`
+    <span class="chip ${APP.calFilters.pros.size ? '' : 'active'}" onclick="clearCalPros()">Tutti</span>
+  `);
+
+  pros.forEach(([email, meta]) => {
+    const name = String(meta?.name || email).trim();
+    const occ = occupancyPercentForPro(email, start, end);
+    const active = APP.calFilters.pros.has(email);
+    proChips.push(`
+      <span class="chip ${active ? 'active' : ''}" onclick="toggleCalPro('${escHtml(email)}')">
+        ${escHtml(name)} <span style="opacity:.7; font-weight:700;">${occ}%</span>
+      </span>
+    `);
+  });
+
+  const svcChips = [];
+  svcChips.push(`
+    <span class="chip ${APP.calFilters.svcs.size ? '' : 'active'}" onclick="clearCalSvcs()">Tutti</span>
+  `);
+  svcs.forEach((svc) => {
+    const active = APP.calFilters.svcs.has(svc);
+    const meta = cfgServiceMeta(svc);
+    const emoji = meta?.emoji || '💅';
+    svcChips.push(`
+      <span class="chip ${active ? 'active' : ''}" onclick="toggleCalSvc('${escHtml(svc)}')">
+        ${emoji} ${escHtml(svc)}
+      </span>
+    `);
+  });
+
+  prosWrap.innerHTML = proChips.join('');
+  svcsWrap.innerHTML = svcChips.join('');
+}
+
+
+function wireCalendarSearchOnce() {
+  const inEl = document.getElementById("calSearchClient");
+  const whenEl = document.getElementById("calWhenFilter");
+  const cancEl = document.getElementById("calShowCancelled");
+
+  // evita doppio wiring
+  if (inEl && inEl._wired) return;
+
+  const apply = () => {
+    APP.calFilters = APP.calFilters || { pros: new Set(), svcs: new Set(), q: "", when: "all", showCancelled: false };
+    APP.calFilters.q = String(inEl?.value || "").trim();
+    APP.calFilters.when = String(whenEl?.value || "all").trim();
+    APP.calFilters.showCancelled = !!cancEl?.checked;
+
+    refreshCalendarEvents();
+    renderCalDayPanel(APP.calSelectedDate || new Date());
+  };
+
+  if (inEl) {
+    inEl.addEventListener("input", apply);
+    inEl._wired = true;
+  }
+  if (whenEl) {
+    whenEl.addEventListener("change", apply);
+    whenEl._wired = true;
+  }
+  if (cancEl) {
+    cancEl.addEventListener("change", apply);
+    cancEl._wired = true;
+  }
+}
+
+function resetCalendarFilters() {
+  APP.calFilters = APP.calFilters || { pros: new Set(), svcs: new Set(), q: "", when: "all", showCancelled: false };
+  APP.calFilters.pros.clear();
+  APP.calFilters.svcs.clear();
+  APP.calFilters.q = "";
+  APP.calFilters.when = "all";
+  APP.calFilters.showCancelled = false;
+
+  const inEl = document.getElementById("calSearchClient");
+  const whenEl = document.getElementById("calWhenFilter");
+  const cancEl = document.getElementById("calShowCancelled");
+  if (inEl) inEl.value = "";
+  if (whenEl) whenEl.value = "all";
+  if (cancEl) cancEl.checked = false;
+
+  renderCalendarFilters();
+  refreshCalendarEvents();
+  renderCalDayPanel(APP.calSelectedDate || new Date());
+  showToast("✓ Filtri calendario ripristinati");
+}
+
+function calSetSelectedDate(d) {
+  const dt = (d instanceof Date) ? d : parseIsoMaybeLocal(d);
+  if (!dt || !Number.isFinite(dt.getTime())) return;
+  APP.calSelectedDate = dt;
+  renderCalDayPanel(dt);
+}
+
+function renderCalDayPanel(date) {
+  const statsEl = document.getElementById("calDayStats");
+  const listEl = document.getElementById("calDayList");
+  if (!statsEl || !listEl) return;
+
+  const dt = (date instanceof Date) ? date : parseIsoMaybeLocal(date);
+  const d0 = dt && Number.isFinite(dt.getTime())
+    ? new Date(dt.getFullYear(), dt.getMonth(), dt.getDate(), 0, 0, 0, 0)
+    : new Date();
+
+  const d1 = new Date(d0.getTime() + 24 * 60 * 60 * 1000);
+
+  const label = d0.toLocaleDateString("it-IT", { weekday: "long", day: "2-digit", month: "long", year: "numeric" });
+
+  const list = filteredBookingsForCalendar()
+    .map(b => ({ b, s: bookingStartDate(b), e: bookingEndDate(b) }))
+    .filter(x => x.s && Number.isFinite(x.s.getTime()) && x.s >= d0 && x.s < d1)
+    .sort((a, b) => a.s.getTime() - b.s.getTime());
+
+  const total = list.length;
+  const revenue = list.reduce((sum, x) => sum + (Number(x.b?.price || 0) || 0), 0);
+  const minutes = list.reduce((sum, x) => sum + bookingMinutes(x.b), 0);
+
+  const byPro = new Map();
+  list.forEach(x => {
+    const k = String(x.b?.professionalName || x.b?.professionalEmail || "—").trim() || "—";
+    byPro.set(k, (byPro.get(k) || 0) + 1);
+  });
+
+  const proSummary = Array.from(byPro.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 4)
+    .map(([k, v]) => `${k}: ${v}`)
+    .join(" • ");
+
+  statsEl.innerHTML = `
+    <div><strong>📅 ${escHtml(label)}</strong></div>
+    <div>👥 Appuntamenti: <strong>${total}</strong></div>
+    <div>💶 Incassi: <strong>${formatCurrency(revenue)}</strong></div>
+    <div>⏱️ Totale minuti: <strong>${minutes}</strong></div>
+    ${proSummary ? `<div>🧑‍🔧 ${escHtml(proSummary)}</div>` : ``}
+  `;
+
+  if (!total) {
+    listEl.innerHTML = `
+      <div class="empty-state" style="padding: 16px;">
+        <div class="empty-state-icon">🗓️</div>
+        <div class="empty-state-title" style="font-size: 14px;">Nessun appuntamento (con i filtri attuali)</div>
+      </div>
+    `;
+    return;
+  }
+
+  const renderItem = (x) => {
+    const b = x.b;
+    const st = String(b?.status || "confirmed").toLowerCase();
+    const isCancelled = (st === "cancelled" || st === "canceled");
+    const service = String(b?.service || "—").trim() || "—";
+    const pro = String(b?.professionalName || "").trim();
+    const phone = formatPhoneDisplay(b?.phone) || String(b?.phone || "").trim();
+
+    const time = `${formatTime(x.s)}–${formatTime(x.e)}`;
+
+    return `
+      <div class="cal-day-item" style="${isCancelled ? "opacity:.75;" : ""}">
+        <div class="row">
+          <div style="flex:1; min-width:0;">
+            <div class="title">${escHtml(time)} • ${escHtml(b?.customerName || "Cliente")}${isCancelled ? " • ❌ annullato" : ""}</div>
+            <div class="meta">
+              ${escHtml(service)}${pro ? " • " + escHtml(pro) : ""}${phone ? " • " + escHtml(phone) : ""}
+            </div>
+          </div>
+          <div class="cal-day-actions">
+            <div class="action-btn-wrap">
+              <button class="btn btn-success btn-icon" title="Scrivi su WhatsApp" onclick="openWaComposerFromBooking(${jsArg(String(b.id || ""))})">💬</button>
+              <span class="action-btn-label">WhatsApp</span>
+            </div>
+            <div class="action-btn-wrap">
+              <button class="btn btn-secondary btn-icon" title="Vedi dettagli" onclick="openBookingDetailsModal(${jsArg(String(b.id || ""))})">🔎</button>
+              <span class="action-btn-label">Dettagli</span>
+            </div>
+            <div class="action-btn-wrap">
+              <button class="btn btn-danger btn-icon" title="Annulla appuntamento" onclick="deleteBooking(${jsArg(String(b.id || ""))})">🗑️</button>
+              <span class="action-btn-label">Annulla</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+  };
+
+  listEl.innerHTML = list.map(renderItem).join("");
+}
+
+function clearCalPros() {
+  APP.calFilters.pros.clear();
+  refreshCalendarEvents();
+  renderCalendarFilters();
+}
+
+function clearCalSvcs() {
+  APP.calFilters.svcs.clear();
+  refreshCalendarEvents();
+  renderCalendarFilters();
+}
+
+function toggleCalPro(email) {
+  const e = String(email || '').trim();
+  if (!e) return;
+  if (APP.calFilters.pros.has(e)) APP.calFilters.pros.delete(e);
+  else APP.calFilters.pros.add(e);
+  refreshCalendarEvents();
+  renderCalendarFilters();
+}
+
+function toggleCalSvc(svc) {
+  const s = String(svc || '').trim();
+  if (!s) return;
+  if (APP.calFilters.svcs.has(s)) APP.calFilters.svcs.delete(s);
+  else APP.calFilters.svcs.add(s);
+  refreshCalendarEvents();
+  renderCalendarFilters();
+}
+
+function calendarEventsFromBookings(bookings) {
+  return (bookings || []).map((booking) => {
+    const start = bookingStartDate(booking);
+    const end = bookingEndDate(booking);
+    const st = calendarStyleForBooking(booking);
+
+    return {
+      id: booking.id,
+      title: calendarTitleForBooking(booking),
+      start: toLocalIsoNoZ(start),
+      end: toLocalIsoNoZ(end),
+      backgroundColor: st.bg,
+      borderColor: st.border,
+      textColor: st.text,
+      extendedProps: {
+        _style: st,
+        _booking: booking
+      }
+    };
+  });
+}
+
+function filteredBookingsForCalendar() {
+  const pros = APP.calFilters?.pros || new Set();
+  const svcs = APP.calFilters?.svcs || new Set();
+  const q = String(APP.calFilters?.q || "").trim().toLowerCase();
+  const when = String(APP.calFilters?.when || "all").trim().toLowerCase();
+  const showCancelled = !!APP.calFilters?.showCancelled;
+
+  const now = new Date();
+  const today0 = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+  const tomorrow0 = new Date(today0.getTime() + 24 * 60 * 60 * 1000);
+
+  const qDigits = waPhoneDigits(q);
+
+  const matchQuery = (b) => {
+    if (!q) return true;
+    const name = String(b?.customerName || "").trim().toLowerCase();
+    const phone = String(b?.phone || "").trim();
+    const phoneDigits = waPhoneDigits(phone);
+    if (name.includes(q)) return true;
+    if (qDigits && phoneDigits && phoneDigits.includes(qDigits)) return true;
+    // fallback: ricerca "grezza" sul numero
+    if (!qDigits && phone && phone.toLowerCase().includes(q)) return true;
+    return false;
+  };
+
+  const matchWhen = (b) => {
+    if (when === "all") return true;
+    const s = bookingStartDate(b);
+    if (!(s instanceof Date) || !Number.isFinite(s.getTime())) return false;
+    if (when === "future") return s >= now;
+    if (when === "past") return s < now;
+    if (when === "today") return s >= today0 && s < tomorrow0;
+    return true;
+  };
+
+  const matchStatus = (b) => {
+    const st = String(b?.status || "confirmed").toLowerCase();
+    const isCancelled = (st === "cancelled" || st === "canceled");
+    if (isCancelled && !showCancelled) return false;
+    return true;
+  };
+
+  return (APP.bookings || []).filter(b => {
+    if (!b) return false;
+
+    // servizi
+    if (svcs.size && !svcs.has(String(b?.service || '').trim())) return false;
+
+    // professionisti
+    if (pros.size) {
+      const em = String(b?.professionalEmail || '').trim();
+      const nm = String(b?.professionalName || '').trim();
+      if (!pros.has(em) && !pros.has(nm)) return false;
+    }
+
+    if (!matchQuery(b)) return false;
+    if (!matchWhen(b)) return false;
+    if (!matchStatus(b)) return false;
+
+    return true;
+  });
+}
+
+
+function refreshCalendarEvents() {
+  if (!APP.calendar) return;
+
+  const list = filteredBookingsForCalendar();
+  const events = calendarEventsFromBookings(list);
+
+  try {
+    const src = APP.calendar.getEventSourceById && APP.calendar.getEventSourceById("local");
+    if (src) src.remove();
+    else if (APP.calendar.removeAllEventSources) APP.calendar.removeAllEventSources();
+    else APP.calendar.removeAllEvents();
+  } catch {
+    try { APP.calendar.removeAllEvents(); } catch {}
+  }
+
+  APP.calendar.addEventSource({ id: "local", events });
+}
+
+
+
+function initCalendar() {
+  const calendarEl = document.getElementById("calendar");
+  if (!calendarEl) return;
+
+  const localEvents = calendarEventsFromBookings(filteredBookingsForCalendar());
+
+  APP.calendar = new FullCalendar.Calendar(calendarEl, {
+    initialView: (typeof isMobileUI === "function" && isMobileUI()) ? "timeGridDay" : "dayGridMonth",
+    locale: "it",
+    firstDay: 1,
+    height: "auto",
+    expandRows: true,
+    nowIndicator: true,
+    dayMaxEvents: true,
+
+    headerToolbar: {
+      left: "prev,next today",
+      center: "title",
+      right: ""
+    },
+
+    editable: true,
+    eventStartEditable: true,
+    eventDurationEditable: true,
+
+    eventSources: [
+      { id: "local", events: localEvents }
+    ],
+
+    datesSet: function() {
+      renderCalendarFilters();
+      wireCalendarSearchOnce();
+      if (!(APP.calSelectedDate instanceof Date) || !Number.isFinite(APP.calSelectedDate.getTime())) {
+        APP.calSelectedDate = new Date();
+      }
+      renderCalDayPanel(APP.calSelectedDate);
+    },
+
+    dateClick: function(info) {
+      try { calSetSelectedDate(info.date); } catch {}
+    },
+
+    eventDidMount: function(info) {
+      const st = info.event.extendedProps && info.event.extendedProps._style;
+
+      if (st && st.border) info.el.style.borderLeft = "6px solid " + st.border;
+      if (st && st.dash) info.el.style.borderStyle = "dashed";
+      if (st && st.strike) info.el.style.textDecoration = "line-through";
+
+      const booking = info.event.extendedProps && info.event.extendedProps._booking;
+      const tip = calendarTooltipForBooking(booking, info.event.start, info.event.end);
+      if (tip) info.el.setAttribute("title", tip);
+    },
+
+    eventClick: function(info) {
+      try { calSetSelectedDate(info.event && info.event.start); } catch {}
+      showBookingDetails(info.event.id);
+    },
+
+    eventDrop: function(info) {
+      showRescheduleConfirmation(info);
+    },
+
+    eventResize: function(info) {
+      showRescheduleConfirmation(info);
+    }
+  });
+
+  APP.calendar.render();
+  renderCalendarFilters();
+  wireCalendarSearchOnce();
+  // default: oggi
+  if (!(APP.calSelectedDate instanceof Date) || !Number.isFinite(APP.calSelectedDate.getTime())) APP.calSelectedDate = new Date();
+  renderCalDayPanel(APP.calSelectedDate);
+}
+
+function changeCalendarView(view, btnEl) {
+  if (!APP.calendar) return;
+
+  APP.calendar.changeView(view);
+
+  document.querySelectorAll('.calendar-view-btn').forEach(btn => {
+    btn.classList.remove('active');
+  });
+
+  const btn = btnEl || (typeof event !== 'undefined' ? event.target : null);
+  const realBtn = btn && btn.closest ? btn.closest('.calendar-view-btn') : btn;
+  if (realBtn && realBtn.classList) realBtn.classList.add('active');
+
+  APP.calendar.updateSize();
+}
+
+function updateBookingDate(bookingId, newDate) {
+  const booking = APP.bookings.find(b => b.id === bookingId);
+  if (booking && newDate instanceof Date && Number.isFinite(newDate.getTime())) {
+    booking.date = toLocalIsoNoZ(newDate);
+    // mantieni end coerente
+    const dur = Math.max(1, Number(booking.durationMin || 30) || 30);
+    booking.end = toLocalIsoNoZ(new Date(newDate.getTime() + dur * 60000));
+    saveData();
+    showToast('✓ Prenotazione aggiornata');
+  }
+}
+
+
+// Reschedule Management with Client Notification
+function showRescheduleConfirmation(info) {
+  const bookingId = info.event.id;
+  const booking = APP.bookings.find((b) => b.id === bookingId);
+
+  if (!booking) {
+    info.revert();
+    return;
+  }
+
+  const oldStart = bookingStartDate(booking);
+  const oldEnd = bookingEndDate(booking);
+
+  const newStart = info.event.start;
+  const newEnd = info.event.end
+    ? info.event.end
+    : new Date(newStart.getTime() + Math.max(1, Number(booking.durationMin) || 30) * 60000);
+
+  APP.pendingReschedule = { info, booking, oldStart, oldEnd, newStart, newEnd };
+
+  const details = document.getElementById("rescheduleDetails");
+  details.innerHTML = `
+    <div style="padding: 16px; background: var(--bg-tertiary); border-radius: var(--radius-md);">
+      <div style="font-size: 18px; font-weight: 700; margin-bottom: 12px;">
+        ${booking.customerName}
+      </div>
+      <div style="font-size: 15px; color: var(--text-secondary); margin-bottom: 8px;">
+        ${booking.service} - ${formatCurrency(booking.price)}
+      </div>
+
+      <div style="margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--glass-border);">
+        <div style="display: grid; grid-template-columns: 1fr auto 1fr; gap: 12px; align-items: center;">
+          <div>
+            <div style="font-size: 12px; color: var(--text-tertiary); margin-bottom: 4px;">DA:</div>
+            <div style="font-size: 14px; font-weight: 600;">📅 ${formatDate(oldStart)}</div>
+            <div style="font-size: 14px; font-weight: 600;">⏰ ${formatTime(oldStart)}</div>
+          </div>
+          <div style="font-size: 24px; color: var(--accent);">→</div>
+          <div>
+            <div style="font-size: 12px; color: var(--text-tertiary); margin-bottom: 4px;">A:</div>
+            <div style="font-size: 14px; font-weight: 600; color: var(--accent);">📅 ${formatDate(newStart)}</div>
+            <div style="font-size: 14px; font-weight: 600; color: var(--accent);">⏰ ${formatTime(newStart)}</div>
+          </div>
+        </div>
+      </div>
+
+      ${booking.phone ? `
+        <div style="margin-top: 12px; font-size: 14px; color: var(--text-secondary);">
+          📞 ${formatPhoneDisplay(booking.phone) || booking.phone}
+        </div>
+      ` : ""}
+    </div>
+  `;
+
+  document.getElementById("rescheduleModal").classList.add("show");
+}
+
+async function confirmReschedule() {
+  if (!APP.pendingReschedule) return;
+
+  const { booking, oldStart, oldEnd, newStart, newEnd } = APP.pendingReschedule;
+  const notifyClient = document.getElementById("notifyClient").checked;
+  const customMessage = document.getElementById("rescheduleMessage").value;
+
+  // Update booking (ISO locale senza timezone)
+  booking.date = toLocalIsoNoZ(newStart);
+  booking.end = toLocalIsoNoZ(newEnd);
+  booking.durationMin = Math.max(1, Math.round((newEnd.getTime() - newStart.getTime()) / 60000));
+
+  // Campi per sync DB (lato PHP servono per aggiornare sempre la riga giusta)
+  booking.startMs = newStart.getTime();
+  booking.endMs = newEnd.getTime();
+  booking.eventId = booking.eventId || booking.id; // id==eventId per import Google; BK... per creati in dashboard
+  booking.clientPhone = booking.clientPhone || booking.phone || "";
+
+  // modificato dalla dashboard -> non sovrascrivere con watcher
+  booking._origin = "local";
+  booking._dirty = true;
+
+  const changeRecord = {
+    id: "LOG" + Date.now(),
+    bookingId: booking.id,
+    customerName: booking.customerName,
+    changeType: "reschedule",
+    oldDate: toLocalIsoNoZ(oldStart),
+    newDate: toLocalIsoNoZ(newStart),
+    timestamp: new Date().toISOString(),
+    notificationSent: notifyClient,
+    customMessage: customMessage
+  };
+
+  APP.changeLog.push(changeRecord);
+
+  if (notifyClient) {
+    // Usa la funzione già presente (invio via ADMIN API, senza aprire WhatsApp)
+    const oldSnapshot = Object.assign({}, booking, {
+      date: toLocalIsoNoZ(oldStart),
+      end: toLocalIsoNoZ(oldEnd),
+      durationMin: Math.max(1, Math.round((oldEnd.getTime() - oldStart.getTime()) / 60000))
+    });
+
+    // NB: booking è già stato aggiornato sopra (date/end/durationMin)
+    sendWhatsAppBookingUpdate(booking, oldSnapshot, customMessage);
+  }
+
+  // 1) salva localmente
+  saveData();
+
+  // 2) salva SUBITO su DB (così se fai refresh non perdi lo spostamento)
+  const r = await dbSync.saveBooking(booking);
+  if (!r || r.ok !== true) {
+    showToast("⚠️ Spostamento NON salvato nel DB (non aggiornare la pagina)");
+    return;
+  }
+
+  closeRescheduleModal();
+
+  if (notifyClient) {
+    showToast("✓ Appuntamento spostato. Invio WhatsApp in corso…");
+    if (typeof addNotification === "function") {
+      addNotification(`📲 Invio WhatsApp a ${booking.customerName}…`, "info");
+    }
+  } else {
+    showToast("✓ Appuntamento spostato (cliente non notificato)");
+  }
+
+  // Riallinea UI ai filtri (evita che l'evento resti in UI ma poi sparisca al refresh)
+  try { refreshCalendarEvents(); } catch {}
+  try { renderCalDayPanel(APP.calSelectedDate || new Date()); } catch {}
+  updateDashboard();
+}
+
+function cancelReschedule() {
+  if (!APP.pendingReschedule) return;
+  
+  // Revert the calendar change
+  APP.pendingReschedule.info.revert();
+  
+  closeRescheduleModal();
+  showToast('❌ Spostamento annullato');
+}
+
+function closeRescheduleModal() {
+  document.getElementById('rescheduleModal').classList.remove('show');
+  document.getElementById('rescheduleMessage').value = '';
+  document.getElementById('notifyClient').checked = true;
+  APP.pendingReschedule = null;
+}
+
+// Client Notification System
+// (SMS/Email rimossi: ora solo WhatsApp)
+// Usa sendWhatsAppNotification(...) definita negli helper.
+
+// Dashboard Functions
+function startOfWeekMonday(d) {
+  const x = (d instanceof Date) ? new Date(d.getTime()) : new Date(d);
+  if (!Number.isFinite(x.getTime())) return new Date();
+  const day = (x.getDay() + 6) % 7; // 0=Lun ... 6=Dom
+  x.setDate(x.getDate() - day);
+  x.setHours(0, 0, 0, 0);
+  return x;
+}
+
+function sumBookingRevenue(list) {
+  return (list || []).reduce((sum, b) => sum + (Number(b?.price) || 0), 0);
+}
+
+function bookingMinutes(b) {
+  const dur = Number(b?.durationMin ?? b?.duration) || 0;
+  return Math.max(0, Math.min(24 * 60, dur));
+}
+
+function updateDashboard() {
+  const now = new Date();
+  const today0 = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+  const tomorrow0 = new Date(today0.getTime() + 24 * 60 * 60 * 1000);
+  const yesterday0 = new Date(today0.getTime() - 24 * 60 * 60 * 1000);
+
+  const weekStart = startOfWeekMonday(today0);
+  const weekEnd = new Date(weekStart.getTime() + 7 * 24 * 60 * 60 * 1000);
+  const prevWeekStart = new Date(weekStart.getTime() - 7 * 24 * 60 * 60 * 1000);
+  const prevWeekEnd = weekStart;
+
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+  const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1, 0, 0, 0, 0);
+
+  const rows = (APP.bookings || []).map(b => ({ b, start: bookingStartDate(b) }))
+    .filter(x => x.start && Number.isFinite(x.start.getTime()));
+
+  const todayBookings   = rows.filter(x => x.start >= today0     && x.start < tomorrow0).map(x => x.b);
+  const yestBookings    = rows.filter(x => x.start >= yesterday0 && x.start < today0).map(x => x.b);
+  const weekBookings    = rows.filter(x => x.start >= weekStart   && x.start < weekEnd).map(x => x.b);
+  const prevWeekBks     = rows.filter(x => x.start >= prevWeekStart && x.start < prevWeekEnd).map(x => x.b);
+  const monthBookings   = rows.filter(x => x.start >= monthStart  && x.start < monthEnd).map(x => x.b);
+
+  const todayRevenue  = sumBookingRevenue(todayBookings);
+  const yestRevenue   = sumBookingRevenue(yestBookings);
+  const monthRevenue  = sumBookingRevenue(monthBookings);
+
+  // Nuovi clienti (prima volta oggi)
+  const seenBefore = new Set(rows.filter(x => x.start < today0).map(x => String(x.b.customerName || '').trim().toLowerCase()).filter(Boolean));
+  const newClientsToday = new Set(todayBookings.map(b => String(b.customerName || '').trim().toLowerCase()).filter(Boolean).filter(n => !seenBefore.has(n)));
+  const seenBeforeYest  = new Set(rows.filter(x => x.start < yesterday0).map(x => String(x.b.customerName || '').trim().toLowerCase()).filter(Boolean));
+  const newClientsYest  = new Set(yestBookings.map(b => String(b.customerName || '').trim().toLowerCase()).filter(Boolean).filter(n => !seenBeforeYest.has(n)));
+
+  // Occupazione oggi
+  const workMin = Math.max(1, Number(APP.settings?.hoursPerDay || 8) * 60);
+  const busyMin = todayBookings.reduce((s, b) => s + bookingMinutes(b), 0);
+  const occ = Math.max(0, Math.min(100, Math.round((busyMin / workMin) * 100)));
+  const busyMinYest = yestBookings.reduce((s, b) => s + bookingMinutes(b), 0);
+  const occYest = Math.max(0, Math.min(100, Math.round((busyMinYest / workMin) * 100)));
+
+  // ---- Calcola trend reali ----
+  function trendHtml(curr, prev, isPercent = false) {
+    if (prev === 0 && curr === 0) return `<span style="color:var(--text-tertiary)">— nessun dato ieri</span>`;
+    if (prev === 0) return `<span class="trend-up">↑ nuovo</span>`;
+    const pct = Math.round(((curr - prev) / prev) * 100);
+    const cls = pct >= 0 ? 'trend-up' : 'trend-down';
+    const arrow = pct >= 0 ? '↑' : '↓';
+    const label = isPercent ? `${Math.abs(pct)} pp` : `${Math.abs(pct)}%`;
+    return `<span class="${cls}">${arrow} ${label} vs ieri</span>`;
+  }
+  function trendHtmlWeek(curr, prev) {
+    if (prev === 0 && curr === 0) return `<span style="color:var(--text-tertiary)">— nessun dato settimana scorsa</span>`;
+    if (prev === 0) return `<span class="trend-up">↑ nuovo</span>`;
+    const pct = Math.round(((curr - prev) / prev) * 100);
+    const cls = pct >= 0 ? 'trend-up' : 'trend-down';
+    const arrow = pct >= 0 ? '↑' : '↓';
+    return `<span class="${cls}">${arrow} ${Math.abs(pct)}% vs settimana scorsa</span>`;
+  }
+
+  document.getElementById('kpiRevenue').textContent = formatCurrency(todayRevenue);
+  document.getElementById('kpiBookings').textContent = todayBookings.length;
+  document.getElementById('kpiNewClients').textContent = newClientsToday.size;
+  document.getElementById('kpiOccupancy').textContent = occ + '%';
+
+  // Aggiorna trend (solo se gli elementi esistono)
+  const tRevenue   = document.querySelector('#kpiRevenue')?.closest('.kpi-card')?.querySelector('.kpi-trend');
+  const tBookings  = document.querySelector('#kpiBookings')?.closest('.kpi-card')?.querySelector('.kpi-trend');
+  const tClients   = document.querySelector('#kpiNewClients')?.closest('.kpi-card')?.querySelector('.kpi-trend');
+  const tOcc       = document.querySelector('#kpiOccupancy')?.closest('.kpi-card')?.querySelector('.kpi-trend');
+  if (tRevenue)  tRevenue.innerHTML  = trendHtml(todayRevenue, yestRevenue);
+  if (tBookings) tBookings.innerHTML = trendHtmlWeek(weekBookings.length, prevWeekBks.length);
+  if (tClients)  tClients.innerHTML  = trendHtml(newClientsToday.size, newClientsYest.size);
+  if (tOcc)      tOcc.innerHTML      = trendHtml(occ, occYest, true);
+
+  document.getElementById('todayBookings').textContent = todayBookings.length;
+  document.getElementById('weekBookings').textContent = weekBookings.length;
+  document.getElementById('monthRevenue').textContent = formatCurrency(monthRevenue);
+
+  updateUpcomingAppointments();
+  updateRecentChanges();
+
+  if (APP.charts.revenue) updateRevenueChart();
+  if (APP.charts.services) updateServicesChart();
+}
+
+
+function updateUpcomingAppointments() {
+  const container = document.getElementById('upcomingAppointments');
+  if (!container) return;
+
+  const now = new Date();
+
+  const upcoming = (APP.bookings || [])
+    .map(b => ({ b, start: bookingStartDate(b) }))
+    .filter(x => x.start && Number.isFinite(x.start.getTime()) && x.start > now)
+    .sort((a, b) => a.start.getTime() - b.start.getTime())
+    .slice(0, 5);
+
+  if (upcoming.length === 0) {
+    container.innerHTML = '<div class="empty-state"><div class="empty-state-icon">📅</div><div class="empty-state-title">Nessun appuntamento prossimo</div></div>';
+    return;
+  }
+
+  container.innerHTML = upcoming.map(x => {
+    const booking = x.b;
+    const date = x.start;
+    const pro = (booking.professionalName && String(booking.professionalName).trim()) ? ` • ${escHtml(booking.professionalName)}` : '';
+    return `
+      <div class="card" style="padding: var(--spacing-md); margin-bottom: var(--spacing-sm); cursor:pointer;" onclick="openBookingDetailsModal(${jsArg(String(booking.id || ''))})">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <div>
+            <div style="font-size: 16px; font-weight: 700; margin-bottom: 4px;">${escHtml(booking.customerName || "Cliente")}</div>
+            <div style="font-size: 14px; color: var(--text-secondary);">${escHtml(booking.service || "Servizio")}${pro}</div>
+          </div>
+          <div style="text-align: right;">
+            <div style="font-size: 14px; font-weight: 600;">${formatDate(date)}</div>
+            <div style="font-size: 14px; color: var(--text-secondary);">${formatTime(date)}</div>
+          </div>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+
+// Recent Changes Log
+function changeEntryKey(ch) {
+  return String(ch?.id || ch?.bookingId || ch?.timestamp || "");
+}
+
+function changeEntryDates(ch) {
+  const oldB = ch?.oldSnapshot || ch?.oldBooking || null;
+  const newB = ch?.newSnapshot || ch?.newBooking || null;
+
+  const oldStart = oldB ? bookingStartDate(oldB) : null;
+  const newStart = newB ? bookingStartDate(newB) : null;
+
+  return { oldStart, newStart };
+}
+
+function changeEntryTitle(ch) {
+  const name = ch?.customerName || ch?.name || "Cliente";
+  const type = String(ch?.changeType || ch?.type || "edit");
+  if (type === "created") return `➕ ${name} ha prenotato`;
+  if (type === "deleted") return `🗑️ ${name} ha cancellato`;
+  return `✏️ ${name} ha aggiornato`;
+}
+
+function updateRecentChanges() {
+  const container = document.getElementById('recentChanges');
+  if (!container) return;
+
+  const recentChanges = [...(APP.changeLog || [])]
+    .sort((a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0))
+    .slice(0, 5);
+
+  if (recentChanges.length === 0) {
+    container.innerHTML = `
+      <div class="empty-state" style="padding: var(--spacing-lg);">
+        <div class="empty-state-icon">📋</div>
+        <div class="empty-state-title" style="font-size: 14px;">Nessuna modifica recente</div>
+      </div>
+    `;
+    return;
+  }
+
+  container.innerHTML = recentChanges.map(ch => {
+    const t = parseIsoMaybeLocal(ch.timestamp) || new Date();
+    const { oldStart, newStart } = changeEntryDates(ch);
+
+    const labels = Array.isArray(ch.changes) ? ch.changes.map(x => x.label).filter(Boolean) : [];
+    const labelsTxt = labels.length ? labels.slice(0, 3).join(", ") + (labels.length > 3 ? "…" : "") : "";
+
+    const dateLine = (oldStart && newStart)
+      ? `🔄 ${formatDate(oldStart)} ${formatTime(oldStart)} → ${formatDate(newStart)} ${formatTime(newStart)}`
+      : (newStart
+          ? `📅 ${formatDate(newStart)} ${formatTime(newStart)}`
+          : (oldStart ? `📅 ${formatDate(oldStart)} ${formatTime(oldStart)}` : ""));
+
+    const notif = ch.notificationSent ? ' • <span style="color: var(--success);">✓ Cliente notificato</span>' : '';
+
+    return `
+      <div style="padding: var(--spacing-md); border-bottom: 1px solid var(--glass-border); display: flex; justify-content: space-between; align-items: start;">
+        <div style="flex: 1;">
+          <div style="font-size: 15px; font-weight: 700; margin-bottom: 4px;">
+            ${escHtml(changeEntryTitle(ch))}
+          </div>
+          ${dateLine ? `
+            <div style="font-size: 13px; color: var(--text-secondary); margin-bottom: 4px;">
+              ${dateLine}
+            </div>` : ""}
+          ${labelsTxt ? `
+            <div style="font-size: 12px; color: var(--text-tertiary); margin-bottom: 4px;">
+              Modifiche: ${escHtml(labelsTxt)}
+            </div>` : ""}
+          <div style="font-size: 12px; color: var(--text-tertiary);">
+            ${formatRelativeTime(t)}${notif}
+          </div>
+        </div>
+        <div>
+          ${ch.notificationSent ? '<span style="font-size: 20px;">📲</span>' : '<span style="font-size: 20px; opacity: 0.25;">📲</span>'}
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function viewFullChangeLog() {
+  if (!APP.changeLog || APP.changeLog.length === 0) {
+    showToast('📋 Nessuna modifica registrata');
+    return;
+  }
+
+  const logHtml = [...APP.changeLog]
+    .sort((a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0))
+    .map(ch => {
+      const t = parseIsoMaybeLocal(ch.timestamp) || new Date();
+      const { oldStart, newStart } = changeEntryDates(ch);
+
+      const labels = Array.isArray(ch.changes) ? ch.changes.map(x => x.label).filter(Boolean) : [];
+      const list = labels.length ? labels.map(l => `<li>${escHtml(l)}</li>`).join('') : '';
+
+      const when = (oldStart && newStart)
+        ? `${formatDate(oldStart)} ${formatTime(oldStart)} → ${formatDate(newStart)} ${formatTime(newStart)}`
+        : (newStart ? `${formatDate(newStart)} ${formatTime(newStart)}` : (oldStart ? `${formatDate(oldStart)} ${formatTime(oldStart)}` : '—'));
+
+      return `
+        <div style="padding: var(--spacing-md); background: var(--bg-tertiary); border-radius: var(--radius-md); margin-bottom: var(--spacing-sm);">
+          <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+            <div style="font-size: 16px; font-weight: 800;">${escHtml(changeEntryTitle(ch))}</div>
+            <div style="font-size: 12px; color: var(--text-tertiary);">${formatDate(t)} ${formatTime(t)}</div>
+          </div>
+
+          <div style="font-size: 14px; color: var(--text-secondary); margin-bottom: 6px;">
+            ${escHtml(when)}
+          </div>
+
+          ${labels.length ? `
+            <div style="font-size: 13px; color: var(--text-secondary);">
+              <strong>Campi:</strong>
+              <ul style="margin: 6px 0 0 18px; color: var(--text-secondary);">
+                ${list}
+              </ul>
+            </div>` : ""}
+
+          <div style="margin-top: 10px; font-size: 13px;">
+            ${ch.notificationSent ? 
+              '<span style="color: var(--success);">✓ Cliente notificato via WhatsApp</span>' : 
+              '<span style="color: var(--text-tertiary);">Cliente non notificato</span>'}
+          </div>
+
+          ${ch.customMessage ? `
+            <div style="margin-top: 8px; padding: 8px; background: var(--bg-secondary); border-radius: var(--radius-sm); font-size: 13px; color: var(--text-secondary);">
+              <strong>Messaggio:</strong> ${escHtml(ch.customMessage)}
+            </div>
+          ` : ''}
+        </div>
+      `;
+    })
+    .join('');
+
+  const modal = document.createElement('div');
+  modal.className = 'modal show';
+  modal.innerHTML = `
+    <div class="modal-content" style="max-width: 800px;">
+      <div class="modal-header">
+        <h2 class="modal-title">📝 Storico Completo Modifiche</h2>
+        <button class="modal-close" onclick="this.closest('.modal').remove()">✕</button>
+      </div>
+      <div style="max-height: 60vh; overflow-y: auto;">
+        ${logHtml}
+      </div>
+      <div style="margin-top: var(--spacing-lg); display: flex; gap: 12px;">
+        <button class="btn btn-primary" onclick="exportChangeLog()">📥 Esporta CSV</button>
+        <button class="btn btn-secondary" onclick="this.closest('.modal').remove()">Chiudi</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+}
+
+// ---- Report date range helpers ----
+function setReportRange(preset) {
+  const now = new Date();
+  let from, to;
+  const fmt = d => d.toISOString().split('T')[0];
+  if (preset === 'month') {
+    from = new Date(now.getFullYear(), now.getMonth(), 1);
+    to   = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+  } else if (preset === 'quarter') {
+    const q = Math.floor(now.getMonth() / 3);
+    from = new Date(now.getFullYear(), q * 3, 1);
+    to   = new Date(now.getFullYear(), q * 3 + 3, 0);
+  } else if (preset === 'year') {
+    from = new Date(now.getFullYear(), 0, 1);
+    to   = new Date(now.getFullYear(), 11, 31);
+  } else {
+    from = null; to = null;
+  }
+  const f = document.getElementById('reportDateFrom');
+  const t = document.getElementById('reportDateTo');
+  if (f) f.value = from ? fmt(from) : '';
+  if (t) t.value = to   ? fmt(to)   : '';
+}
+
+function getReportDateRange() {
+  const f = document.getElementById('reportDateFrom')?.value;
+  const t = document.getElementById('reportDateTo')?.value;
+  const from = f ? new Date(f + 'T00:00:00') : null;
+  const to   = t ? new Date(t + 'T23:59:59') : null;
+  return { from, to };
+}
+
+function exportChangeLog() {
+  if (!APP.changeLog || APP.changeLog.length === 0) {
+    showToast('⚠️ Nessuna modifica da esportare');
+    return;
+  }
+
+  const header = 'Timestamp,Tipo,Cliente,Quando,Modifiche,Cliente Notificato\n';
+  const lines = APP.changeLog.map(ch => {
+    const t = parseIsoMaybeLocal(ch.timestamp) || new Date();
+    const type = String(ch.changeType || ch.type || "edit");
+    const name = String(ch.customerName || "Cliente").replaceAll(',', ' ');
+    const { oldStart, newStart } = changeEntryDates(ch);
+    const when = (oldStart && newStart)
+      ? `${formatDate(oldStart)} ${formatTime(oldStart)} -> ${formatDate(newStart)} ${formatTime(newStart)}`
+      : (newStart ? `${formatDate(newStart)} ${formatTime(newStart)}` : (oldStart ? `${formatDate(oldStart)} ${formatTime(oldStart)}` : ''));
+    const mods = Array.isArray(ch.changes) ? ch.changes.map(x => x.label).filter(Boolean).join('|') : '';
+    const notif = ch.notificationSent ? 'Sì' : 'No';
+    return `${formatDate(t)} ${formatTime(t)},${type},${name},"${when}","${mods}",${notif}`;
+  });
+
+  const blob = new Blob([header + lines.join('')], { type: 'text/csv;charset=utf-8;' });
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'storico_modifiche_' + new Date().toISOString().split('T')[0] + '.csv';
+  a.click();
+  window.URL.revokeObjectURL(url);
+
+  showToast('✓ Storico modifiche esportato!');
+}
+
+
+// Charts
+function initCharts() {
+  initRevenueChart();
+  initServicesChart();
+}
+
+function computeWeekRevenueSeries(refDate = new Date()) {
+  const labels = ['Lun', 'Mar', 'Mer', 'Gio', 'Ven', 'Sab', 'Dom'];
+  const weekStart = startOfWeekMonday(refDate);
+  const weekEnd = new Date(weekStart.getTime() + 7 * 24 * 60 * 60 * 1000);
+  const data = new Array(7).fill(0);
+
+  (APP.bookings || []).forEach(b => {
+    const s = bookingStartDate(b);
+    if (!s || !Number.isFinite(s.getTime())) return;
+    if (s < weekStart || s >= weekEnd) return;
+
+    const idx = (s.getDay() + 6) % 7; // 0=Lun..6=Dom
+    data[idx] += (Number(b?.price) || 0);
+  });
+
+  return { labels, data };
+}
+
+function initRevenueChart() {
+  const ctx = document.getElementById('revenueChart');
+  if (!ctx) return;
+
+  const series = computeWeekRevenueSeries(new Date());
+
+  APP.charts.revenue = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: series.labels,
+      datasets: [{
+        label: 'Entrate (€)',
+        data: series.data,
+        borderColor: '#007aff',
+        backgroundColor: 'rgba(0, 122, 255, 0.1)',
+        borderWidth: 3,
+        tension: 0.4,
+        fill: true
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false }
+      },
+      scales: {
+        y: {
+          beginAtZero: true,
+          grid: { color: 'rgba(255, 255, 255, 0.1)' },
+          ticks: { color: '#98989d' }
+        },
+        x: {
+          grid: { color: 'rgba(255, 255, 255, 0.1)' },
+          ticks: { color: '#98989d' }
+        }
+      }
+    }
+  });
+}
+
+
+function updateRevenueChart() {
+  if (!APP.charts.revenue) return;
+  const series = computeWeekRevenueSeries(new Date());
+  APP.charts.revenue.data.labels = series.labels;
+  APP.charts.revenue.data.datasets[0].data = series.data;
+  APP.charts.revenue.update();
+}
+
+function initServicesChart() {
+  const ctx = document.getElementById('servicesChart');
+  if (!ctx) return;
+
+  const services = {};
+  (APP.bookings || []).forEach(b => {
+    const k = String(b?.service || '—').trim() || '—';
+    services[k] = (services[k] || 0) + 1;
+  });
+
+  APP.charts.services = new Chart(ctx, {
+    type: 'doughnut',
+    data: {
+      labels: Object.keys(services),
+      datasets: [{
+        data: Object.values(services),
+        backgroundColor: [
+          '#007aff',
+          '#34c759',
+          '#ff9500',
+          '#af52de',
+          '#ff2d55',
+          '#ffd60a',
+          '#5e5ce6'
+        ]
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: {
+          position: 'bottom',
+          labels: {
+            color: '#98989d',
+            padding: 20
+          }
+        }
+      }
+    }
+  });
+}
+
+
+function updateServicesChart() {
+  if (!APP.charts.services) return;
+  
+  const services = {};
+  APP.bookings.forEach(b => {
+    services[b.service] = (services[b.service] || 0) + 1;
+  });
+  
+  APP.charts.services.data.labels = Object.keys(services);
+  APP.charts.services.data.datasets[0].data = Object.values(services);
+  APP.charts.services.update();
+}
+
+// Analytics
+function updateAnalytics() {
+  const bookings = (APP.bookings || [])
+    .map(b => ({ b, s: bookingStartDate(b) }))
+    .filter(x => x.s && Number.isFinite(x.s.getTime()));
+
+  // ---- Monthly trend: ultimi 6 mesi (conteggio prenotazioni) ----
+  const monthNames = ['Gen','Feb','Mar','Apr','Mag','Giu','Lug','Ago','Set','Ott','Nov','Dic'];
+  const now = new Date();
+  const months = [];
+  for (let i = 5; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    months.push({
+      y: d.getFullYear(),
+      m: d.getMonth(),
+      label: monthNames[d.getMonth()]
+    });
+  }
+  const monthCounts = months.map(mm => {
+    return bookings.filter(x => x.s.getFullYear() === mm.y && x.s.getMonth() === mm.m).length;
+  });
+
+  const monthlyCtx = document.getElementById('monthlyTrendChart');
+  if (monthlyCtx) {
+    if (!APP.charts.monthly) {
+      APP.charts.monthly = new Chart(monthlyCtx, {
+        type: 'bar',
+        data: {
+          labels: months.map(x => x.label),
+          datasets: [{
+            label: 'Prenotazioni',
+            data: monthCounts,
+            backgroundColor: '#007aff'
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { labels: { color: '#98989d' } } },
+          scales: {
+            y: { beginAtZero: true, grid: { color: 'rgba(255,255,255,0.1)' }, ticks: { color: '#98989d' } },
+            x: { grid: { color: 'rgba(255,255,255,0.1)' }, ticks: { color: '#98989d' } }
+          }
+        }
+      });
+    } else {
+      APP.charts.monthly.data.labels = months.map(x => x.label);
+      APP.charts.monthly.data.datasets[0].data = monthCounts;
+      APP.charts.monthly.update();
+    }
+  }
+
+  // ---- Hours chart: distribuzione per ora (9-19) ----
+  const hourLabels = [];
+  for (let h = 9; h <= 19; h++) hourLabels.push(`${h}:00`);
+  const hourCounts = new Array(hourLabels.length).fill(0);
+  bookings.forEach(x => {
+    const h = x.s.getHours();
+    if (h >= 9 && h <= 19) hourCounts[h - 9] += 1;
+  });
+
+  const hoursCtx = document.getElementById('hoursChart');
+  if (hoursCtx) {
+    if (!APP.charts.hours) {
+      APP.charts.hours = new Chart(hoursCtx, {
+        type: 'bar',
+        data: {
+          labels: hourLabels,
+          datasets: [{
+            label: 'Appuntamenti',
+            data: hourCounts,
+            backgroundColor: '#34c759'
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { labels: { color: '#98989d' } } },
+          scales: {
+            y: { beginAtZero: true, grid: { color: 'rgba(255,255,255,0.1)' }, ticks: { color: '#98989d' } },
+            x: { grid: { color: 'rgba(255,255,255,0.1)' }, ticks: { color: '#98989d' } }
+          }
+        }
+      });
+    } else {
+      APP.charts.hours.data.labels = hourLabels;
+      APP.charts.hours.data.datasets[0].data = hourCounts;
+      APP.charts.hours.update();
+    }
+  }
+
+  // ---- Clients chart: Nuovi / Ritorno / VIP (basato su visite/spesa reali) ----
+  const byName = new Map();
+  bookings.forEach(x => {
+    const nameRaw = String(x.b.customerName || '').trim();
+    if (!nameRaw) return;
+    const key = nameRaw.toLowerCase();
+    const price = Number(x.b.price || 0) || 0;
+
+    if (!byName.has(key)) {
+      byName.set(key, { name: nameRaw, first: x.s, last: x.s, count: 0, spent: 0 });
+    }
+    const c = byName.get(key);
+    c.count += 1;
+    c.spent += price;
+    if (x.s < c.first) c.first = x.s;
+    if (x.s > c.last) c.last = x.s;
+  });
+
+  const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1000;
+  let newC = 0, retC = 0, vipC = 0;
+
+  Array.from(byName.values()).forEach(c => {
+    const isVip = c.count >= 6 || c.spent >= 250;
+    if (isVip) { vipC++; return; }
+
+    const isNew = c.count === 1 && (now.getTime() - c.first.getTime()) <= THIRTY_DAYS;
+    if (isNew) newC++;
+    else retC++;
+  });
+
+  const clientsCtx = document.getElementById('clientsChart');
+  if (clientsCtx) {
+    if (!APP.charts.clients) {
+      APP.charts.clients = new Chart(clientsCtx, {
+        type: 'pie',
+        data: {
+          labels: ['Nuovi', 'Ritorno', 'VIP'],
+          datasets: [{
+            data: [newC, retC, vipC],
+            backgroundColor: ['#007aff', '#34c759', '#ff9500']
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { position: 'bottom', labels: { color: '#98989d', padding: 15 } }
+          }
+        }
+      });
+    } else {
+      APP.charts.clients.data.datasets[0].data = [newC, retC, vipC];
+      APP.charts.clients.update();
+    }
+  }
+
+  // ---- Revenue by service (già reale, ma rendilo “update-friendly”) ----
+  const revenueServiceCtx = document.getElementById('revenueByServiceChart');
+  if (revenueServiceCtx) {
+    const services = {};
+    (APP.bookings || []).forEach(b => {
+      const k = String(b?.service || '—').trim() || '—';
+      services[k] = (services[k] || 0) + (Number(b?.price || 0) || 0);
+    });
+    const labels = Object.keys(services);
+    const values = Object.values(services);
+
+    if (!APP.charts.revenueService) {
+      APP.charts.revenueService = new Chart(revenueServiceCtx, {
+        type: 'bar',
+        data: { labels, datasets: [{ label: 'Entrate (€)', data: values, backgroundColor: '#af52de' }] },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { labels: { color: '#98989d' } } },
+          scales: {
+            y: { beginAtZero: true, grid: { color: 'rgba(255,255,255,0.1)' }, ticks: { color: '#98989d' } },
+            x: { grid: { color: 'rgba(255,255,255,0.1)' }, ticks: { color: '#98989d' } }
+          }
+        }
+      });
+    } else {
+      APP.charts.revenueService.data.labels = labels;
+      APP.charts.revenueService.data.datasets[0].data = values;
+      APP.charts.revenueService.update();
+    }
+  }
+}
+
+// Bookings Management
+function openNewBookingModal() {
+  document.getElementById('bookingModal').classList.add('show');
+}
+
+function closeBookingModal() {
+  document.getElementById('bookingModal').classList.remove('show');
+  clearBookingForm();
+}
+
+function clearBookingForm() {
+  document.getElementById('bookingClient').value = '';
+  document.getElementById('bookingService').value = '';
+
+  const proSel = document.getElementById('bookingPro');
+  if (proSel) proSel.value = '';
+
+  document.getElementById('bookingPhone').value = '';
+  document.getElementById('bookingNotes').value = '';
+
+  const today = new Date().toISOString().split('T')[0];
+  document.getElementById('bookingDate').value = today;
+
+  // reset pro options
+  if (proSel) {
+    proSel.innerHTML = `<option value="">Auto (da servizio)</option>`;
+  }
+}
+
+function saveBooking() {
+  const client = document.getElementById("bookingClient").value;
+  const service = document.getElementById("bookingService").value;
+  const date = document.getElementById("bookingDate").value;
+  const time = document.getElementById("bookingTime").value;
+  const phone = document.getElementById("bookingPhone").value;
+  const notes = document.getElementById("bookingNotes").value;
+
+  if (!client || !service || !date || !time) {
+    showToast("⚠️ Compila tutti i campi obbligatori");
+    return;
+  }
+
+  const start = new Date(date + "T" + time);
+
+  // prezzo/durata dal DB (via APP.cfg)
+  const meta = cfgServiceMeta(service);
+  if (!meta) {
+    showToast("⚠️ Servizio non trovato nella configurazione");
+  let professionalEmail = String(proSel?.value || "").trim();
+
+  // fallback: se non scelto, prova auto da servizio (solo se unico)
+  if (!professionalEmail) {
+    const pros = Array.isArray(meta.professionals) ? meta.professionals : [];
+    professionalEmail = pros.length === 1 ? String(pros[0] || "").trim() : "";
+  }
+
+  const professionalName = professionalEmail
+    ? (cfgProNameFromEmail(professionalEmail) || professionalEmail)
+    : "";
+
+  const price = cfgServicePrice(service);
+  const dur = Math.max(1, Number(cfgServiceDurationMin(service, professionalEmail) || 30) || 30);
+  const end = new Date(start.getTime() + dur * 60000);
+
+  const booking = {
+    id: "BK" + Date.now(),
+    customerName: client,
+    service: service,
+    professionalName: professionalName,
+    professionalEmail: professionalEmail,
+    price: price,
+    date: toLocalIsoNoZ(start),
+    end: toLocalIsoNoZ(end),
+    durationMin: dur,
+    phone: phone,
+    status: "confirmed",
+    notes: notes,
+
+    _origin: "local",
+    _dirty: true
+  };
+
+  APP.bookings.push(booking);
+  saveData();
+
+  // --- SYNC DB ---
+  dbSync.saveBooking(booking);
+
+  if (APP.calendar) {
+    const ev = calendarEventsFromBookings([booking])[0];
+    if (ev) APP.calendar.addEvent(ev);
+  }
+
+
+  closeBookingModal();
+  updateDashboard();
+  showToast("✓ Prenotazione salvata con successo!");
+  addNotification("Nuova prenotazione: " + client + " - " + service, "success");
+}
+
+
+// ---- Prenotazioni: filtri avanzati + ricerca per cliente ----
+function populateBookingFiltersFromConfig() {
+  const proSel = document.getElementById("bookingFilterPro");
+  const svcSel = document.getElementById("bookingFilterSvc");
+  if (!proSel || !svcSel) return;
+
+  // professionisti (dal DB)
+  const pros = APP.cfg?.professionals ? Object.entries(APP.cfg.professionals) : [];
+  const proOpts = [`<option value="">Tutti</option>`].concat(
+    pros
+      .map(([email, meta]) => {
+        const name = String(meta?.name || email).trim();
+        return `<option value="${escHtml(email)}">${escHtml(name)}</option>`;
+      })
+  );
+  proSel.innerHTML = proOpts.join("");
+
+  // servizi (dal DB)
+  const svcs = APP.cfg?.services ? Object.keys(APP.cfg.services) : [];
+  const svcOpts = [`<option value="">Tutti</option>`].concat(
+    svcs
+      .sort((a, b) => a.localeCompare(b, "it"))
+      .map((svc) => {
+        const meta = cfgServiceMeta(svc);
+        const emoji = meta?.emoji || "";
+        return `<option value="${escHtml(svc)}">${emoji ? (emoji + " ") : ""}${escHtml(svc)}</option>`;
+      })
+  );
+  svcSel.innerHTML = svcOpts.join("");
+}
+
+function wireBookingFiltersOnce() {
+  const ids = [
+    "bookingFilterWhen",
+    "bookingFilterStatus",
+    "bookingFilterPro",
+    "bookingFilterSvc",
+    "bookingFilterFrom",
+    "bookingFilterTo",
+    "bookingSort",
+    "bookingGroupByService",
+    "bookingShowCancelled"
+  ];
+
+  ids.forEach(id => {
+    const el = document.getElementById(id);
+    if (!el || el._wired) return;
+    el.addEventListener("change", () => updateBookingsList());
+    el._wired = true;
+  });
+
+  // Quando cambi "Periodo", abilita/disabilita le date
+  const whenEl = document.getElementById("bookingFilterWhen");
+  const fromEl = document.getElementById("bookingFilterFrom");
+  const toEl = document.getElementById("bookingFilterTo");
+
+  const syncRangeEnabled = () => {
+    const mode = String(whenEl?.value || "all");
+    const on = (mode === "range");
+    if (fromEl) fromEl.disabled = !on;
+    if (toEl) toEl.disabled = !on;
+    if (!on) {
+      if (fromEl) fromEl.value = "";
+      if (toEl) toEl.value = "";
+    }
+  };
+
+  if (whenEl && !whenEl._wired2) {
+    whenEl.addEventListener("change", syncRangeEnabled);
+    whenEl._wired2 = true;
+  }
+  syncRangeEnabled();
+}
+
+function clearBookingFilters() {
+  const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
+  set("bookingFilterWhen", "all");
+  set("bookingFilterStatus", "all");
+  set("bookingFilterPro", "");
+  set("bookingFilterSvc", "");
+  set("bookingSort", "soon");
+
+  const fromEl = document.getElementById("bookingFilterFrom");
+  const toEl = document.getElementById("bookingFilterTo");
+  if (fromEl) { fromEl.value = ""; fromEl.disabled = true; }
+  if (toEl) { toEl.value = ""; toEl.disabled = true; }
+
+  const groupEl = document.getElementById("bookingGroupByService");
+  if (groupEl) groupEl.checked = true;
+
+  const showCancEl = document.getElementById("bookingShowCancelled");
+  if (showCancEl) showCancEl.checked = false;
+
+  updateBookingsList();
+  showToast("✓ Filtri prenotazioni ripristinati");
+}
+
+function setBookingQuickRange(mode) {
+  const whenEl = document.getElementById("bookingFilterWhen");
+  if (whenEl) whenEl.value = String(mode || "all");
+  // forza refresh (e aggiorna enable date-range)
+  try { wireBookingFiltersOnce(); } catch {}
+  updateBookingsList();
+}
+
+function getBookingsFilters() {
+  const q = String(document.getElementById("bookingSearch")?.value || "").trim();
+  const when = String(document.getElementById("bookingFilterWhen")?.value || "all").trim();
+  const status = String(document.getElementById("bookingFilterStatus")?.value || "all").trim();
+  const pro = String(document.getElementById("bookingFilterPro")?.value || "").trim();
+  const svc = String(document.getElementById("bookingFilterSvc")?.value || "").trim();
+  const from = String(document.getElementById("bookingFilterFrom")?.value || "").trim();
+  const to = String(document.getElementById("bookingFilterTo")?.value || "").trim();
+  const sort = String(document.getElementById("bookingSort")?.value || "soon").trim();
+  const groupBy = !!document.getElementById("bookingGroupByService")?.checked;
+  const showCancelled = !!document.getElementById("bookingShowCancelled")?.checked;
+
+  return { q, when, status, pro, svc, from, to, sort, groupBy, showCancelled };
+}
+
+function updateBookingsList() {
+  const container = document.getElementById("bookingsList");
+  if (!container) return;
+
+  const f = getBookingsFilters();
+  const q = String(f.q || "").trim().toLowerCase();
+  const qDigits = waPhoneDigits(q);
+
+  const now = new Date();
+  const today0 = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+  const tomorrow0 = new Date(today0.getTime() + 24 * 60 * 60 * 1000);
+  const weekStart = startOfWeekMonday(now);
+  const weekEnd = new Date(weekStart.getTime() + 7 * 24 * 60 * 60 * 1000);
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+  const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1, 0, 0, 0, 0);
+
+  const wantPro = String(f.pro || "").trim();
+  const wantProName = wantPro ? (cfgProNameFromEmail(wantPro) || "").trim().toLowerCase() : "";
+  const wantSvc = String(f.svc || "").trim();
+
+  const matchQuery = (b) => {
+    if (!q) return true;
+    const name = String(b?.customerName || "").trim().toLowerCase();
+    const phone = String(b?.phone || "").trim();
+    const phoneDigits = waPhoneDigits(phone);
+    const svc = String(b?.service || "").trim().toLowerCase();
+
+    if (name.includes(q)) return true;
+    if (svc.includes(q)) return true;
+
+    if (qDigits && phoneDigits && phoneDigits.includes(qDigits)) return true;
+    if (!qDigits && phone && phone.toLowerCase().includes(q)) return true;
+
+    return false;
+  };
+
+  const matchPro = (b) => {
+    if (!wantPro) return true;
+    const em = String(b?.professionalEmail || "").trim().toLowerCase();
+    const nm = String(b?.professionalName || "").trim().toLowerCase();
+    const wantEm = wantPro.toLowerCase();
+    if (em && em === wantEm) return true;
+    if (wantProName && nm && nm === wantProName) return true;
+    return false;
+  };
+
+  const matchSvc = (b) => {
+    if (!wantSvc) return true;
+    return String(b?.service || "").trim() === wantSvc;
+  };
+
+  const matchStatus = (b) => {
+    const st = String(b?.status || "confirmed").toLowerCase();
+    const isCancelled = (st === "cancelled" || st === "canceled");
+    const isPending = (st === "pending" || st === "hold" || st === "tentative");
+
+    if (String(f.status || "all") === "cancelled") return isCancelled;
+    if (String(f.status || "all") === "pending") return isPending && !isCancelled;
+    if (String(f.status || "all") === "confirmed") return (!isCancelled && !isPending);
+
+    // all
+    if (isCancelled && !f.showCancelled) return false;
+    return true;
+  };
+
+  const matchWhen = (b, start) => {
+    const mode = String(f.when || "all");
+    if (mode === "all") return true;
+    if (mode === "future") return start >= now;
+    if (mode === "past") return start < now;
+    if (mode === "today") return start >= today0 && start < tomorrow0;
+    if (mode === "week") return start >= weekStart && start < weekEnd;
+    if (mode === "month") return start >= monthStart && start < monthEnd;
+
+    if (mode === "range") {
+      const fromD = f.from ? new Date(f.from + "T00:00:00") : null;
+      const toD = f.to ? new Date(f.to + "T00:00:00") : null;
+      const toNext = toD ? new Date(toD.getTime() + 24 * 60 * 60 * 1000) : null;
+      if (fromD && Number.isFinite(fromD.getTime()) && start < fromD) return false;
+      if (toNext && Number.isFinite(toNext.getTime()) && start >= toNext) return false;
+      return true;
+    }
+
+    return true;
+  };
+
+  const rows = (APP.bookings || [])
+    .map(b => ({ b, start: bookingStartDate(b), end: bookingEndDate(b) }))
+    .filter(x => x.start && Number.isFinite(x.start.getTime()))
+    .filter(x => matchQuery(x.b))
+    .filter(x => matchPro(x.b))
+    .filter(x => matchSvc(x.b))
+    .filter(x => matchStatus(x.b))
+    .filter(x => matchWhen(x.b, x.start));
+
+  if (!rows.length) {
+    container.innerHTML = `
+      <div class="empty-state">
+        <div class="empty-state-icon">📅</div>
+        <div class="empty-state-title">Nessuna prenotazione</div>
+        <div class="empty-state-subtitle">Prova a cambiare filtri o ricerca.</div>
+      </div>
+    `;
+    return;
+  }
+
+  // Sort
+  rows.sort((a, b) => (f.sort === "recent")
+    ? (b.start.getTime() - a.start.getTime())
+    : (a.start.getTime() - b.start.getTime())
+  );
+
+  const future = rows.filter(x => x.start >= now);
+  const past = rows.filter(x => x.start < now).sort((a, b) => b.start.getTime() - a.start.getTime());
+
+  const groupByService = (list) => {
+    const m = new Map();
+    list.forEach(x => {
+      const k = String(x.b?.service || "—").trim() || "—";
+      if (!m.has(k)) m.set(k, []);
+      m.get(k).push(x);
+    });
+    return Array.from(m.entries()).sort((a, b) => a[0].localeCompare(b[0], "it"));
+  };
+
+  const statusBadge = (b) => {
+    const st = String(b?.status || "confirmed").toLowerCase();
+    const isCancelled = (st === "cancelled" || st === "canceled");
+    const isPending = (st === "pending" || st === "hold" || st === "tentative");
+    if (isCancelled) return `<span class="badge badge-danger">Annullato</span>`;
+    if (isPending) return `<span class="badge badge-warning">In attesa</span>`;
+    return `<span class="badge badge-success">Confermato</span>`;
+  };
+
+  const fmtPhone = (b) => (formatPhoneDisplay(b?.phone) || String(b?.phone || "").trim());
+
+  const renderRow = (x) => {
+    const b = x.b;
+    const pro = String(b?.professionalName || "").trim();
+    const phone = fmtPhone(b);
+    const price = formatCurrency(Number(b?.price || 0) || 0);
+
+    const st = String(b?.status || "confirmed").toLowerCase();
+    const isCancelled = (st === "cancelled" || st === "canceled");
+
+    return `
+      <div class="card" style="padding: var(--spacing-md); margin-bottom: var(--spacing-sm); ${isCancelled ? "opacity:.78;" : ""}">
+        <div style="display:flex; justify-content:space-between; align-items:start; gap:12px;">
+          <div style="flex:1; min-width:0;">
+            <div style="display:flex; align-items:center; justify-content:space-between; gap:10px;">
+              <div style="font-size:18px; font-weight:800; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
+                ${escHtml(b?.customerName || "Cliente")}
+              </div>
+              <div>${statusBadge(b)}</div>
+            </div>
+
+            <div style="font-size:14px; color: var(--text-secondary); margin-top:6px;">
+              ${escHtml(String(b?.service || "—").trim() || "—")}
+              ${pro ? ` • <span style="color:var(--text-tertiary)">${escHtml(pro)}</span>` : ""}
+              • ${price}
+            </div>
+
+            <div style="font-size:14px; color: var(--text-secondary); margin-top:6px;">
+              📅 ${formatDate(x.start)} • ${formatTime(x.start)}${x.end ? `–${formatTime(x.end)}` : ""}
+            </div>
+
+            ${phone ? `<div style="font-size:14px; color: var(--text-secondary); margin-top:4px;">📞 ${escHtml(phone)}</div>` : ""}
+          </div>
+
+          <div style="display:flex; gap:8px; align-items:center;">
+            <div class="action-btn-wrap">
+              <button class="btn btn-success btn-icon" title="Scrivi su WhatsApp" onclick="openWaComposerFromBooking(${jsArg(String(b.id || ""))})">💬</button>
+              <span class="action-btn-label">WhatsApp</span>
+            </div>
+            <div class="action-btn-wrap">
+              <button class="btn btn-secondary btn-icon" title="Vedi dettagli" onclick="openBookingDetailsModal(${jsArg(String(b.id || ""))})">🔎</button>
+              <span class="action-btn-label">Dettagli</span>
+            </div>
+            <div class="action-btn-wrap">
+              <button class="btn btn-danger btn-icon" title="Annulla appuntamento" onclick="deleteBooking(${jsArg(String(b.id || ""))})">🗑️</button>
+              <span class="action-btn-label">Annulla</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+  };
+
+  const renderSection = (title, list, emptyMsg) => {
+    if (!list.length) {
+      return `
+        <div class="card" style="margin-bottom: var(--spacing-md);">
+          <div class="card-title">${escHtml(title)}</div>
+          <div class="empty-state" style="padding: var(--spacing-lg);">
+            <div class="empty-state-icon">✅</div>
+            <div class="empty-state-title" style="font-size: 14px;">${escHtml(emptyMsg)}</div>
+          </div>
+        </div>
+      `;
+    }
+
+    // grouping
+    if (f.groupBy) {
+      const groups = groupByService(list);
+      return `
+        <div class="card" style="margin-bottom: var(--spacing-md);">
+          <div class="card-title">${escHtml(title)} <span style="color:var(--text-tertiary); font-weight:700;">(${list.length})</span></div>
+          <div>
+            ${groups.map(([svc, items]) => `
+              <details open style="margin-bottom: 10px;">
+                <summary style="cursor:pointer; padding: 10px 12px; border-radius: 12px; background: var(--bg-tertiary); font-weight:800;">
+                  ${escHtml(svc)} <span style="color:var(--text-tertiary); font-weight:700;">(${items.length})</span>
+                </summary>
+                <div style="margin-top: 10px;">
+                  ${items.map(renderRow).join("")}
+                </div>
+              </details>
+            `).join("")}
+          </div>
+        </div>
+      `;
+    }
+
+    // flat
+    return `
+      <div class="card" style="margin-bottom: var(--spacing-md);">
+        <div class="card-title">${escHtml(title)} <span style="color:var(--text-tertiary); font-weight:700;">(${list.length})</span></div>
+        <div style="margin-top: 10px;">
+          ${list.map(renderRow).join("")}
+        </div>
+      </div>
+    `;
+  };
+
+  // Se filtro "Periodo" è specifico, evitiamo due sezioni inutili
+  const mode = String(f.when || "all");
+  if (mode === "future") {
+    container.innerHTML = renderSection("🟢 Future", future, "Nessun appuntamento futuro");
+    return;
+  }
+  if (mode === "past") {
+    container.innerHTML = renderSection("⚫ Passate", past, "Nessun appuntamento passato");
+    return;
+  }
+
+  container.innerHTML = `
+    ${renderSection("🟢 Da svolgere", future, "Nessun appuntamento futuro")}
+    ${renderSection("⚫ Svolte", past, "Nessun appuntamento passato")}
+  `;
+}
+
+
+
+function ensureDeletedBookingsSet() {
+  if (!APP.deletedBookingIds) {
+    let arr = [];
+    try { arr = JSON.parse(localStorage.getItem("deletedBookingIds") || "[]"); } catch {}
+    APP.deletedBookingIds = new Set((Array.isArray(arr) ? arr : []).map(x => String(x || "")));
+  }
+  return APP.deletedBookingIds;
+}
+
+function isDeletedBookingId(id) {
+  const s = ensureDeletedBookingsSet();
+  return s.has(String(id || ""));
+}
+
+function rememberDeletedBookingId(id) {
+  const s = ensureDeletedBookingsSet();
+  const key = String(id || "");
+  if (!key) return;
+  s.add(key);
+  try { localStorage.setItem("deletedBookingIds", JSON.stringify(Array.from(s.values()).slice(-500))); } catch {}
+}
+
+function buildWhatsAppCancelMessage(booking, reasonText = "") {
+  const name = String(booking?.customerName || "Cliente").trim() || "Cliente";
+  const svc = String(booking?.service || "Servizio").trim() || "Servizio";
+  const pro = String(booking?.professionalName || "").trim();
+  const s = bookingStartDate(booking);
+  const dateTxt = s ? formatDate(s) : "";
+  const timeTxt = s ? formatTime(s) : "";
+
+  const proPart = pro ? ` con *${pro}*` : "";
+  const reason = String(reasonText || "").trim();
+  const reasonPart = reason ? `
+
+Motivo: ${reason}` : "";
+
+  return (
+`Ciao ${name} 😊
+Purtroppo il tuo appuntamento per *${svc}*${proPart} del *${dateTxt}* alle *${timeTxt}* è stato *annullato*.
+Se vuoi riprenotare, rispondi pure qui.${reasonPart}`.trim()
+  );
+}
+
+async function sendWhatsAppCancelNotification(booking, customMessage = "") {
+  const phoneRaw = String(booking?.phone || "").trim();
+  const chatId = phoneToChatId(phoneRaw) || (waPhoneDigits(phoneRaw) ? (waPhoneDigits(phoneRaw) + "@c.us") : "");
+  const msg = String(customMessage || "").trim() || buildWhatsAppCancelMessage(booking);
+
+  if (!chatId) {
+    showToast("📵 Numero WhatsApp mancante: apro il compositore");
+    try { openWaComposer({ to: phoneRaw, message: msg, bookingId: booking?.id }); } catch {}
+    return { ok: false, reason: "missing_phone" };
+  }
+
+  const r = await adminSendText(chatId, msg);
+  if (r && r.ok) {
+    // Log sent (WhatsApp Center)
+    try { waLogAppend({ type: "cancel", to: chatId, message: msg, bookingId: booking?.id, at: new Date().toISOString() }); } catch {}
+    showToast("✓ Messaggio annullamento inviato");
+    return { ok: true };
+  }
+
+  showToast("⚠️ Invio automatico fallito: apro il compositore");
+  try { openWaComposer({ to: phoneRaw, message: msg, bookingId: booking?.id }); } catch {}
+  return { ok: false, reason: "send_failed", resp: r };
+}
+
+async function tryRemoteDeleteBooking(bookingId) {
+  const id = String(bookingId || "").trim();
+  if (!id) return { ok: false, status: 0, where: "no-id" };
+
+  // endpoint “best effort”: se non esistono, fallback su annullamento locale
+  const tries = [
+    { path: "/api/bookings/delete", method: "POST", body: { id } },
+    { path: "/api/bookings/remove", method: "POST", body: { id } },
+    { path: "/api/booking/delete", method: "POST", body: { id } },
+    { path: "/api/deleteBooking", method: "POST", body: { id } },
+    { path: "/api/delete-booking", method: "POST", body: { id } },
+    { path: "/api/bookings/" + encodeURIComponent(id), method: "DELETE" }
+  ];
+
+  for (const t of tries) {
+    try {
+      const r = await adminRequest(t.path, {
+        method: t.method,
+        headers: { "Content-Type": "application/json" },
+        body: t.body ? JSON.stringify(t.body) : undefined
+      });
+
+      if (r && r.ok) return { ok: true, status: r.status || 200, where: t.path, data: r.data };
+      // se 404/405 -> prova il prossimo
+    } catch {}
+  }
+
+  return { ok: false, status: 0, where: "fallback" };
+}
+
+async function deleteBooking(id) {
+  const bookingId = String(id || "").trim();
+  if (!bookingId) return;
+
+  const booking = (APP.bookings || []).find(b => String(b?.id || "") === bookingId);
+  if (!booking) {
+    showToast("⚠️ Prenotazione non trovata");
+    return;
+  }
+
+  const st = String(booking?.status || "confirmed").toLowerCase();
+  const isAlreadyCancelled = (st === "cancelled" || st === "canceled");
+
+  if (isAlreadyCancelled) {
+    const confirmDel = await showConfirm({
+      icon: '🗑️',
+      title: 'Eliminare prenotazione?',
+      message: 'Questa prenotazione è già annullata. Vuoi eliminarla definitivamente? Non verrà inviato nessun messaggio al cliente.',
+      confirmLabel: 'Elimina',
+      confirmClass: 'btn-danger',
+      cancelLabel: 'Annulla'
+    });
+    if (!confirmDel) return;
+
+    APP.bookings = (APP.bookings || []).filter(b => String(b?.id || "") !== bookingId);
+    saveData();
+
+    if (APP.calendar) {
+      try { APP.calendar.getEventById(bookingId)?.remove(); } catch {}
+    }
+
+    updateBookingsList();
+    updateDashboard();
+    refreshCalendarEvents();
+    renderCalDayPanel(APP.calSelectedDate || new Date());
+    showToast("✓ Prenotazione eliminata definitivamente");
+    return;
+  }
+
+  // Per UX: annulliamo (per evitare che il watcher la rimetta) e proviamo anche la cancellazione remota
+  const humanWhen = (() => {
+    const s = bookingStartDate(booking);
+    return s ? `${formatDate(s)} ${formatTime(s)}` : "";
+  })();
+
+  const confirmCancel = await showConfirm({
+    icon: '📅',
+    title: 'Annullare appuntamento?',
+    message: (humanWhen ? `Appuntamento del <strong>${humanWhen}</strong><br><br>` : '') +
+             'Vuoi annullare questo appuntamento? Verrà inviato un messaggio WhatsApp al cliente.',
+    confirmLabel: '✅ Sì, annulla appuntamento',
+    confirmClass: 'btn-danger',
+    cancelLabel: 'No, torna indietro'
+  });
+  if (!confirmCancel) return;
+
+  // 1) Prova cancellazione remota (se il bot espone un endpoint). Se fallisce, almeno annullamento locale.
+  const remote = await tryRemoteDeleteBooking(bookingId);
+
+  if (remote.ok) {
+    // elimina localmente (l’evento sparisce)
+    rememberDeletedBookingId(bookingId);
+    APP.bookings = (APP.bookings || []).filter(b => String(b?.id || "") !== bookingId);
+  } else {
+    // fallback sicuro: annulla localmente e blocca overwrite del watcher
+    booking.status = "cancelled";
+    booking._origin = "local";
+    booking._dirty = true;
+  }
+
+  saveData();
+
+  // --- SYNC DB ---
+  if (remote.ok) {
+    dbSync.deleteBooking(booking);
+  } else {
+    dbSync.updateStatus(booking, 'cancelled');
+  }
+
+  // aggiorna UI/calendario
+  if (APP.calendar) {
+    try {
+      const ev = APP.calendar.getEventById(bookingId);
+      if (ev) {
+        // se abbiamo eliminato realmente -> remove; se solo annullato -> ricarica sorgente (filtri)
+        if (remote.ok) ev.remove();
+      }
+    } catch {}
+  }
+
+  refreshCalendarEvents();
+  renderCalendarFilters();
+  renderCalDayPanel(APP.calSelectedDate || new Date());
+  updateBookingsList();
+  updateDashboard();
+
+  // 2) Notifica cliente (sempre, come richiesto)
+  const msg = buildWhatsAppCancelMessage(booking);
+  await sendWhatsAppCancelNotification(booking, msg);
+
+  showToast(remote.ok ? "✓ Prenotazione eliminata" : "✓ Prenotazione annullata (fallback locale)");
+}
+
+function showBookingDetails(id) {
+  openBookingDetailsModal(id);
+}
+
+// ---------------- Booking Details / Edit (scheda) ----------------
+APP.bookingEditor = null;
+
+function bdLocalDateValue(d) {
+  if (!(d instanceof Date) || !Number.isFinite(d.getTime())) return "";
+  return [d.getFullYear(), pad2(d.getMonth() + 1), pad2(d.getDate())].join("-");
+}
+
+function bdLocalTimeValue(d) {
+  if (!(d instanceof Date) || !Number.isFinite(d.getTime())) return "";
+  return [pad2(d.getHours()), pad2(d.getMinutes())].join(":");
+}
+
+function bdEnsureServiceDatalist() {
+  const dl = document.getElementById("serviceList");
+  if (!dl) return;
+
+  const names = new Set();
+
+  try {
+    // configurazione DB: services (mappa) oppure array
+    const sv = APP.cfg && (APP.cfg.services || APP.cfg.serviceCatalog || APP.cfg.trattamenti);
+    if (Array.isArray(sv)) {
+      sv.forEach(x => {
+        const n = (x && (x.name || x.label)) ? String(x.name || x.label).trim() : String(x || "").trim();
+        if (n) names.add(n);
+      });
+    } else if (sv && typeof sv === "object") {
+      Object.keys(sv).forEach(k => {
+        const meta = sv[k];
+        const n = (meta && (meta.name || meta.label)) ? String(meta.name || meta.label).trim() : String(k || "").trim();
+        if (n) names.add(n);
+      });
+    }
+  } catch {}
+
+  // fallback dai booking
+  (APP.bookings || []).forEach(b => {
+    const n = (b && b.service) ? String(b.service).trim() : "";
+    if (n) names.add(n);
+  });
+
+  const esc = (v) => String(v || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/\'/g, "&#39;");
+
+  dl.innerHTML = Array.from(names).sort().map(n => `<option value="${esc(n)}"></option>`).join("");
+}
+
+function openBookingDetailsModal(id) {
+  const booking = (APP.bookings || []).find(b => b.id === id);
+  if (!booking) return;
+
+  bdEnsureServiceDatalist();
+
+  const start = bookingStartDate(booking);
+
+  // snapshot originale (per diff)
+  APP.bookingEditor = {
+    id,
+    original: JSON.parse(JSON.stringify(booking)),
+    openedAt: Date.now()
+  };
+
+  // fill form
+  document.getElementById("bdTitle").textContent = `📋 Prenotazione • ${booking.customerName || "Cliente"}`;
+  document.getElementById("bdCustomer").value = booking.customerName || "";
+  document.getElementById("bdPhone").value = booking.phone || "";
+  document.getElementById("bdService").value = booking.service || "";
+  document.getElementById("bdPro").value = booking.professionalName || "";
+  document.getElementById("bdDate").value = bdLocalDateValue(start);
+  document.getElementById("bdTime").value = bdLocalTimeValue(start);
+  document.getElementById("bdDuration").value = Math.max(1, Number(booking.durationMin || booking.duration) || 30);
+  document.getElementById("bdPrice").value = Number(booking.price || 0);
+document.getElementById("bdNotes").value = booking.notes || "";
+
+  // hint telefono
+  const hint = document.getElementById("bdPhoneHint");
+  const pretty = formatPhoneDisplay(booking.phone) || "";
+  hint.textContent = pretty ? `Formato: ${pretty}` : "Suggerimento: 39XXXXXXXXXX@c.us → +39 3XX XXXXXXX";
+
+  // allineamento iniziale durata/prezzo dal DB (se mancanti)
+  try {
+    const svc = String(document.getElementById("bdService").value || "").trim();
+    const meta = cfgServiceMeta(svc);
+    if (meta) {
+      const proEmail = cfgProEmailFromInput(document.getElementById("bdPro").value || "");
+      const durEl = document.getElementById("bdDuration");
+      const priceEl = document.getElementById("bdPrice");
+      if (durEl && (!durEl.value || Number(durEl.value) <= 0)) durEl.value = cfgServiceDurationMin(svc, proEmail);
+      if (priceEl && (!priceEl.value || Number(priceEl.value) <= 0)) priceEl.value = cfgServicePrice(svc);
+    }
+  } catch {}
+
+
+  // listeners (una sola volta)
+  if (!openBookingDetailsModal._wired) {
+    const ids = ["bdCustomer","bdPhone","bdService","bdPro","bdDate","bdTime","bdDuration","bdPrice","bdNotes"];
+    ids.forEach(id => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.addEventListener("input", bdRefreshEditorUI);
+      el.addEventListener("change", bdRefreshEditorUI);
+    });
+    // auto durata/prezzo da config (quando cambi servizio o professionista)
+    const svcEl = document.getElementById("bdService");
+    const proEl = document.getElementById("bdPro");
+    const durEl = document.getElementById("bdDuration");
+    const priceEl = document.getElementById("bdPrice");
+
+    const applyCfg = () => {
+      const svc = String(svcEl?.value || "").trim();
+      if (!svc) return;
+      const meta = cfgServiceMeta(svc);
+      if (!meta) return;
+      const proEmail = cfgProEmailFromInput(proEl?.value || "");
+      if (durEl && durEl.dataset.manual !== "1") durEl.value = cfgServiceDurationMin(svc, proEmail);
+      if (priceEl && priceEl.dataset.manual !== "1") priceEl.value = cfgServicePrice(svc);
+    };
+
+    if (durEl) durEl.addEventListener("input", () => { durEl.dataset.manual = "1"; });
+    if (priceEl) priceEl.addEventListener("input", () => { priceEl.dataset.manual = "1"; });
+
+    if (svcEl) svcEl.addEventListener("change", () => {
+      if (durEl) delete durEl.dataset.manual;
+      if (priceEl) delete priceEl.dataset.manual;
+      applyCfg();
+      bdRefreshEditorUI();
+    });
+
+    if (proEl) proEl.addEventListener("change", () => {
+      if (durEl) delete durEl.dataset.manual;
+      applyCfg();
+      bdRefreshEditorUI();
+    });
+
+    openBookingDetailsModal._wired = true;
+  }
+
+  // reset notify
+  document.getElementById("bdNotifyBox").style.display = "none";
+  document.getElementById("bdNotifyMsg").value = "";
+  bdRefreshEditorUI._typedMsg = false;
+
+  bdRefreshEditorUI();
+
+  document.getElementById("bookingDetailsModal").classList.add("show");
+}
+
+function closeBookingDetailsModal() {
+  document.getElementById("bookingDetailsModal").classList.remove("show");
+  APP.bookingEditor = null;
+}
+
+function bdCollectFormValues() {
+  const customerName = String(document.getElementById("bdCustomer").value || "").trim();
+  const phone = String(document.getElementById("bdPhone").value || "").trim();
+  const service = String(document.getElementById("bdService").value || "").trim();
+  const professionalName = String(document.getElementById("bdPro").value || "").trim();
+
+  const date = String(document.getElementById("bdDate").value || "").trim();
+  const time = String(document.getElementById("bdTime").value || "").trim();
+
+  const durationMin = Math.max(1, Number(document.getElementById("bdDuration").value || 0) || 30);
+  const price = Number(document.getElementById("bdPrice").value || 0) || 0;
+  const notes = String(document.getElementById("bdNotes").value || "").trim();
+
+  let start = null;
+  if (date && time) {
+    const dt = new Date(date + "T" + time);
+    if (Number.isFinite(dt.getTime())) start = dt;
+  }
+
+  return { customerName, phone, service, professionalName, date, time, start, durationMin, price, notes };
+}
+
+function bdDiff(oldB, cur) {
+  const changes = [];
+
+  const oldStart = bookingStartDate(oldB);
+  const newStart = cur.start;
+
+  const oldEnd = bookingEndDate(oldB);
+  const newEnd = cur.start ? new Date(cur.start.getTime() + cur.durationMin * 60000) : null;
+
+  const push = (label, a, b) => {
+    if (String(a ?? "") !== String(b ?? "")) changes.push({ label, from: a, to: b });
+  };
+
+  push("Cliente", (oldB.customerName || ""), cur.customerName);
+  push("Telefono", (oldB.phone || ""), cur.phone);
+  push("Servizio", (oldB.service || ""), cur.service);
+  push("Professionista", (oldB.professionalName || ""), cur.professionalName);
+  push("Prezzo", String(oldB.price ?? 0), String(cur.price ?? 0));
+  push("Durata", String(oldB.durationMin ?? oldB.duration ?? 30), String(cur.durationMin));
+
+  if (newStart && Number.isFinite(oldStart.getTime())) {
+    const o = `${bdLocalDateValue(oldStart)} ${bdLocalTimeValue(oldStart)}`;
+    const n = `${bdLocalDateValue(newStart)} ${bdLocalTimeValue(newStart)}`;
+    if (o !== n) changes.push({ label: "Data/Ora", from: o, to: n });
+  }
+
+  // Note: mostra solo se cambia
+  push("Note", (oldB.notes || ""), cur.notes);
+
+  return { changes, oldStart, oldEnd, newStart, newEnd };
+}
+
+function bdBuildWhatsAppUpdateMessage(oldB, cur, diff, customText) {
+  const name = cur.customerName || oldB.customerName || "Cliente";
+  const service = cur.service || oldB.service || "Servizio";
+
+  const lines = diff.changes
+    .filter(c => c.label !== "Telefono") // non serve nel messaggio
+    .map(c => {
+      if (c.label === "Prezzo") {
+        const a = formatCurrency(Number(c.from || 0));
+        const b = formatCurrency(Number(c.to || 0));
+        return `• ${c.label}: ${a} → ${b}`;
+      }
+      if (c.label === "Data/Ora") return `• ${c.label}: ${c.from} → ${c.to}`;
+      return `• ${c.label}: ${String(c.from || "—")} → ${String(c.to || "—")}`;
+    });
+
+  const when = cur.start ? `${formatDate(cur.start)} alle ${formatTime(cur.start)}` : "";
+
+  const custom = String(customText || "").trim();
+  const extra = custom ? `
+
+${custom}` : "";
+
+  return (
+`Ciao ${name}!
+
+` +
+`Aggiornamento appuntamento per *${service}*${when ? ` (${when})` : ""}.
+
+` +
+(lines.length ? lines.join("\n") + "\n" : "") +
+`${extra}
+
+` +
+`Per confermare o chiedere info, rispondi qui.
+- synkris✌`
+  ).trim();
+}
+
+function bdRefreshEditorUI() {
+  if (!APP.bookingEditor) return;
+  const booking = (APP.bookings || []).find(b => b.id === APP.bookingEditor.id);
+  if (!booking) return;
+
+  const cur = bdCollectFormValues();
+  const diff = bdDiff(APP.bookingEditor.original, cur);
+
+  const badges = document.getElementById("bdBadges");
+  const isDirty = diff.changes.length > 0;
+  const okPhone = !!waPhoneDigits(cur.phone || booking.phone || "");
+
+  badges.innerHTML = [
+    `<span class="bd-badge ${isDirty ? "dirty" : "ok"}">${isDirty ? "✏️ Modifiche non salvate" : "✓ Nessuna modifica"}</span>`,
+    `<span class="bd-badge">${(booking.id || "")}</span>`,
+    `<span class="bd-badge">${okPhone ? "📲 WhatsApp OK" : "📵 WhatsApp mancante"}</span>`
+  ].join("");
+
+  const notifyBox = document.getElementById("bdNotifyBox");
+  const msgEl = document.getElementById("bdNotifyMsg");
+  const btn = document.getElementById("bdNotifyBtn");
+
+  // mostra box solo se ci sono modifiche e c'è un numero
+  if (isDirty && okPhone && cur.start) {
+    notifyBox.style.display = "block";
+    const autoMsg = bdBuildWhatsAppUpdateMessage(APP.bookingEditor.original, cur, diff, "");
+    // se l'utente non ha toccato il campo, auto-riempi
+    if (!bdRefreshEditorUI._typedMsg) {
+      msgEl.value = autoMsg;
+    }
+    btn.disabled = false;
+  } else {
+    notifyBox.style.display = "none";
+    btn.disabled = true;
+    bdRefreshEditorUI._typedMsg = false;
+  }
+}
+
+// se l'utente scrive nel messaggio, non sovrascrivere più
+(function wireNotifyMsg() {
+  const el = document.getElementById("bdNotifyMsg");
+  if (!el) return;
+  el.addEventListener("input", () => { bdRefreshEditorUI._typedMsg = true; });
+})();
+
+function syncCalendarEventFromBooking(booking) {
+  if (!APP.calendar) return;
+  const ev = APP.calendar.getEventById(booking.id);
+  if (!ev) return;
+
+  const start = bookingStartDate(booking);
+  const end = bookingEndDate(booking);
+
+  const st = calendarStyleForBooking(booking);
+  ev.setStart(toLocalIsoNoZ(start));
+  ev.setEnd(toLocalIsoNoZ(end));
+  ev.setProp("title", calendarTitleForBooking(booking));
+  ev.setProp("backgroundColor", st.bg);
+  ev.setProp("borderColor", st.border);
+  ev.setProp("textColor", st.text);
+
+  // update tooltip via a cheap hack: re-render by refetch?
+  // meglio: aggiorna extendedProps e lascia didMount applicare al prossimo render
+  ev.setExtendedProp("_style", st);
+  ev.setExtendedProp("_booking", booking);
+
+  APP.calendar.updateSize();
+}
+
+function saveBookingEdits(andNotify) {
+  if (!APP.bookingEditor) return;
+
+  const id = APP.bookingEditor.id;
+  const booking = (APP.bookings || []).find(b => b.id === id);
+  if (!booking) return;
+
+  const cur = bdCollectFormValues();
+  if (!cur.customerName || !cur.service || !cur.start) {
+    showToast("⚠️ Compila Cliente, Servizio, Data e Ora");
+    return;
+  }
+
+  const oldSnapshot = JSON.parse(JSON.stringify(APP.bookingEditor.original));
+  const diff = bdDiff(oldSnapshot, cur);
+
+  if (!diff.changes.length) {
+    showToast("Nessuna modifica da salvare");
+    return;
+  }
+
+  // applica modifiche (mutazione in-place)
+  const metaNow = cfgServiceMeta(cur.service);
+  if (!metaNow) {
+    showToast("⚠️ Servizio non trovato nella configurazione");
+    return;
+  }
+
+  const proEmail = cfgProEmailFromInput(cur.professionalName);
+  const proName = proEmail ? (cfgProNameFromEmail(proEmail) || cur.professionalName) : cur.professionalName;
+
+  const serviceChanged = String(oldSnapshot.service || "") !== String(cur.service || "");
+  const proChanged = String(oldSnapshot.professionalName || "") !== String(cur.professionalName || "");
+
+  let durationMin = Number(cur.durationMin || 0) || 0;
+  if (serviceChanged || proChanged || !Number.isFinite(durationMin) || durationMin <= 0) {
+    durationMin = cfgServiceDurationMin(cur.service, proEmail);
+  }
+
+  let price = Number(cur.price || 0) || 0;
+  if (serviceChanged || !Number.isFinite(price) || price <= 0) {
+    price = cfgServicePrice(cur.service);
+  }
+
+  booking.customerName = cur.customerName;
+  booking.phone = cur.phone;
+  booking.service = cur.service;
+  booking.professionalName = proName;
+  booking.professionalEmail = proEmail || booking.professionalEmail || "";
+  booking.price = price;
+  booking.durationMin = durationMin;
+  booking.notes = cur.notes;
+
+  const end = new Date(cur.start.getTime() + durationMin * 60000);
+  booking.date = toLocalIsoNoZ(cur.start);
+  booking.end = toLocalIsoNoZ(end);
+
+  // modificato dalla dashboard -> non sovrascrivere con watcher
+  booking._origin = "local";
+  booking._dirty = true;
+
+  // log cambiamento
+  APP.changeLog.push({
+    id: "LOG" + Date.now(),
+    bookingId: booking.id,
+    customerName: booking.customerName,
+    changeType: "edit",
+    changes: diff.changes,
+    oldSnapshot,
+    newSnapshot: JSON.parse(JSON.stringify(booking)),
+    timestamp: new Date().toISOString(),
+    notificationSent: false
+  });
+
+  saveData();
+  syncCalendarEventFromBooking(booking);
+  updateBookingsList();
+  updateDashboard();
+
+  // --- SYNC DB ---
+  dbSync.saveBooking(booking);
+
+  // aggiorna snapshot editor
+  APP.bookingEditor.original = JSON.parse(JSON.stringify(booking));
+  bdRefreshEditorUI();
+
+  showToast("✓ Modifiche salvate");
+
+  if (andNotify) {
+    const msg = String(document.getElementById("bdNotifyMsg").value || "").trim();
+    sendWhatsAppBookingUpdate(booking, oldSnapshot, msg);
+  }
+}
+
+function notifyBookingWhatsApp() {
+  saveBookingEdits(true);
+}
+
+function deleteBookingFromDetails() {
+  if (!APP.bookingEditor) return;
+  const id = APP.bookingEditor.id;
+  closeBookingDetailsModal();
+  deleteBooking(id);
+}
+
+// WhatsApp: aggiornamento (non solo spostamento)
+async function sendWhatsAppBookingUpdate(booking, oldBooking, customMessage) {
+  const customerName = booking?.customerName || "Cliente";
+  const phoneRaw = booking?.phone || "";
+  const phoneDigits = waPhoneDigits(phoneRaw);
+  if (!phoneDigits) {
+    showToast("📵 Numero WhatsApp mancante");
+    return null;
+  }
+
+  const cur = {
+    customerName: booking?.customerName || "",
+    phone: booking?.phone || "",
+    service: booking?.service || "",
+    professionalName: booking?.professionalName || "",
+    start: bookingStartDate(booking),
+    durationMin: Math.max(1, Number(booking?.durationMin || 30) || 30),
+    price: Number(booking?.price || 0) || 0,
+    notes: booking?.notes || ""
+  };
+
+  const diff = bdDiff(oldBooking || {}, cur);
+  const msg = String(customMessage || "").trim() || bdBuildWhatsAppUpdateMessage(oldBooking || {}, cur, diff, "");
+
+  // 1) Prova invio automatico al bot via http://localhost:3000/api/send
+  const apiBase = getAdminApiBase();
+  const apiToken = (localStorage.getItem('ADMIN_API_TOKEN') || '').trim();
+  const chatId = `${phoneDigits}@c.us`;
+
+  let sentViaServer = false;
+  let serverResp = null;
+  try {
+    const r = await fetch(apiBase + '/api/send', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(apiToken ? { 'X-Admin-Token': apiToken } : {})
+      },
+      body: JSON.stringify({ to: chatId, message: msg })
+    });
+    const j = await r.json().catch(() => ({}));
+    serverResp = j;
+    if (r.ok && j && j.ok) sentViaServer = true;
+  } catch {}
+
+  // 2) Fallback: non aprire WhatsApp (invio deve avvenire dal bot).
+  // Creo comunque il link (utile per log/diagnostica), ma non apro finestre.
+  const link = buildWhatsAppLink(phoneDigits, msg);
+
+  if (!sentViaServer) {
+    // Fallback "silenzioso": copia il testo negli appunti (se possibile)
+    try {
+      if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(msg);
+    } catch {}
+  }
+
+  const notificationRecord = {
+    id: "NOTIF" + Date.now(),
+    bookingId: booking?.id,
+    customerName,
+    phoneRaw,
+    phonePretty: formatPhoneDisplay(phoneRaw) || phoneRaw || "N/A",
+    type: "update",
+    channels: ["whatsapp"],
+    timestamp: new Date().toISOString(),
+    waLink: link,
+    waMessage: msg,
+    sentViaServer: !!sentViaServer,
+    serverResp: serverResp || null
+  };
+
+  const sent = JSON.parse(localStorage.getItem("sentNotifications") || "[]");
+  sent.push(notificationRecord);
+  localStorage.setItem("sentNotifications", JSON.stringify(sent));
+
+  // marca l'ultimo changeLog come notificato (se presente)
+  try {
+    for (let i = (APP.changeLog || []).length - 1; i >= 0; i--) {
+      const it = APP.changeLog[i];
+      if (it && it.bookingId === booking?.id && it.changeType === "edit" && !it.notificationSent) {
+        it.notificationSent = true;
+        it.notificationType = "whatsapp_update";
+        it.customMessage = String(customMessage || "");
+        break;
+      }
+    }
+  } catch {}
+
+  saveData();
+
+  if (sentViaServer) {
+    showDetailedToast(
+      "✅ WhatsApp inviato",
+      `Messaggio inviato a ${customerName}`
+    );
+    addNotification(`✅ WhatsApp inviato a ${customerName} (aggiornamento appuntamento)`, "success");
+  } else {
+    showDetailedToast(
+      "⚠️ Invio automatico non riuscito",
+      "Il bot non ha potuto inviare automaticamente. Testo copiato negli appunti."
+    );
+    addNotification(`⚠️ Invio WhatsApp fallito per ${customerName} (testo copiato)`, "warning");
+  }
+
+  return notificationRecord;
+}
+
+
+function exportBookings() {
+  const header = 'Cliente,Servizio,Professionista,Prezzo,Data,Ora,Telefono\n';
+  const rows = (APP.bookings || []).map(b => {
+    const d = bookingStartDate(b);
+    const pro = String(b.professionalName || '').replaceAll(',', ' ');
+    return `${String(b.customerName || '').replaceAll(',', ' ')},${String(b.service || '').replaceAll(',', ' ')},${pro},${Number(b.price || 0) || 0},${formatDate(d)},${formatTime(d)},${String(b.phone || '').replaceAll(',', ' ')}`;
+  });
+
+  const csv = header + rows.join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'prenotazioni_' + new Date().toISOString().split('T')[0] + '.csv';
+  a.click();
+  window.URL.revokeObjectURL(url);
+
+  showToast('✓ Prenotazioni esportate!');
+}
+
+// Clients Management
+function updateClientsList() {
+  const container = document.getElementById('clientsList');
+  if (!container) return;
+
+  const q = String(document.getElementById('clientSearch')?.value || '').trim().toLowerCase();
+
+  const byName = new Map();
+
+  (APP.bookings || []).forEach(booking => {
+    const nameRaw = String(booking.customerName || '').trim();
+    if (!nameRaw) return;
+    const key = nameRaw.toLowerCase();
+
+    const start = bookingStartDate(booking);
+    const price = Number(booking.price || 0) || 0;
+
+    if (!byName.has(key)) {
+      byName.set(key, {
+        name: nameRaw,
+        phone: booking.phone || '',
+        bookings: 0,
+        totalSpent: 0,
+        firstVisit: start,
+        lastVisit: start,
+        visits: []
+      });
+    }
+
+    const c = byName.get(key);
+    c.name = nameRaw || c.name;
+    c.phone = booking.phone || c.phone;
+    c.bookings += 1;
+    c.totalSpent += price;
+
+    if (start && Number.isFinite(start.getTime())) {
+      if (!c.firstVisit || start < c.firstVisit) c.firstVisit = start;
+      if (!c.lastVisit || start > c.lastVisit) c.lastVisit = start;
+      c.visits.push({ start, price, service: booking.service || '' });
+    }
+  });
+
+  let clientsArray = Array.from(byName.values());
+
+  if (q) {
+    clientsArray = clientsArray.filter(c => String(c.name || '').toLowerCase().includes(q) || String(c.phone || '').toLowerCase().includes(q));
+  }
+
+  clientsArray.sort((a, b) => {
+    const ta = a.lastVisit && Number.isFinite(a.lastVisit.getTime()) ? a.lastVisit.getTime() : 0;
+    const tb = b.lastVisit && Number.isFinite(b.lastVisit.getTime()) ? b.lastVisit.getTime() : 0;
+    return tb - ta;
+  });
+
+  if (clientsArray.length === 0) {
+    container.innerHTML = '<div class="empty-state"><div class="empty-state-icon">👥</div><div class="empty-state-title">Nessun cliente</div></div>';
+    return;
+  }
+
+  container.innerHTML = clientsArray.map(client => {
+    const avg = client.bookings ? (client.totalSpent / client.bookings) : 0;
+    const last3 = client.visits
+      .slice()
+      .sort((a, b) => b.start.getTime() - a.start.getTime())
+      .slice(0, 3);
+
+    const vip = client.bookings >= 6 || client.totalSpent >= 250;
+
+    return `
+      <div class="card client-item" style="padding: var(--spacing-md); margin-bottom: var(--spacing-sm);">
+        <div style="display:flex; justify-content:space-between; align-items:start; gap:12px;">
+          <div style="flex:1;">
+            <div style="font-size: 18px; font-weight: 800; margin-bottom: 4px;">${escHtml(client.name)}</div>
+            <div style="font-size: 14px; color: var(--text-secondary);">📞 ${escHtml((formatPhoneDisplay(client.phone) || client.phone) || 'N/A')}</div>
+
+            <div style="margin-top: 10px; display:grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 10px;">
+              <div style="padding:10px; background: var(--bg-tertiary); border-radius: 14px;">
+                <div style="font-size:11px; color: var(--text-tertiary);">Totale speso</div>
+                <div style="font-size:15px; font-weight:800;">${formatCurrency(client.totalSpent)}</div>
+              </div>
+              <div style="padding:10px; background: var(--bg-tertiary); border-radius: 14px;">
+                <div style="font-size:11px; color: var(--text-tertiary);">Ultima visita</div>
+                <div style="font-size:15px; font-weight:800;">${client.lastVisit ? `${formatDate(client.lastVisit)}` : '—'}</div>
+              </div>
+              <div style="padding:10px; background: var(--bg-tertiary); border-radius: 14px;">
+                <div style="font-size:11px; color: var(--text-tertiary);">Media</div>
+                <div style="font-size:15px; font-weight:800;">${formatCurrency(avg)}</div>
+              </div>
+            </div>
+
+            ${last3.length ? `
+              <div style="margin-top: 10px; font-size: 13px; color: var(--text-secondary);">
+                <div style="color: var(--text-tertiary); font-size: 11px; margin-bottom: 6px;">Ultime spese</div>
+                ${last3.map(v => `
+                  <div style="display:flex; justify-content:space-between; gap:10px; padding:6px 0; border-top: 1px solid rgba(255,255,255,0.08);">
+                    <div style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:70%;">${escHtml(v.service || '—')}</div>
+                    <div style="text-align:right; white-space:nowrap;">${formatDate(v.start)} • ${formatCurrency(v.price)}</div>
+                  </div>
+                `).join('')}
+              </div>
+            ` : ""}
+          </div>
+
+          <div style="display:flex; flex-direction:column; align-items:flex-end; gap:8px;">
+            <button class="btn btn-secondary btn-sm" title="Scrivi su WhatsApp" onclick="openWaComposerToClient(${jsArg(String(client.phone || ''))}, ${jsArg(String(client.name || ''))})">💬 Scrivi</button>
+            <span class="badge ${vip ? 'badge-primary' : 'badge-secondary'}">${vip ? 'VIP' : 'Regular'}</span>
+            <div style="font-size: 12px; color: var(--text-tertiary);">${client.bookings} prenotazioni</div>
+          </div>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function addClient() {
+  const name = prompt('Nome cliente:');
+  if (!name) return;
+  
+  const phone = prompt('Telefono:');
+  
+  // For now, just add to booking to create client entry
+  showToast('💡 Crea una prenotazione per aggiungere il cliente');
+}
+
+function quickAddClient() {
+  addClient();
+}
+
+
+// -------------------- Bookings Watcher (rileva cambiamenti nel DB) --------------------
+const BOOKING_WATCH = {
+  ready: false,
+  lastMap: new Map(),
+  intervalMs: 15000,
+  timer: null
+};
+
+function bookingKey(b) {
+  const id = String(b?.id || "").trim();
+  if (id) return id;
+
+  const name = String(b?.customerName || "").trim().toLowerCase();
+  const svc = String(b?.service || "").trim().toLowerCase();
+  const dt = String(b?.date || b?.startTime || "").trim();
+  return (name || "x") + "|" + (svc || "x") + "|" + (dt || "x");
+}
+
+function bookingsToMap(list) {
+  const m = new Map();
+  (list || []).forEach(b => {
+    m.set(bookingKey(b), b);
+  });
+  return m;
+}
+
+function diffBookingSnapshots(oldB, newB) {
+  const changes = [];
+  const push = (label, a, b) => {
+    if (String(a ?? "") !== String(b ?? "")) changes.push({ label, from: a, to: b });
+  };
+
+  const oldStart = oldB ? bookingStartDate(oldB) : null;
+  const newStart = newB ? bookingStartDate(newB) : null;
+
+  if (oldStart && newStart) {
+    const o = `${bdLocalDateValue(oldStart)} ${bdLocalTimeValue(oldStart)}`;
+    const n = `${bdLocalDateValue(newStart)} ${bdLocalTimeValue(newStart)}`;
+    if (o !== n) changes.push({ label: "Data/Ora", from: o, to: n });
+  }
+
+  push("Servizio", oldB?.service || "", newB?.service || "");
+  push("Professionista", oldB?.professionalName || "", newB?.professionalName || "");
+  push("Telefono", oldB?.phone || "", newB?.phone || "");
+  push("Prezzo", String(oldB?.price ?? 0), String(newB?.price ?? 0));
+  push("Durata", String(oldB?.durationMin ?? oldB?.duration ?? 0), String(newB?.durationMin ?? newB?.duration ?? 0));
+  push("Note", oldB?.notes || "", newB?.notes || "");
+
+  return changes;
+}
+
+async function tickBookingsWatcher() {
+  const fresh = await fetchJsonSafe(DATA_URLS.bookings);
+  if (!fresh || !Array.isArray(fresh)) return;
+
+  const newMap = bookingsToMap(fresh);
+
+  // baseline: prima lettura non notifica
+  if (!BOOKING_WATCH.ready) {
+    BOOKING_WATCH.lastMap = newMap;
+    BOOKING_WATCH.ready = true;
+    return;
+  }
+
+  const oldMap = BOOKING_WATCH.lastMap;
+
+  const created = [];
+  const updated = [];
+  const deleted = [];
+
+  for (const [k, nb] of newMap.entries()) {
+    if (!oldMap.has(k)) {
+      created.push(nb);
+      continue;
+    }
+    const ob = oldMap.get(k);
+    const ch = diffBookingSnapshots(ob, nb);
+    if (ch.length) updated.push({ key: k, oldB: ob, newB: nb, changes: ch });
+  }
+
+  for (const [k, ob] of oldMap.entries()) {
+    if (!newMap.has(k)) deleted.push(ob);
+  }
+
+  if (!created.length && !updated.length && !deleted.length) return;
+
+  // aggiorna snapshot
+  BOOKING_WATCH.lastMap = newMap;
+
+  const nowIso = new Date().toISOString();
+
+  // crea notifiche + change log
+  created.slice(0, 10).forEach((b) => {
+    const s = bookingStartDate(b);
+    addNotification(`➕ ${b.customerName || "Cliente"} ha prenotato: ${b.service || "Servizio"} • ${formatDate(s)} ${formatTime(s)}`, 'info');
+    APP.changeLog.push({
+      id: "EXT" + Date.now() + "_" + Math.random().toString(16).slice(2),
+      bookingId: bookingKey(b),
+      customerName: b.customerName || "Cliente",
+      changeType: "created",
+      changes: [],
+      oldSnapshot: null,
+      newSnapshot: JSON.parse(JSON.stringify(b)),
+      timestamp: nowIso,
+      notificationSent: false
+    });
+  });
+
+  updated.slice(0, 10).forEach((u) => {
+    const s = bookingStartDate(u.newB);
+    const fields = u.changes.map(c => c.label).slice(0, 3).join(", ");
+    addNotification(`✏️ ${u.newB.customerName || "Cliente"} ha aggiornato: ${fields || "dati"} • ${formatDate(s)} ${formatTime(s)}`, 'warning');
+    APP.changeLog.push({
+      id: "EXT" + Date.now() + "_" + Math.random().toString(16).slice(2),
+      bookingId: u.key,
+      customerName: u.newB.customerName || "Cliente",
+      changeType: "edit",
+      changes: u.changes,
+      oldSnapshot: JSON.parse(JSON.stringify(u.oldB)),
+      newSnapshot: JSON.parse(JSON.stringify(u.newB)),
+      timestamp: nowIso,
+      notificationSent: false
+    });
+  });
+
+  deleted.slice(0, 10).forEach((b) => {
+    const s = bookingStartDate(b);
+    addNotification(`🗑️ ${b.customerName || "Cliente"} ha eliminato: ${b.service || "Servizio"} • ${formatDate(s)} ${formatTime(s)}`, 'error');
+    APP.changeLog.push({
+      id: "EXT" + Date.now() + "_" + Math.random().toString(16).slice(2),
+      bookingId: bookingKey(b),
+      customerName: b.customerName || "Cliente",
+      changeType: "deleted",
+      changes: [],
+      oldSnapshot: JSON.parse(JSON.stringify(b)),
+      newSnapshot: null,
+      timestamp: nowIso,
+      notificationSent: false
+    });
+  });
+
+  saveData();
+  updateDashboard();
+  updateBookingsList();
+  updateClientsList();
+}
+
+function startBookingsWatcher() {
+  if (BOOKING_WATCH.timer) return;
+  BOOKING_WATCH.timer = setInterval(() => {
+    tickBookingsWatcher();
+  }, BOOKING_WATCH.intervalMs);
+
+  // tick iniziale
+  tickBookingsWatcher();
+}
+
+
+// Notifications System
+function checkUpcomingAppointments() {
+  const now = new Date();
+  const notificationWindow = APP.settings.notifications || 30; // minutes
+  const future = new Date(now.getTime() + notificationWindow * 60000);
+
+  const upcoming = (APP.bookings || [])
+    .map(b => ({ b, start: bookingStartDate(b) }))
+    .filter(x => x.start && Number.isFinite(x.start.getTime()) && x.start > now && x.start <= future)
+    .map(x => x.b);
+
+  const badge = document.getElementById('upcomingBadge');
+  if (badge) badge.textContent = upcoming.length;
+
+  upcoming.forEach(booking => {
+    const notificationKey = 'notif_' + (booking.id || (booking.customerName + '_' + booking.date));
+    if (!sessionStorage.getItem(notificationKey)) {
+      const s = bookingStartDate(booking);
+      addNotification(
+        `⏰ Appuntamento imminente: ${booking.customerName} - ${booking.service} alle ${formatTime(s)}`,
+        'warning'
+      );
+      sessionStorage.setItem(notificationKey, 'shown');
+    }
+  });
+}
+
+
+function startNotificationChecker() {
+  setInterval(() => {
+    checkUpcomingAppointments();
+  }, 60000); // Check every minute
+}
+
+function addNotification(message, type = 'info') {
+  const notification = {
+    id: Date.now(),
+    message: message,
+    type: type,
+    timestamp: new Date().toISOString(),
+    read: false
+  };
+  
+  APP.notifications.unshift(notification);
+  
+  if (APP.notifications.length > 50) {
+    APP.notifications = APP.notifications.slice(0, 50);
+  }
+  
+  saveData();
+  updateNotificationBadge();
+}
+
+function updateNotificationBadge() {
+  const unread = APP.notifications.filter(n => !n.read).length;
+  document.getElementById('notifBadge').textContent = unread;
+}
+
+function showNotifications() {
+  const center = document.getElementById('notificationCenter');
+  center.classList.add('show');
+  
+  const list = document.getElementById('notificationList');
+  
+  if (APP.notifications.length === 0) {
+    list.innerHTML = '<div class="empty-state"><div class="empty-state-icon">🔔</div><div class="empty-state-title">Nessuna notifica</div></div>';
+    return;
+  }
+  
+  list.innerHTML = APP.notifications.map(notif => {
+    const date = new Date(notif.timestamp);
+    return `
+      <div class="notification-item ${notif.read ? '' : 'unread'}" onclick="markNotificationRead(${notif.id})">
+        <div style="font-size: 14px; font-weight: 600; margin-bottom: 4px;">${notif.message}</div>
+        <div class="notification-time">${formatRelativeTime(date)}</div>
+      </div>
+    `;
+  }).join('');
+}
+
+function hideNotifications() {
+  document.getElementById('notificationCenter').classList.remove('show');
+}
+
+function markNotificationRead(id) {
+  const notif = APP.notifications.find(n => n.id === id);
+  if (notif) {
+    notif.read = true;
+    saveData();
+    updateNotificationBadge();
+    showNotifications();
+  }
+}
+
+// Reports
+function generateFinancialReport() {
+  showToast('📄 Generazione report finanziario...');
+  setTimeout(() => {
+    showToast('✓ Report generato! (funzione demo)');
+  }, 1500);
+}
+
+function generateClientReport() {
+  showToast('📄 Generazione report clienti...');
+  setTimeout(() => {
+    showToast('✓ Report generato! (funzione demo)');
+  }, 1500);
+}
+
+function generateBookingsReport() {
+  showToast('📄 Generazione report prenotazioni...');
+  setTimeout(() => {
+    showToast('✓ Report generato! (funzione demo)');
+  }, 1500);
+}
+
+function generateProductivityReport() {
+  showToast('📄 Generazione report produttività...');
+  setTimeout(() => {
+    showToast('✓ Report generato! (funzione demo)');
+  }, 1500);
+}
+
+function exportReport() {
+  showToast('📥 Esportazione report in PDF...');
+  setTimeout(() => {
+    showToast('✓ Report esportato! (funzione demo)');
+  }, 1500);
+}
+
+// Tools
+function manageCoupons() {
+  alert('La gestione dei coupon sarà disponibile a breve!');
+  // openToolsModal('coupons');
+}
+
+function manageWaitlist() {
+  alert("La gestione della lista d'attesa sarà disponibile a breve!");
+  // openToolsModal('waitlist');
+}
+
+function manageStock() {
+  alert('La gestione del magazzino sarà disponibile a breve!');
+  // openToolsModal('stock');
+}
+
+function manageReminders() {
+  alert('La gestione dei promemoria sarà disponibile a breve!');
+  // openToolsModal('reminders');
+}
+
+// -------------------- Tools Module (Coupon / Magazzino / Waitlist / Reminders) --------------------
+const TOOL_STATE = {
+  current: null,
+  editId: null
+};
+
+function openToolsModal(tool = "coupons") {
+  TOOL_STATE.current = tool;
+  TOOL_STATE.editId = null;
+
+  const modal = document.getElementById("toolsModal");
+  if (modal) modal.classList.add("show");
+
+  // tabs
+  document.querySelectorAll(".tool-tab-btn").forEach((b) => {
+    const t = b.getAttribute("data-tool");
+    b.classList.toggle("active", t === tool);
+  });
+
+  // titles + add button behavior
+  const titleMap = {
+    coupons: "🎟️ Coupon",
+    stock: "📦 Magazzino",
+    waitlist: "⏳ Lista d'attesa",
+    reminders: "🔔 Promemoria"
+  };
+
+  const subtMap = {
+    coupons: "Sconti e promozioni",
+    stock: "Inventario prodotti",
+    waitlist: "Clienti in attesa",
+    reminders: "Template e regole messaggi"
+  };
+
+  const titleEl = document.getElementById("toolsModalTitle");
+  const listTitle = document.getElementById("toolListTitle");
+  const listSub = document.getElementById("toolListSubtitle");
+  const formTitle = document.getElementById("toolFormTitle");
+  const formSub = document.getElementById("toolFormSubtitle");
+  const addBtn = document.getElementById("toolAddBtn");
+  const resetBtn = document.getElementById("toolResetBtn");
+
+  if (titleEl) titleEl.textContent = titleMap[tool] || "🧰 Strumenti";
+  if (listTitle) listTitle.textContent = (tool === "reminders") ? "Stato" : "Elenco";
+  if (listSub) listSub.textContent = subtMap[tool] || "—";
+  if (formTitle) formTitle.textContent = (tool === "reminders") ? "Configurazione" : "Dettagli";
+  if (formSub) formSub.textContent = "—";
+
+  const canAdd = (tool !== "reminders");
+  if (addBtn) addBtn.style.display = canAdd ? "inline-flex" : "none";
+  if (resetBtn) resetBtn.style.display = "inline-flex";
+
+  renderToolView();
+}
+
+function closeToolsModal() {
+  const modal = document.getElementById("toolsModal");
+  if (modal) modal.classList.remove("show");
+}
+
+function toolResetForm() {
+  TOOL_STATE.editId = null;
+  renderToolView();
+}
+
+function toolAddNew() {
+  TOOL_STATE.editId = null;
+  renderToolView();
+}
+
+function renderToolView() {
+  const tool = TOOL_STATE.current || "coupons";
+  if (!APP.tools) APP.tools = {};
+
+  if (tool === "coupons") return renderCoupons();
+  if (tool === "stock") return renderStock();
+  if (tool === "waitlist") return renderWaitlist();
+  if (tool === "reminders") return renderReminders();
+}
+
+function escHtml(s) {
+  return String(s ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+function escHtml(s) {
+  return String(s ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+// JS literal sicuro per onclick="...": evita rotture con virgolette
+function jsArg(v) {
+  const t = typeof v;
+  if (t === "number" && Number.isFinite(v)) return String(v);
+  if (t === "boolean") return v ? "true" : "false";
+  const s = String(v ?? "");
+  return "'" + s
+    .replace(/\\/g, "\\\\")
+    .replace(/'/g, "\\'")
+    .replace(/\r?\n/g, "\\n")
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029")
+  + "'";
+}
+
+
+function uid(prefix = "id") {
+  return prefix + "_" + Math.random().toString(16).slice(2) + "_" + Date.now().toString(16);
+}
+
+function currencySymbol() {
+  const cur = (APP.settings && APP.settings.currency) || "EUR";
+  if (cur === "EUR") return "€";
+  if (cur === "USD") return "$";
+  if (cur === "GBP") return "£";
+  return cur + " ";
+}
+
+function fmtDate(d) {
+  const s = String(d || "").trim();
+  if (!s) return "";
+  // accept YYYY-MM-DD
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (m) return `${m[3]}/${m[2]}/${m[1]}`;
+  return s;
+}
+
+function setToolFormSubtitle(text) {
+  const el = document.getElementById("toolFormSubtitle");
+  if (el) el.textContent = text || "—";
+}
+
+function setToolListSubtitle(text) {
+  const el = document.getElementById("toolListSubtitle");
+  if (el) el.textContent = text || "—";
+}
+
+function renderEmptyState(title, desc) {
+  return `
+    <div style="padding: 12px; border: 1px dashed rgba(255,255,255,0.18); border-radius: 16px; color: var(--text-secondary);">
+      <div style="font-weight: 800; margin-bottom: 6px;">${escHtml(title)}</div>
+      <div style="font-size: 13px; color: var(--text-tertiary);">${escHtml(desc)}</div>
+    </div>
+  `;
+}
+
+// -------------------- Coupon --------------------
+function renderCoupons() {
+  const listEl = document.getElementById("toolListContainer");
+  const formEl = document.getElementById("toolFormContainer");
+  const items = (APP.tools && APP.tools.coupons) ? APP.tools.coupons : [];
+  const edit = TOOL_STATE.editId ? items.find(x => x.id === TOOL_STATE.editId) : null;
+
+  // list
+  if (listEl) {
+    if (!items.length) {
+      listEl.innerHTML = renderEmptyState("Nessun coupon", "Crea il primo coupon con “Aggiungi”.");
+    } else {
+      listEl.innerHTML = items
+        .slice()
+        .sort((a,b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+        .map((c) => {
+          const active = !!c.active;
+          const type = c.type === "fixed" ? "fixed" : "percent";
+          const discount = type === "fixed" ? `${currencySymbol()}${Number(c.value||0)}` : `${Number(c.value||0)}%`;
+          const chip = active ? `<span class="chip ok">ATTIVO</span>` : `<span class="chip bad">OFF</span>`;
+          const validity = (c.startDate || c.endDate) ? `${fmtDate(c.startDate)} → ${fmtDate(c.endDate)}` : "Sempre";
+          const usedTxt = (c.usageLimit ? `${Number(c.used||0)}/${Number(c.usageLimit)}` : `${Number(c.used||0)} usi`);
+          const isEditing = edit && edit.id === c.id;
+          return `
+            <div class="tool-item" style="${isEditing ? 'box-shadow: 0 0 0 3px rgba(10,132,255,0.18); border-color: rgba(10,132,255,0.45);' : ''}">
+              <div>
+                <div class="tool-item-title">${escHtml((c.code || '').toUpperCase() || '—')} • ${escHtml(discount)}</div>
+                <div class="tool-item-meta">
+                  ${chip}
+                  <span class="chip">${escHtml(validity)}</span>
+                  <span class="chip">${escHtml(usedTxt)}</span>
+                  ${c.minSpend ? `<span class="chip">Min: ${currencySymbol()}${Number(c.minSpend||0)}</span>` : ``}
+                </div>
+              </div>
+              <div class="tool-actions">
+                <button class="btn-ghost" onclick="toolCopyCoupon('${escHtml((c.code||'').toUpperCase())}')">📋</button>
+                <button class="btn-ghost" onclick="toolEdit('coupons','${c.id}')">✏️</button>
+                <button class="btn-ghost" onclick="toolToggleCoupon('${c.id}')">${active ? "⏸️" : "▶️"}</button>
+                <button class="btn-ghost" onclick="toolDelete('coupons','${c.id}')">🗑️</button>
+              </div>
+            </div>
+          `;
+        })
+        .join("");
+    }
+    setToolListSubtitle(`Totale: ${items.length}`);
+  }
+
+  // form
+  if (formEl) {
+    const isEdit = !!edit;
+    const c = edit || {
+      id: null, code: "", type: "percent", value: 10, minSpend: 0, usageLimit: 0, used: 0,
+      startDate: "", endDate: "", active: true, note: ""
+    };
+
+    setToolFormSubtitle(isEdit ? `Modifica: ${(c.code||'').toUpperCase()}` : "Nuovo coupon");
+
+    formEl.innerHTML = `
+      <div class="tool-grid-2">
+        <div class="form-group">
+          <label class="form-label">Codice</label>
+          <input class="form-input" id="couponCode" placeholder="ES: WELCOME10" value="${escHtml((c.code||'').toUpperCase())}">
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Tipo sconto</label>
+          <select class="form-select" id="couponType">
+            <option value="percent" ${c.type !== 'fixed' ? 'selected' : ''}>Percentuale (%)</option>
+            <option value="fixed" ${c.type === 'fixed' ? 'selected' : ''}>Importo fisso (${currencySymbol()})</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Valore</label>
+          <input type="number" class="form-input" id="couponValue" value="${Number(c.value||0)}" min="0" step="1">
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Spesa minima (opz.)</label>
+          <input type="number" class="form-input" id="couponMinSpend" value="${Number(c.minSpend||0)}" min="0" step="1">
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Limite utilizzi (0 = illimitato)</label>
+          <input type="number" class="form-input" id="couponUsageLimit" value="${Number(c.usageLimit||0)}" min="0" step="1">
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Utilizzi attuali</label>
+          <input type="number" class="form-input" id="couponUsed" value="${Number(c.used||0)}" min="0" step="1">
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Inizio (opz.)</label>
+          <input type="date" class="form-input" id="couponStartDate" value="${escHtml(c.startDate||'')}">
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Fine (opz.)</label>
+          <input type="date" class="form-input" id="couponEndDate" value="${escHtml(c.endDate||'')}">
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Note (opz.)</label>
+        <textarea class="form-textarea" id="couponNote" placeholder="Es: valido solo su ricostruzione...">${escHtml(c.note||'')}</textarea>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">
+          <input type="checkbox" id="couponActive" ${c.active ? "checked" : ""} style="margin-right: 8px;">
+          Coupon attivo
+        </label>
+      </div>
+
+      <button class="btn btn-primary" onclick="saveCoupon('${escHtml(c.id||"")}')">💾 Salva Coupon</button>
+    `;
+  }
+}
+
+function toolCopyCoupon(code) {
+  const s = String(code || "").trim();
+  if (!s) return;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(s).then(() => showToast("📋 Codice copiato!")).catch(() => showToast("⚠️ Copia non riuscita"));
+  } else {
+    showToast("⚠️ Clipboard non disponibile");
+  }
+}
+
+function toolToggleCoupon(id) {
+  const items = APP.tools.coupons || [];
+  const it = items.find(x => x.id === id);
+  if (!it) return;
+  it.active = !it.active;
+  it.updatedAt = Date.now();
+  saveData();
+  renderCoupons();
+}
+
+function saveCoupon(id) {
+  const code = String(document.getElementById("couponCode")?.value || "").trim().toUpperCase();
+  const type = String(document.getElementById("couponType")?.value || "percent").trim();
+  const value = Number(document.getElementById("couponValue")?.value || 0);
+  const minSpend = Number(document.getElementById("couponMinSpend")?.value || 0);
+  const usageLimit = Number(document.getElementById("couponUsageLimit")?.value || 0);
+  const used = Number(document.getElementById("couponUsed")?.value || 0);
+  const startDate = String(document.getElementById("couponStartDate")?.value || "").trim();
+  const endDate = String(document.getElementById("couponEndDate")?.value || "").trim();
+  const note = String(document.getElementById("couponNote")?.value || "").trim();
+  const active = !!document.getElementById("couponActive")?.checked;
+
+  if (!code || code.length < 3) return showToast("⚠️ Inserisci un codice valido");
+  if (!Number.isFinite(value) || value <= 0) return showToast("⚠️ Valore sconto non valido");
+
+  APP.tools.coupons = APP.tools.coupons || [];
+
+  // unique code check
+  const exists = APP.tools.coupons.find(x => (x.code||"").toUpperCase() === code && x.id !== id);
+  if (exists) return showToast("⚠️ Esiste già un coupon con questo codice");
+
+  const now = Date.now();
+  if (id) {
+    const it = APP.tools.coupons.find(x => x.id === id);
+    if (!it) return showToast("⚠️ Coupon non trovato");
+    Object.assign(it, { code, type: (type === "fixed" ? "fixed" : "percent"), value, minSpend, usageLimit, used, startDate, endDate, note, active, updatedAt: now });
+  } else {
+    APP.tools.coupons.unshift({ id: uid("cp"), code, type: (type === "fixed" ? "fixed" : "percent"), value, minSpend, usageLimit, used, startDate, endDate, note, active, createdAt: now, updatedAt: now });
+  }
+
+  saveData();
+  showToast("✓ Coupon salvato");
+  TOOL_STATE.editId = null;
+  renderCoupons();
+}
+
+// -------------------- Stock / Magazzino --------------------
+function renderStock() {
+  const listEl = document.getElementById("toolListContainer");
+  const formEl = document.getElementById("toolFormContainer");
+  const items = (APP.tools && APP.tools.stock) ? APP.tools.stock : [];
+  const edit = TOOL_STATE.editId ? items.find(x => x.id === TOOL_STATE.editId) : null;
+
+  if (listEl) {
+    if (!items.length) {
+      listEl.innerHTML = renderEmptyState("Nessun prodotto", "Aggiungi i prodotti del magazzino con “Aggiungi”.");
+    } else {
+      listEl.innerHTML = items
+        .slice()
+        .sort((a,b) => (a.name||"").localeCompare(b.name||""))
+        .map((p) => {
+          const qty = Number(p.qty||0);
+          const minQty = Number(p.minQty||0);
+          const low = (minQty > 0 && qty <= minQty);
+          const chip = low ? `<span class="chip warn">SCORTA BASSA</span>` : `<span class="chip ok">OK</span>`;
+          const meta = `${qty} ${escHtml(p.unit||'pz')} • Min ${minQty} • ${escHtml(p.category||'—')}`;
+          const isEditing = edit && edit.id === p.id;
+          return `
+            <div class="tool-item" style="${isEditing ? 'box-shadow: 0 0 0 3px rgba(10,132,255,0.18); border-color: rgba(10,132,255,0.45);' : ''}">
+              <div>
+                <div class="tool-item-title">${escHtml(p.name||'—')}</div>
+                <div class="tool-item-meta">
+                  ${chip}
+                  <span class="chip">${escHtml(meta)}</span>
+                </div>
+              </div>
+              <div class="tool-actions">
+                <button class="btn-ghost" onclick="stockAdjust('${p.id}', -1)">➖</button>
+                <button class="btn-ghost" onclick="stockAdjust('${p.id}', 1)">➕</button>
+                <button class="btn-ghost" onclick="toolEdit('stock','${p.id}')">✏️</button>
+                <button class="btn-ghost" onclick="toolDelete('stock','${p.id}')">🗑️</button>
+              </div>
+            </div>
+          `;
+        })
+        .join("");
+    }
+
+    const lowCount = items.filter(p => Number(p.minQty||0) > 0 && Number(p.qty||0) <= Number(p.minQty||0)).length;
+    setToolListSubtitle(`Totale: ${items.length} • Scorta bassa: ${lowCount}`);
+  }
+
+  if (formEl) {
+    const isEdit = !!edit;
+    const p = edit || { id:null, name:"", sku:"", category:"", unit:"pz", qty:0, minQty:0, cost:0, price:0, note:"" };
+    setToolFormSubtitle(isEdit ? `Modifica: ${p.name||'—'}` : "Nuovo prodotto");
+
+    formEl.innerHTML = `
+      <div class="tool-grid-2">
+        <div class="form-group">
+          <label class="form-label">Nome prodotto</label>
+          <input class="form-input" id="stockName" placeholder="Es: Base Rubber" value="${escHtml(p.name||'')}">
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Categoria (opz.)</label>
+          <input class="form-input" id="stockCategory" placeholder="Es: Gel / Cura" value="${escHtml(p.category||'')}">
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">SKU/Codice (opz.)</label>
+          <input class="form-input" id="stockSku" placeholder="Es: RB-001" value="${escHtml(p.sku||'')}">
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Unità</label>
+          <select class="form-select" id="stockUnit">
+            <option value="pz" ${p.unit === 'pz' ? 'selected' : ''}>pz</option>
+            <option value="ml" ${p.unit === 'ml' ? 'selected' : ''}>ml</option>
+            <option value="g" ${p.unit === 'g' ? 'selected' : ''}>g</option>
+            <option value="kit" ${p.unit === 'kit' ? 'selected' : ''}>kit</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Quantità</label>
+          <input type="number" class="form-input" id="stockQty" value="${Number(p.qty||0)}" step="1" min="0">
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Soglia minima (alert)</label>
+          <input type="number" class="form-input" id="stockMinQty" value="${Number(p.minQty||0)}" step="1" min="0">
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Costo (opz.)</label>
+          <input type="number" class="form-input" id="stockCost" value="${Number(p.cost||0)}" step="0.01" min="0">
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Prezzo (opz.)</label>
+          <input type="number" class="form-input" id="stockPrice" value="${Number(p.price||0)}" step="0.01" min="0">
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Note (opz.)</label>
+        <textarea class="form-textarea" id="stockNote" placeholder="Es: ordinare dal fornitore X...">${escHtml(p.note||'')}</textarea>
+      </div>
+
+      <button class="btn btn-primary" onclick="saveStockItem('${escHtml(p.id||"")}')">💾 Salva Prodotto</button>
+    `;
+  }
+}
+
+function stockAdjust(id, delta) {
+  APP.tools.stock = APP.tools.stock || [];
+  const it = APP.tools.stock.find(x => x.id === id);
+  if (!it) return;
+  const next = Math.max(0, Number(it.qty||0) + Number(delta||0));
+  it.qty = next;
+  it.updatedAt = Date.now();
+  saveData();
+  renderStock();
+}
+
+function saveStockItem(id) {
+  const name = String(document.getElementById("stockName")?.value || "").trim();
+  const category = String(document.getElementById("stockCategory")?.value || "").trim();
+  const sku = String(document.getElementById("stockSku")?.value || "").trim();
+  const unit = String(document.getElementById("stockUnit")?.value || "pz").trim();
+  const qty = Number(document.getElementById("stockQty")?.value || 0);
+  const minQty = Number(document.getElementById("stockMinQty")?.value || 0);
+  const cost = Number(document.getElementById("stockCost")?.value || 0);
+  const price = Number(document.getElementById("stockPrice")?.value || 0);
+  const note = String(document.getElementById("stockNote")?.value || "").trim();
+
+  if (!name) return showToast("⚠️ Inserisci un nome prodotto");
+  if (!Number.isFinite(qty) || qty < 0) return showToast("⚠️ Quantità non valida");
+
+  APP.tools.stock = APP.tools.stock || [];
+  const now = Date.now();
+
+  if (id) {
+    const it = APP.tools.stock.find(x => x.id === id);
+    if (!it) return showToast("⚠️ Prodotto non trovato");
+    Object.assign(it, { name, category, sku, unit, qty, minQty, cost, price, note, updatedAt: now });
+  } else {
+    APP.tools.stock.unshift({ id: uid("st"), name, category, sku, unit, qty, minQty, cost, price, note, createdAt: now, updatedAt: now });
+  }
+
+  saveData();
+  showToast("✓ Prodotto salvato");
+  TOOL_STATE.editId = null;
+  renderStock();
+}
+
+// -------------------- Waitlist --------------------
+function renderWaitlist() {
+  const listEl = document.getElementById("toolListContainer");
+  const formEl = document.getElementById("toolFormContainer");
+  const items = (APP.tools && APP.tools.waitlist) ? APP.tools.waitlist : [];
+  const edit = TOOL_STATE.editId ? items.find(x => x.id === TOOL_STATE.editId) : null;
+
+  if (listEl) {
+    if (!items.length) {
+      listEl.innerHTML = renderEmptyState("Lista vuota", "Aggiungi una richiesta per tenere traccia delle clienti in attesa.");
+    } else {
+      const order = { new: 0, contacted: 1, booked: 2, closed: 3 };
+      listEl.innerHTML = items
+        .slice()
+        .sort((a,b) => (order[a.status||'new'] ?? 9) - (order[b.status||'new'] ?? 9) || (b.createdAt||0)-(a.createdAt||0))
+        .map((w) => {
+          const st = String(w.status || "new");
+          const chip = st === "booked" ? `<span class="chip ok">PRENOTATO</span>`
+            : st === "contacted" ? `<span class="chip warn">CONTATTATO</span>`
+            : `<span class="chip">NUOVO</span>`;
+
+          const pref = w.preferred ? escHtml(w.preferred) : "—";
+          const meta = `${escHtml(w.service||'—')} • Preferenza: ${pref}`;
+          const isEditing = edit && edit.id === w.id;
+
+          return `
+            <div class="tool-item" style="${isEditing ? 'box-shadow: 0 0 0 3px rgba(10,132,255,0.18); border-color: rgba(10,132,255,0.45);' : ''}">
+              <div>
+                <div class="tool-item-title">${escHtml(w.name||'—')} ${w.phone ? `• ${escHtml(w.phone)}` : ''}</div>
+                <div class="tool-item-meta">
+                  ${chip}
+                  <span class="chip">${meta}</span>
+                </div>
+                ${w.notes ? `<div class="tool-item-meta" style="margin-top: 8px; color: var(--text-tertiary);">📝 ${escHtml(w.notes)}</div>` : ``}
+              </div>
+              <div class="tool-actions">
+                <button class="btn-ghost" onclick="waitlistSetStatus('${w.id}', 'contacted')">📨</button>
+                <button class="btn-ghost" onclick="waitlistSetStatus('${w.id}', 'booked')">✅</button>
+                <button class="btn-ghost" onclick="toolEdit('waitlist','${w.id}')">✏️</button>
+                <button class="btn-ghost" onclick="toolDelete('waitlist','${w.id}')">🗑️</button>
+              </div>
+            </div>
+          `;
+        })
+        .join("");
+    }
+
+    const counts = items.reduce((acc, x) => {
+      const k = String(x.status || "new");
+      acc[k] = (acc[k] || 0) + 1;
+      return acc;
+    }, {});
+    setToolListSubtitle(`Nuovi: ${counts.new||0} • Contattati: ${counts.contacted||0} • Prenotati: ${counts.booked||0}`);
+  }
+
+  if (formEl) {
+    const isEdit = !!edit;
+    const w = edit || { id:null, name:"", phone:"", service:"", preferred:"", notes:"", status:"new" };
+    setToolFormSubtitle(isEdit ? `Modifica: ${w.name||'—'}` : "Nuova richiesta");
+
+    formEl.innerHTML = `
+      <div class="tool-grid-2">
+        <div class="form-group">
+          <label class="form-label">Cliente</label>
+          <input class="form-input" id="wlName" placeholder="Nome e cognome" value="${escHtml(w.name||'')}">
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Telefono (opz.)</label>
+          <input class="form-input" id="wlPhone" placeholder="+39 ..." value="${escHtml(w.phone||'')}">
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Servizio (opz.)</label>
+          <input class="form-input" id="wlService" placeholder="Es: Ricostruzione" value="${escHtml(w.service||'')}">
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Preferenza (opz.)</label>
+          <input class="form-input" id="wlPreferred" placeholder="Es: Sabato mattina" value="${escHtml(w.preferred||'')}">
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Stato</label>
+          <select class="form-select" id="wlStatus">
+            <option value="new" ${String(w.status||'new')==='new'?'selected':''}>Nuovo</option>
+            <option value="contacted" ${String(w.status||'')==='contacted'?'selected':''}>Contattato</option>
+            <option value="booked" ${String(w.status||'')==='booked'?'selected':''}>Prenotato</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Note (opz.)</label>
+        <textarea class="form-textarea" id="wlNotes" placeholder="Dettagli...">${escHtml(w.notes||'')}</textarea>
+      </div>
+
+      <button class="btn btn-primary" onclick="saveWaitlistItem('${escHtml(w.id||"")}')">💾 Salva</button>
+    `;
+  }
+}
+
+function waitlistSetStatus(id, status) {
+  APP.tools.waitlist = APP.tools.waitlist || [];
+  const it = APP.tools.waitlist.find(x => x.id === id);
+  if (!it) return;
+  it.status = status;
+  it.updatedAt = Date.now();
+  saveData();
+  renderWaitlist();
+}
+
+function saveWaitlistItem(id) {
+  const name = String(document.getElementById("wlName")?.value || "").trim();
+  const phone = String(document.getElementById("wlPhone")?.value || "").trim();
+  const service = String(document.getElementById("wlService")?.value || "").trim();
+  const preferred = String(document.getElementById("wlPreferred")?.value || "").trim();
+  const notes = String(document.getElementById("wlNotes")?.value || "").trim();
+  const status = String(document.getElementById("wlStatus")?.value || "new").trim();
+
+  if (!name) return showToast("⚠️ Inserisci il nome cliente");
+
+  APP.tools.waitlist = APP.tools.waitlist || [];
+  const now = Date.now();
+
+  if (id) {
+    const it = APP.tools.waitlist.find(x => x.id === id);
+    if (!it) return showToast("⚠️ Voce non trovata");
+    Object.assign(it, { name, phone, service, preferred, notes, status, updatedAt: now });
+  } else {
+    APP.tools.waitlist.unshift({ id: uid("wl"), name, phone, service, preferred, notes, status, createdAt: now, updatedAt: now });
+  }
+
+  saveData();
+  showToast("✓ Salvato");
+  TOOL_STATE.editId = null;
+  renderWaitlist();
+}
+
+// -------------------- Reminders --------------------
+function renderReminders() {
+  const listEl = document.getElementById("toolListContainer");
+  const formEl = document.getElementById("toolFormContainer");
+
+  APP.tools.reminders = APP.tools.reminders || {};
+  APP.tools.reminders.templates = APP.tools.reminders.templates || {};
+
+  const r = APP.tools.reminders;
+  const t = r.templates;
+
+  if (listEl) {
+    const chipA = r.enabled24h ? `<span class="chip ok">24h ON</span>` : `<span class="chip bad">24h OFF</span>`;
+    const chipB = r.enabled2h ? `<span class="chip ok">2h ON</span>` : `<span class="chip bad">2h OFF</span>`;
+    const chipC = r.enabledReview ? `<span class="chip ok">Review ON</span>` : `<span class="chip bad">Review OFF</span>`;
+
+    listEl.innerHTML = `
+      <div class="tool-item">
+        <div>
+          <div class="tool-item-title">Stato promemoria</div>
+          <div class="tool-item-meta">${chipA} ${chipB} ${chipC}</div>
+        </div>
+        <div class="tool-actions">
+          <button class="btn-ghost" onclick="toggleReminderFlag('enabled24h')">24h</button>
+          <button class="btn-ghost" onclick="toggleReminderFlag('enabled2h')">2h</button>
+          <button class="btn-ghost" onclick="toggleReminderFlag('enabledReview')">Review</button>
+        </div>
+      </div>
+
+      <div style="margin-top: 12px;">
+        <div class="tool-item">
+          <div>
+            <div class="tool-item-title">Variabili disponibili</div>
+            <div class="tool-item-meta">
+              <span class="chip">{name}</span>
+              <span class="chip">{service}</span>
+              <span class="chip">{date}</span>
+              <span class="chip">{time}</span>
+              <span class="chip">{link}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+
+    setToolListSubtitle("Template configurabili");
+  }
+
+  if (formEl) {
+    setToolFormSubtitle("Template WhatsApp");
+
+    formEl.innerHTML = `
+      <div class="form-group">
+        <label class="form-label">
+          <input type="checkbox" id="remEnabled24h" ${r.enabled24h ? "checked" : ""} style="margin-right: 8px;">
+          Promemoria 24h prima
+        </label>
+        <textarea class="form-textarea" id="remTpl24h" placeholder="Messaggio 24h">${escHtml(t.reminder24h || "")}</textarea>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">
+          <input type="checkbox" id="remEnabled2h" ${r.enabled2h ? "checked" : ""} style="margin-right: 8px;">
+          Promemoria 2h prima
+        </label>
+        <textarea class="form-textarea" id="remTpl2h" placeholder="Messaggio 2h">${escHtml(t.reminder2h || "")}</textarea>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">
+          <input type="checkbox" id="remEnabledReview" ${r.enabledReview ? "checked" : ""} style="margin-right: 8px;">
+          Follow-up recensione
+        </label>
+        <textarea class="form-textarea" id="remTplReview" placeholder="Messaggio recensione">${escHtml(t.review || "")}</textarea>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Link recensione (opz.)</label>
+        <input class="form-input" id="remReviewLink" placeholder="https://..." value="${escHtml(r.reviewLink || "")}">
+      </div>
+
+      <button class="btn btn-primary" onclick="saveReminders()">💾 Salva Promemoria</button>
+    `;
+  }
+}
+
+function toggleReminderFlag(key) {
+  APP.tools.reminders = APP.tools.reminders || {};
+  APP.tools.reminders[key] = !APP.tools.reminders[key];
+  saveData();
+  renderReminders();
+}
+
+function saveReminders() {
+  APP.tools.reminders = APP.tools.reminders || {};
+  APP.tools.reminders.templates = APP.tools.reminders.templates || {};
+
+  APP.tools.reminders.enabled24h = !!document.getElementById("remEnabled24h")?.checked;
+  APP.tools.reminders.enabled2h = !!document.getElementById("remEnabled2h")?.checked;
+  APP.tools.reminders.enabledReview = !!document.getElementById("remEnabledReview")?.checked;
+
+  APP.tools.reminders.templates.reminder24h = String(document.getElementById("remTpl24h")?.value || "").trim();
+  APP.tools.reminders.templates.reminder2h = String(document.getElementById("remTpl2h")?.value || "").trim();
+  APP.tools.reminders.templates.review = String(document.getElementById("remTplReview")?.value || "").trim();
+  APP.tools.reminders.reviewLink = String(document.getElementById("remReviewLink")?.value || "").trim();
+
+  saveData();
+  showToast("✓ Promemoria salvati");
+  renderReminders();
+}
+
+// -------------------- Shared tool actions --------------------
+function toolEdit(tool, id) {
+  TOOL_STATE.current = tool;
+  TOOL_STATE.editId = id;
+  renderToolView();
+}
+
+function toolDelete(tool, id) {
+  if (!confirm("Eliminare questo elemento?")) return;
+
+  if (tool === "coupons") {
+    APP.tools.coupons = (APP.tools.coupons || []).filter(x => x.id !== id);
+    if (TOOL_STATE.editId === id) TOOL_STATE.editId = null;
+    saveData();
+    return renderCoupons();
+  }
+
+  if (tool === "stock") {
+    APP.tools.stock = (APP.tools.stock || []).filter(x => x.id !== id);
+    if (TOOL_STATE.editId === id) TOOL_STATE.editId = null;
+    saveData();
+    return renderStock();
+  }
+
+  if (tool === "waitlist") {
+    APP.tools.waitlist = (APP.tools.waitlist || []).filter(x => x.id !== id);
+    if (TOOL_STATE.editId === id) TOOL_STATE.editId = null;
+    saveData();
+    return renderWaitlist();
+  }
+}
+
+// Close tools modal when clicking on backdrop
+document.addEventListener("click", (e) => {
+  const modal = document.getElementById("toolsModal");
+  if (!modal) return;
+  if (!modal.classList.contains("show")) return;
+  if (e && e.target === modal) closeToolsModal();
+});
+
+
+// Settings
+function saveSettings() {
+  APP.settings.vatRate = parseFloat(document.getElementById('settingsVat').value);
+  APP.settings.hoursPerDay = parseFloat(document.getElementById('settingsHoursPerDay').value);
+  APP.settings.currency = document.getElementById('settingsCurrency').value;
+  APP.settings.notifications = parseInt(document.getElementById('settingsNotifications').value);
+  APP.settings.backup = document.getElementById('settingsBackup').value;
+  
+  saveData();
+  showToast('✓ Impostazioni salvate!');
+  updateDashboard();
+}
+
+function backupData() {
+  const data = {
+    bookings: APP.bookings,
+    clients: APP.clients,
+    settings: APP.settings,
+    notifications: APP.notifications,
+    tools: APP.tools,
+    timestamp: new Date().toISOString()
+  };
+  
+  const json = JSON.stringify(data, null, 2);
+  const blob = new Blob([json], { type: 'application/json' });
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'synkris_backup_' + new Date().toISOString().split('T')[0] + '.json';
+  a.click();
+  window.URL.revokeObjectURL(url);
+  
+  showToast('✓ Backup completato!');
+}
+
+function restoreData() {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.json';
+  input.onchange = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const data = JSON.parse(event.target.result);
+        
+        if (confirm('Ripristinare i dati dal backup? I dati attuali saranno sovrascritti.')) {
+          APP.bookings = data.bookings || [];
+          APP.clients = data.clients || [];
+          APP.settings = data.settings || APP.settings;
+          APP.notifications = data.notifications || [];
+          APP.tools = data.tools || APP.tools || {};
+          
+          saveData();
+          location.reload();
+        }
+      } catch (error) {
+        showToast('⚠️ Errore nel ripristino dei dati');
+      }
+    };
+    reader.readAsText(file);
+  };
+  input.click();
+}
+
+async function clearAllData() {
+  const ok1 = await showConfirm({
+    icon: '⚠️',
+    title: 'Eliminare tutti i dati?',
+    message: 'Questa operazione cancellerà TUTTE le prenotazioni, i clienti e le impostazioni salvate localmente. Non può essere annullata.',
+    confirmLabel: 'Sì, elimina tutto',
+    confirmClass: 'btn-danger',
+    cancelLabel: 'No, torna indietro'
+  });
+  if (!ok1) return;
+  const ok2 = await showConfirm({
+    icon: '🚨',
+    title: 'Ultima conferma',
+    message: 'Sei proprio sicuro? I dati locali saranno persi per sempre.',
+    confirmLabel: 'Sì, sono sicuro',
+    confirmClass: 'btn-danger',
+    cancelLabel: 'Annulla'
+  });
+  if (!ok2) return;
+  localStorage.clear();
+  sessionStorage.clear();
+  location.reload();
+}
+
+// UI Functions
+function toggleTheme() {
+  const current = document.documentElement.getAttribute("data-theme");
+  const next = current === "dark" ? "light" : "dark";
+  document.documentElement.setAttribute("data-theme", next);
+  localStorage.setItem("theme", next);
+
+  const themeText = document.getElementById("themeText");
+  if (themeText) themeText.textContent = next === "dark" ? "Tema Scuro" : "Tema Chiaro";
+
+  // prova a recuperare l'elemento cliccato in modo sicuro
+  const clicked =
+    (typeof event !== "undefined" && event && event.currentTarget) ? event.currentTarget : null;
+
+  if (clicked && clicked.querySelector) {
+    const icon = clicked.querySelector(".nav-item-icon");
+    if (icon) icon.textContent = next === "dark" ? "🌙" : "☀️";
+  }
+}
+
+function refreshDashboard() {
+  showToast('🔄 Aggiornamento dashboard...');
+  updateDashboard();
+  setTimeout(() => {
+    showToast('✓ Dashboard aggiornata!');
+  }, 500);
+}
+
+function quickAddBooking() {
+  openNewBookingModal();
+}
+
+function toggleQuickActions() {
+  const qa = document.querySelector('.quick-actions');
+  if (!qa) return;
+
+  const isCollapsed = qa.classList.contains('collapsed');
+  qa.classList.toggle('collapsed', !isCollapsed);
+  qa.classList.toggle('expanded', isCollapsed);
+
+  localStorage.setItem('quickActionsCollapsed', (!isCollapsed) ? '1' : '0');
+  updateQuickActionsIcon();
+}
+
+function updateQuickActionsIcon() {
+  const qa = document.querySelector('.quick-actions');
+  const main = qa && qa.querySelector('.quick-action-btn.main');
+  if (!main) return;
+
+  const collapsed = qa.classList.contains('collapsed');
+  main.textContent = collapsed ? '⚡' : '✕';
+  main.title = collapsed ? 'Menu Rapido' : 'Chiudi';
+}
+
+function isMobileUI() {
+  return window.matchMedia && window.matchMedia('(max-width: 1024px)').matches;
+}
+
+function openSidebar() {
+  const sb = document.getElementById('sidebar');
+  const ov = document.getElementById('sidebarOverlay');
+  if (sb) sb.classList.add('mobile-open');
+  if (ov) ov.classList.add('show');
+  if (isMobileUI()) document.body.style.overflow = 'hidden';
+}
+
+function closeSidebar() {
+  const sb = document.getElementById('sidebar');
+  const ov = document.getElementById('sidebarOverlay');
+  if (sb) sb.classList.remove('mobile-open');
+  if (ov) ov.classList.remove('show');
+  document.body.style.overflow = '';
+}
+
+function toggleSidebar() {
+  const sb = document.getElementById('sidebar');
+  if (!sb) return;
+  if (sb.classList.contains('mobile-open')) closeSidebar();
+  else openSidebar();
+}
+
+function initMobileUI() {
+  // Quick actions: default "collapsed" su mobile
+  const qa = document.querySelector('.quick-actions');
+  if (qa) {
+    const stored = localStorage.getItem('quickActionsCollapsed');
+    const defaultCollapsed = isMobileUI();
+    const collapsed = (stored === null) ? defaultCollapsed : (stored === '1');
+
+    qa.classList.toggle('collapsed', collapsed);
+    qa.classList.toggle('expanded', !collapsed);
+    updateQuickActionsIcon();
+  }
+
+  // ESC chiude sidebar
+  document.addEventListener('keydown', (e) => {
+    if (e && e.key === 'Escape') closeSidebar();
+  });
+
+  // Se passi desktop<->mobile, ripristina overflow
+  window.addEventListener('resize', () => {
+    if (!isMobileUI()) {
+      closeSidebar();
+      document.body.style.overflow = '';
+    }
+  });
+
+  // Calendario: vista più leggibile su mobile
+  try {
+    if (isMobileUI() && APP.calendar && typeof APP.calendar.changeView === "function") {
+      APP.calendar.changeView("timeGridDay");
+      // aggiorna toggle (se presente)
+      const btns = document.querySelectorAll(".calendar-view-btn");
+      btns.forEach(b => b.classList.remove("active"));
+      const dayBtn = Array.from(btns).find(b => /Giorno/i.test(b.textContent || ""));
+      if (dayBtn) dayBtn.classList.add("active");
+    }
+  } catch (e) {}
+}
+
+// Utility Functions
+
+// --- Phone / WhatsApp helpers ---
+function waChatIdToDigits(input) {
+  const s = String(input || "").trim();
+  if (!s) return "";
+  // es: 39XXXXXXXXXX@c.us -> 39XXXXXXXXXX
+  const noSuffix = s.replace(/@c\.us$/i, "").replace(/@g\.us$/i, "");
+  // lascia solo cifre
+  return noSuffix.replace(/[^\d]/g, "");
+}
+
+// Mostra come +39 3XX XXXXXXX (se arriva 39xxxxxxxxxx o 393...@c.us)
+function formatPhoneDisplay(input) {
+  const digits0 = waChatIdToDigits(input);
+  if (!digits0) return "";
+
+  let digits = digits0;
+
+  // 00 -> internazionale
+  if (digits.startsWith("00")) digits = digits.slice(2);
+
+  // se già include 39 all'inizio: +39 <resto>
+  if (digits.startsWith("39") && digits.length > 2) {
+    return "+39 " + digits.slice(2);
+  }
+
+  // se è un mobile italiano "3xxxxxxxxx" (9-10 cifre) senza prefisso
+  if ((digits.length === 9 || digits.length === 10) && digits.startsWith("3")) {
+    return "+39 " + digits;
+  }
+
+  // fallback generico
+  return "+" + digits;
+}
+
+// Per wa.me serve solo cifre con country code, senza "+"
+function waPhoneDigits(input) {
+  const digits0 = waChatIdToDigits(input);
+  if (!digits0) return "";
+
+  let digits = digits0;
+  if (digits.startsWith("00")) digits = digits.slice(2);
+
+  // se non parte con 39 ma sembra italiano mobile, aggiungi 39
+  if (!digits.startsWith("39") && (digits.length === 9 || digits.length === 10) && digits.startsWith("3")) {
+    digits = "39" + digits;
+  }
+
+  return digits;
+}
+
+function buildWhatsAppLink(phoneDigits, text) {
+  const p = String(phoneDigits || "").trim();
+  if (!p) return "";
+  return "https://wa.me/" + p + "?text=" + encodeURIComponent(String(text || ""));
+}
+
+// Notifica SOLO via WhatsApp: invio automatico tramite ADMIN API (bot online) + log su localStorage
+function normalizeAdminApiBase(raw) {
+  let v = String(raw || "").trim();
+  if (!v) return "";
+  // se manca lo schema, default http
+  if (!/^https?:\/\//i.test(v)) v = "http://" + v;
+  v = v.replace(/\/+$/, "");
+  try {
+    const u = new URL(v);
+    // evita problemi IPv6/::1 su alcuni setup (Windows/Chrome): usa IPv4 locale
+    if (u.hostname === "localhost") u.hostname = "127.0.0.1";
+    return u.origin;
+  } catch {
+    return v;
+  }
+}
+
+function getAdminApiBase() {
+  const raw = localStorage.getItem("ADMIN_API_BASE") || "http://127.0.0.1:3000";
+  return normalizeAdminApiBase(raw);
+}
+
+
+function getAdminApiToken() {
+  return String(localStorage.getItem("ADMIN_API_TOKEN") || "").trim();
+}
+
+function setAdminApiToken(token) {
+  const t = String(token || "").trim();
+  if (t) localStorage.setItem("ADMIN_API_TOKEN", t);
+  else localStorage.removeItem("ADMIN_API_TOKEN");
+}
+
+async function adminRequest(path, opts = {}) {
+  const method = String(opts.method || "POST").toUpperCase();
+  const body = (opts.body === undefined ? null : opts.body);
+  const timeoutMs = Math.max(3000, Number(opts.timeoutMs || 15000) || 15000);
+
+  const base = getAdminApiBase();
+  const p = String(path || "").trim();
+  const url = base + (p.startsWith("/") ? p : ("/" + p));
+
+  const headers = {};
+  const token = getAdminApiToken();
+  if (token) headers["X-Admin-Token"] = token;
+  if (method !== "GET") headers["Content-Type"] = "application/json";
+
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), timeoutMs);
+
+  try {
+    const res = await fetch(url, {
+      method,
+      headers,
+      body: (method === "GET" || body === null) ? undefined : JSON.stringify(body),
+      signal: ctl.signal
+    });
+
+    const raw = await res.text().catch(() => "");
+    let data = {};
+    try { data = raw ? JSON.parse(raw) : {}; } catch { data = { raw }; }
+
+    if (!res.ok) {
+      const err = data?.error || data?.message || `HTTP ${res.status}`;
+      throw new Error(err);
+    }
+    return { ok: true, status: res.status, data };
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+
+function initAdminApiUI() {
+  const input = document.getElementById("adminApiBaseInput");
+  if (input) input.value = getAdminApiBase();
+
+  const tokenEl = document.getElementById("adminApiTokenInput");
+  if (tokenEl) tokenEl.value = getAdminApiToken();
+
+  const box = document.getElementById("adminApiStatus");
+  if (box) box.textContent = "";
+}
+
+function saveAdminApiBase() {
+  const input = document.getElementById("adminApiBaseInput");
+  if (!input) return;
+
+  const v0 = String(input.value || "").trim();
+  const v = normalizeAdminApiBase(v0);
+
+  if (!v || !/^https?:\/\//i.test(v)) {
+    showToast("⚠️ Inserisci un URL valido (es. http://127.0.0.1:3000)");
+    return;
+  }
+
+  localStorage.setItem("ADMIN_API_BASE", v);
+
+  // salva anche token (se presente)
+  const tokEl = document.getElementById("adminApiTokenInput");
+  if (tokEl) setAdminApiToken(tokEl.value);
+  input.value = v;
+  showToast("✓ ADMIN_API_BASE salvato");
+}
+
+async function testAdminApi() {
+  const box = document.getElementById("adminApiStatus");
+  if (box) box.textContent = "Test in corso…";
+
+  const base0 = getAdminApiBase();
+
+  const withTimeout = async (url, ms = 3500) => {
+    const ctl = new AbortController();
+    const t = setTimeout(() => ctl.abort(), ms);
+    try {
+      return await fetch(url, { cache: "no-store", signal: ctl.signal });
+    } finally {
+      clearTimeout(t);
+    }
+  };
+
+  const tryOne = async (base) => {
+    const h = await withTimeout(base + "/health");
+    if (!h.ok) throw new Error("health HTTP " + h.status);
+
+    const s = await withTimeout(base + "/status");
+    const j = await s.json().catch(() => ({}));
+
+    const online = !!j.online;
+    const lastError = j.lastError ? String(j.lastError) : "";
+    const line = online ? "✅ Bot online" : "⚠️ Bot offline";
+
+    if (box) box.textContent = line + (lastError ? " • lastError: " + lastError : "");
+    showToast(line);
+    return { ok: true, base, online, lastError };
+  };
+
+  // fallback automatico: localhost <-> 127.0.0.1 (problemi IPv6 ::1)
+  const alt = base0.includes("127.0.0.1")
+    ? base0.replace("127.0.0.1", "localhost")
+    : base0.replace("localhost", "127.0.0.1");
+
+  const candidates = [base0];
+  if (alt && alt !== base0) candidates.push(alt);
+
+  let lastErr = null;
+  for (const base of candidates) {
+    try {
+      const r = await tryOne(base);
+      if (base !== base0) {
+        localStorage.setItem("ADMIN_API_BASE", base);
+        const input = document.getElementById("adminApiBaseInput");
+        if (input) input.value = base;
+      }
+      return r;
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+
+  const err = lastErr?.message || String(lastErr || "Failed to fetch");
+  if (box) box.textContent = "❌ Errore: " + err + " • (" + candidates.join(" | ") + ")";
+  showToast("❌ ADMIN API non raggiungibile");
+}
+
+function phoneToChatId(phoneRaw) {
+  const s = String(phoneRaw || "").trim();
+  if (!s) return "";
+  if (/@(c|g)\.us$/i.test(s)) return s; // già chatId
+  const digits = waPhoneDigits(s);
+  return digits ? (digits + "@c.us") : "";
+}
+
+async function adminSendText(to, message) {
+  const chatId = phoneToChatId(to);
+  if (!chatId) throw new Error("Numero/ChatId non valido");
+  const msg = String(message || "").trim();
+  if (!msg) throw new Error("Messaggio vuoto");
+
+  const r = await adminRequest("/api/send", {
+    method: "POST",
+    body: { to: chatId, message: msg, msg }
+  });
+
+  const data = r?.data || {};
+  // alcuni server rispondono { ok:true } altri { success:true } ecc.
+  if (data && data.ok === false) throw new Error(data?.error || "Invio fallito");
+  return data;
+}
+
+
+async function sendWhatsAppNotification(booking, oldDate, newDate, customMessage) {
+  const customerName = booking?.customerName || "Cliente";
+  const service = booking?.service || "Servizio";
+  const phoneRaw = booking?.phone || "";
+
+  const toChatId = phoneToChatId(phoneRaw);
+  const phonePretty = formatPhoneDisplay(phoneRaw) || phoneRaw || "N/A";
+
+  const extra = String(customMessage || "").trim();
+  const extraTxt = extra ? `
+
+${extra}` : "";
+
+  const msg = (
+`Ciao ${customerName}!
+
+Il tuo appuntamento per *${service}* è stato spostato.
+
+*NUOVA* DATA: ${formatDate(newDate)}
+*NUOVO* ORARIO: ${formatTime(newDate)}${extraTxt}
+Per confermare o modificare, rispondi qui.
+
+- synkris✌`
+  ).trim();
+
+  const notificationRecord = {
+    id: "NOTIF" + Date.now(),
+    bookingId: booking?.id,
+    customerName,
+    phoneRaw,
+    phonePretty,
+    toChatId,
+    type: "reschedule",
+    channels: ["whatsapp"],
+    timestamp: new Date().toISOString(),
+    apiBase: getAdminApiBase(),
+    ok: false,
+    error: null,
+    waMessage: msg
+  };
+
+  if (!toChatId) {
+    notificationRecord.error = "Numero WhatsApp mancante/non valido";
+    showDetailedToast("⚠️ Impossibile inviare WhatsApp", `${customerName}: numero mancante`);
+    try {
+      if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(msg);
+    } catch {}
+  } else {
+    try {
+      await adminSendText(toChatId, msg);
+      notificationRecord.ok = true;
+      showDetailedToast("✅ WhatsApp inviato dal bot", `${customerName} • ${phonePretty}`);
+      if (typeof addNotification === "function") {
+        addNotification(`✅ WhatsApp inviato a ${customerName}`, "success");
+      }
+    } catch (e) {
+      notificationRecord.ok = false;
+      notificationRecord.error = e?.message || String(e);
+      showDetailedToast("⚠️ Invio WhatsApp fallito", `Testo copiato negli appunti. Errore: ${notificationRecord.error}`);
+      try {
+        if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(msg);
+      } catch {}
+      if (typeof addNotification === "function") {
+        addNotification(`⚠️ Invio WhatsApp fallito: ${customerName}`, "warning");
+      }
+    }
+  }
+
+  const sent = JSON.parse(localStorage.getItem("sentNotifications") || "[]");
+  sent.push(notificationRecord);
+  localStorage.setItem("sentNotifications", JSON.stringify(sent));
+
+  // Persisti anche i dati UI
+  saveData();
+
+  return notificationRecord;
+}
+
+function formatCurrency(amount) {
+  const n = Number(amount);
+  const safe = Number.isFinite(n) ? n : 0;
+  const symbol = APP.settings.currency === 'EUR' ? '€' : APP.settings.currency === 'USD' ? '$' : '£';
+  return symbol + safe.toFixed(2);
+}
+
+function asValidDate(v) {
+  if (v instanceof Date) return Number.isFinite(v.getTime()) ? v : null;
+  const d = parseIsoMaybeLocal(v);
+  return (d && Number.isFinite(d.getTime())) ? d : null;
+}
+
+function formatDate(date) {
+  const d = asValidDate(date);
+  if (!d) return '—';
+  return d.toLocaleDateString('it-IT', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric'
+  });
+}
+
+function formatTime(date) {
+  const d = asValidDate(date);
+  if (!d) return '—';
+  return d.toLocaleTimeString('it-IT', {
+    hour: '2-digit',
+    minute: '2-digit'
+  });
+}
+
+function formatRelativeTime(date) {
+  const d = asValidDate(date);
+  if (!d) return '';
+  const now = new Date();
+  const diff = now - d;
+  const minutes = Math.floor(diff / 60000);
+
+  if (minutes < 1) return 'ora';
+  if (minutes < 60) return `${minutes}m fa`;
+  if (minutes < 1440) return `${Math.floor(minutes / 60)}h fa`;
+  return `${Math.floor(minutes / 1440)}g fa`;
+}
+
+// ---- Toast queue (stacking, non si sovrascrivono) ----
+let _toastStack = null;
+
+function _getToastStack() {
+  if (!_toastStack) {
+    _toastStack = document.createElement('div');
+    _toastStack.className = 'toast-stack';
+    document.body.appendChild(_toastStack);
+  }
+  return _toastStack;
+}
+
+function showToast(message, durationMs = 3000) {
+  const stack = _getToastStack();
+  const toast = document.createElement('div');
+  toast.className = 'toast';
+  toast.textContent = message;
+  toast.style.pointerEvents = 'auto';
+  stack.appendChild(toast);
+  setTimeout(() => toast.remove(), durationMs);
+}
+
+function showDetailedToast(title, subtitle, durationMs = 4000) {
+  const stack = _getToastStack();
+  const toast = document.createElement('div');
+  toast.className = 'toast';
+  toast.style.pointerEvents = 'auto';
+  toast.innerHTML = `
+    <div style="font-size: 16px; font-weight: 700; margin-bottom: 4px;">${title}</div>
+    <div style="font-size: 14px; opacity: 0.9;">${subtitle}</div>
+  `;
+  stack.appendChild(toast);
+  setTimeout(() => toast.remove(), durationMs);
+}
+
+updateNotificationBadge();
+</script>
+
+
+<script>
+// =====================================================================
+// GESTIONE DB — Appuntamenti, Personale, Categorie, Trattamenti
+// =====================================================================
+
+const GESTIONE = {
+  pros: [],
+  cats: [],
+  svcs: [],
+  appts: [],
+};
+
+async function gFetch(route, opts = {}) {
+  const method = String(opts.method || 'GET').toUpperCase();
+  const body   = opts.body ?? null;
+  const sep    = window.location.search ? '&' : '?';
+  const url    = window.location.pathname + window.location.search + sep + 'r=' + route + (opts.qs || '');
+  const token  = (typeof getAdminApiToken === 'function') ? getAdminApiToken() : '';
+  const headers = {};
+  if (token) headers['X-Admin-Token'] = token;
+  if (method !== 'GET') headers['Content-Type'] = 'application/json';
+  const res = await fetch(url, { method, headers, body: body ? JSON.stringify(body) : undefined });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.ok === false) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
+}
+
+function gStatusBadge(status) {
+  const map = {
+    confirmed: '<span class="badge badge-success">Confermato</span>',
+    pending:   '<span class="badge badge-warning">In attesa</span>',
+    completed: '<span class="badge" style="background:var(--purple);color:#fff;">Completato</span>',
+    cancelled: '<span class="badge badge-danger">Cancellato</span>',
+    no_show:   '<span class="badge" style="background:var(--text-tertiary);color:#fff;">No-show</span>',
+  };
+  return map[status] || `<span class="badge">${escHtml(status)}</span>`;
+}
+function gActiveBadge(v) {
+  return v ? '<span class="badge badge-success">Attivo</span>' : '<span class="badge badge-danger">Inattivo</span>';
+}
+function gFmtDate(dtStr) {
+  if (!dtStr) return '—';
+  const d = new Date(dtStr);
+  if (isNaN(d)) return dtStr;
+  return d.toLocaleDateString('it-IT', { weekday:'short', day:'2-digit', month:'short', year:'numeric' });
+}
+function gFmtTime(dtStr) {
+  if (!dtStr) return '—';
+  const d = new Date(dtStr);
+  if (isNaN(d)) return dtStr;
+  return d.toLocaleTimeString('it-IT', { hour:'2-digit', minute:'2-digit' });
+}
+
+// =========================================================
+// APPUNTAMENTI
+// =========================================================
+async function gApptLoad() {
+  const listEl = document.getElementById('gApptList');
+  if (!listEl) return;
+  listEl.innerHTML = '<div class="card"><div class="skeleton skeleton-kpi"></div></div>';
+  const period = document.getElementById('gApptPeriodFilter')?.value || 'upcoming';
+  let qs = '';
+  if (period === 'upcoming') { const from = new Date().toISOString().slice(0,10); qs = `&from=${encodeURIComponent(from+'T00:00:00')}&limit=200`; }
+  else if (period === 'past') { const to = new Date().toISOString().slice(0,10); qs = `&to=${encodeURIComponent(to+'T00:00:00')}&limit=200`; }
+  else qs = '&limit=200';
+  try {
+    const r = await gFetch('db_appointments', { method:'GET', qs });
+    GESTIONE.appts = r.data || [];
+    gApptRender();
+  } catch(e) { listEl.innerHTML = `<div class="card"><div class="empty-state"><div class="empty-state-icon">⚠️</div><div class="empty-state-title">${escHtml(e.message)}</div></div></div>`; }
+}
+
+function gApptRender() {
+  const listEl = document.getElementById('gApptList');
+  if (!listEl) return;
+  const q  = (document.getElementById('gApptSearch')?.value||'').toLowerCase().trim();
+  const sf = document.getElementById('gApptStatusFilter')?.value||'';
+  let rows = GESTIONE.appts;
+  if (q) rows = rows.filter(a => (a.client_name||'').toLowerCase().includes(q)||(a.service_name||'').toLowerCase().includes(q)||(a.professional_name||'').toLowerCase().includes(q));
+  if (sf) rows = rows.filter(a => a.status===sf);
+  if (!rows.length) { listEl.innerHTML = `<div class="card"><div class="empty-state"><div class="empty-state-icon">📋</div><div class="empty-state-title">Nessun appuntamento trovato</div><div class="empty-state-subtitle">Prova a cambiare i filtri.</div></div></div>`; return; }
+  listEl.innerHTML = rows.map(a => {
+    const timeRange = `${gFmtTime(a.start_time)}${a.end_time?'–'+gFmtTime(a.end_time):''}`;
+    const dur = a.duration_min ? `${a.duration_min} min` : '';
+    const price = a.base_price!=null ? `€${Number(a.base_price).toFixed(2)}` : '';
+    const canAct = a.status!=='cancelled'&&a.status!=='completed';
+    return `<div class="card" style="padding:var(--spacing-md);margin-bottom:var(--spacing-sm);">
+      <div style="display:flex;justify-content:space-between;align-items:start;gap:12px;">
+        <div style="flex:1;min-width:0;">
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px;">
+            <span style="font-size:18px;font-weight:800;">${escHtml(a.client_name||'—')}</span>
+            ${gStatusBadge(a.status)}
+          </div>
+          <div style="font-size:14px;color:var(--text-secondary);margin-bottom:4px;">
+            💅 ${escHtml(a.service_name||'—')}${a.professional_name?` &nbsp;•&nbsp; 👩‍🔧 ${escHtml(a.professional_name)}`:''}${price?` &nbsp;•&nbsp; ${price}`:''}${dur?` &nbsp;•&nbsp; ${dur}`:''}
+          </div>
+          <div style="font-size:14px;color:var(--text-secondary);">📅 ${gFmtDate(a.start_time)} &nbsp;⏰ ${timeRange}</div>
+          ${a.notes?`<div style="font-size:13px;color:var(--text-tertiary);margin-top:4px;">📝 ${escHtml(a.notes)}</div>`:''}
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;flex-shrink:0;">
+          <div class="action-btn-wrap"><button class="btn btn-secondary btn-icon" title="Modifica" onclick="gApptOpenForm(${a.id})">✏️</button><span class="action-btn-label">Modifica</span></div>
+          ${canAct?`<div class="action-btn-wrap"><button class="btn btn-warning btn-icon" title="Completato" onclick="gApptChangeStatus(${a.id},'completed')">✅</button><span class="action-btn-label">Fatto</span></div><div class="action-btn-wrap"><button class="btn btn-danger btn-icon" title="Cancella" onclick="gApptChangeStatus(${a.id},'cancelled')">❌</button><span class="action-btn-label">Cancella</span></div>`:''}
+          <div class="action-btn-wrap"><button class="btn btn-danger btn-icon" title="Elimina" onclick="gApptDelete(${a.id})" style="opacity:.6;">🗑️</button><span class="action-btn-label">Elimina</span></div>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function gApptChangeStatus(id, newStatus) {
+  const labels = { completed:'Completato', cancelled:'Cancellato', no_show:'No-show' };
+  const ok = await showConfirm({ icon:'⚠️', title:`Segnare come ${labels[newStatus]||newStatus}?`, message:`Appuntamento #${id}`, confirmLabel:`Sì`, confirmClass:'btn-warning', cancelLabel:'Annulla' });
+  if (!ok) return;
+  try { await gFetch('db_appointment_cancel', { method:'POST', body:{ id, status: newStatus } }); showToast(`✅ Stato: ${labels[newStatus]||newStatus}`); await gApptLoad(); }
+  catch(e) { showToast('⚠️ '+e.message); }
+}
+async function gApptDelete(id) {
+  const ok = await showConfirm({ icon:'🗑️', title:'Eliminare definitivamente?', message:`Appuntamento #${id} — Azione irreversibile.`, confirmLabel:'Elimina', confirmClass:'btn-danger', cancelLabel:'Annulla' });
+  if (!ok) return;
+  try { await gFetch('db_appointment_delete', { method:'POST', body:{ id } }); showToast('✅ Eliminato'); await gApptLoad(); }
+  catch(e) { showToast('⚠️ '+e.message); }
+}
+
+async function gApptOpenForm(id) {
+  await Promise.all([gEnsurePros(), gEnsureSvcs()]);
+  let clients = [];
+  try {
+    const r = await gFetch('db_appointments',{method:'GET',qs:'&limit=500'});
+    const seen = new Set();
+    (r.data||[]).forEach(a => { if(a.client_id&&!seen.has(a.client_id)){seen.add(a.client_id);clients.push({id:a.client_id,name:a.client_name});} });
+    clients.sort((a,b)=>a.name.localeCompare(b.name,'it'));
+  } catch(e){}
+  const appt = id?(GESTIONE.appts.find(a=>a.id===id)||null):null;
+  const modal=document.getElementById('gApptModal'), title=document.getElementById('gApptModalTitle'), body=document.getElementById('gApptModalBody');
+  if (!modal) return;
+  title.textContent = appt ? `✏️ Appuntamento #${id}` : 'Nuovo Appuntamento';
+  const toLocal = (s) => { if(!s)return''; const d=new Date(s); if(isNaN(d))return''; const p=n=>String(n).padStart(2,'0'); return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`; };
+  const clientOpts = `<option value="">— seleziona —</option>`+clients.map(c=>`<option value="${c.id}" ${appt&&appt.client_id===c.id?'selected':''}>${escHtml(c.name)} (#${c.id})</option>`).join('');
+  const proOpts = `<option value="">— nessuno —</option>`+GESTIONE.pros.map(p=>`<option value="${p.id}" ${appt&&appt.professional_id===p.id?'selected':''}>${escHtml(p.full_name)}</option>`).join('');
+  const svcOpts = GESTIONE.svcs.map(s=>`<option value="${s.id}" ${appt&&appt.service_id===s.id?'selected':''}>${escHtml(s.service_name)} (${s.default_duration_min}min${s.base_price!=null?', €'+Number(s.base_price).toFixed(2):''})</option>`).join('');
+  const stOpts = ['pending','confirmed','completed','cancelled','no_show'].map(s=>`<option value="${s}" ${appt?appt.status===s?'selected':'':s==='confirmed'?'selected':''}>${s}</option>`).join('');
+  body.innerHTML = `
+    <div class="form-group"><label class="form-label">Cliente <span class="required-star">*</span></label><select class="form-select" id="gApptClientId">${clientOpts}</select><span class="form-hint">Clienti registrati nel DB</span></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+      <div class="form-group"><label class="form-label">Inizio <span class="required-star">*</span></label><input type="datetime-local" class="form-input" id="gApptStart" value="${toLocal(appt?.start_time)}" onchange="gApptAutoEnd()"></div>
+      <div class="form-group"><label class="form-label">Fine <span class="required-star">*</span></label><input type="datetime-local" class="form-input" id="gApptEnd" value="${toLocal(appt?.end_time)}"></div>
+    </div>
+    <div class="form-group"><label class="form-label">Trattamento <span class="required-star">*</span></label><select class="form-select" id="gApptSvcId" onchange="gApptAutoEnd()"><option value="">— seleziona —</option>${svcOpts}</select></div>
+    <div class="form-group"><label class="form-label">Professionista</label><select class="form-select" id="gApptProId">${proOpts}</select></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+      <div class="form-group"><label class="form-label">Stato</label><select class="form-select" id="gApptStatus">${stOpts}</select></div>
+      <div class="form-group"><label class="form-label">Durata (min)</label><input type="number" class="form-input" id="gApptDur" value="${appt?.duration_min||''}" placeholder="Auto" min="1"></div>
+    </div>
+    <div class="form-group"><label class="form-label">Note</label><textarea class="form-textarea" id="gApptNotes" rows="2">${escHtml(appt?.notes||'')}</textarea></div>
+    <div style="display:flex;gap:12px;justify-content:flex-end;padding-top:8px;">
+      <button class="btn btn-secondary" onclick="gApptCloseForm()">Annulla</button>
+      <button class="btn btn-primary" onclick="gApptSave(${id||0})">💾 Salva</button>
+    </div>`;
+  modal.style.display='flex'; modal.style.alignItems='center'; modal.style.justifyContent='center'; modal.classList.add('show');
+}
+function gApptAutoEnd() {
+  const svcId=parseInt(document.getElementById('gApptSvcId')?.value||0); const startVal=document.getElementById('gApptStart')?.value;
+  if (!svcId||!startVal) return;
+  const svc=GESTIONE.svcs.find(s=>s.id===svcId); if (!svc) return;
+  const d=new Date(startVal); if (isNaN(d)) return;
+  const e=new Date(d.getTime()+(svc.default_duration_min||30)*60000);
+  const p=n=>String(n).padStart(2,'0');
+  const endEl=document.getElementById('gApptEnd'); if (endEl) endEl.value=`${e.getFullYear()}-${p(e.getMonth()+1)}-${p(e.getDate())}T${p(e.getHours())}:${p(e.getMinutes())}`;
+}
+function gApptCloseForm() { const m=document.getElementById('gApptModal'); if(m){m.classList.remove('show');m.style.display='none';} }
+async function gApptSave(id) {
+  const clientId=parseInt(document.getElementById('gApptClientId')?.value||0);
+  const svcId=parseInt(document.getElementById('gApptSvcId')?.value||0);
+  const proId=parseInt(document.getElementById('gApptProId')?.value||0)||null;
+  const start=document.getElementById('gApptStart')?.value;
+  const end=document.getElementById('gApptEnd')?.value;
+  const status=document.getElementById('gApptStatus')?.value||'confirmed';
+  const notes=document.getElementById('gApptNotes')?.value||'';
+  const dur=parseInt(document.getElementById('gApptDur')?.value||0)||null;
+  if (!clientId) return showToast('⚠️ Seleziona un cliente');
+  if (!svcId) return showToast('⚠️ Seleziona un trattamento');
+  if (!start) return showToast('⚠️ Inserisci data/ora inizio');
+  if (!end) return showToast('⚠️ Inserisci data/ora fine');
+  try {
+    await gFetch('db_appointment_save',{method:'POST',body:{id:id||0,client_id:clientId,service_id:svcId,professional_id:proId,start_time:start,end_time:end,status,notes,duration_min:dur}});
+    showToast(id?'✅ Aggiornato':'✅ Creato'); gApptCloseForm(); await gApptLoad();
+  } catch(e) { showToast('⚠️ '+e.message); }
+}
+
+// =========================================================
+// PERSONALE
+// =========================================================
+async function gEnsureCats() { if (!GESTIONE.cats.length) try { const r=await gFetch('db_categories',{method:'GET'}); GESTIONE.cats=r.data||[]; } catch(e){} }
+async function gEnsureSvcs() { if (!GESTIONE.svcs.length) try { const r=await gFetch('db_services',{method:'GET'}); GESTIONE.svcs=r.data||[]; } catch(e){} }
+async function gEnsurePros() { if (!GESTIONE.pros.length) try { const r=await gFetch('db_professionals',{method:'GET'}); GESTIONE.pros=r.data||[]; } catch(e){} }
+
+async function gProLoad() {
+  const listEl=document.getElementById('gProList'); if (!listEl) return;
+  listEl.innerHTML='<div class="card"><div class="skeleton skeleton-kpi"></div></div>';
+  await gEnsureSvcs();
+  try { const r=await gFetch('db_professionals',{method:'GET'}); GESTIONE.pros=r.data||[]; gProRender(); }
+  catch(e) { listEl.innerHTML=`<div class="card"><div class="empty-state"><div class="empty-state-icon">⚠️</div><div class="empty-state-title">${escHtml(e.message)}</div></div></div>`; }
+}
+const WDAY=['','Lun','Mar','Mer','Gio','Ven','Sab','Dom'];
+function gProRender() {
+  const listEl=document.getElementById('gProList'); if (!listEl) return;
+  if (!GESTIONE.pros.length) { listEl.innerHTML=`<div class="card"><div class="empty-state"><div class="empty-state-icon">👩‍🔧</div><div class="empty-state-title">Nessun professionista</div></div></div>`; return; }
+  listEl.innerHTML = GESTIONE.pros.map(p => {
+    const emails=(p.emails||[]).join(', ')||'—';
+    const offDays=(p.off_days||[]).map(d=>WDAY[d]||d).join(', ')||'Nessuno';
+    const svcStr=(p.service_ids||[]).map(sid=>{const s=GESTIONE.svcs.find(x=>x.id===sid);return s?s.service_name:`#${sid}`;}).join(', ')||'Nessuno';
+    const svcShort=svcStr.length>90?svcStr.slice(0,90)+'…':svcStr;
+    return `<div class="card" style="padding:var(--spacing-md);margin-bottom:var(--spacing-sm);">
+      <div style="display:flex;justify-content:space-between;align-items:start;gap:12px;">
+        <div style="flex:1;min-width:0;">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;"><span style="font-size:18px;font-weight:800;">👩‍🔧 ${escHtml(p.full_name)}</span>${gActiveBadge(p.is_active)}</div>
+          <div style="font-size:14px;color:var(--text-secondary);">📧 ${escHtml(emails)}</div>
+          <div style="font-size:14px;color:var(--text-secondary);margin-top:2px;">🚫 Off: ${escHtml(offDays)}</div>
+          <div style="font-size:13px;color:var(--text-tertiary);margin-top:2px;">💅 ${escHtml(svcShort)}</div>
+        </div>
+        <div style="display:flex;gap:8px;flex-shrink:0;">
+          <div class="action-btn-wrap"><button class="btn btn-secondary btn-icon" onclick="gProOpenForm(${p.id})">✏️</button><span class="action-btn-label">Modifica</span></div>
+          <div class="action-btn-wrap"><button class="btn btn-danger btn-icon" onclick="gProDelete(${p.id})">🗑️</button><span class="action-btn-label">Elimina</span></div>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+async function gProOpenForm(id) {
+  await gEnsureSvcs();
+  const pro=id?(GESTIONE.pros.find(p=>p.id===id)||null):null;
+  const modal=document.getElementById('gProModal'),title=document.getElementById('gProModalTitle'),body=document.getElementById('gProModalBody');
+  if (!modal) return;
+  title.textContent=pro?`✏️ ${pro.full_name}`:'Nuovo Professionista';
+  const catMap=new Map();
+  GESTIONE.svcs.forEach(s=>{const c=s.category_name||'Altro';if(!catMap.has(c))catMap.set(c,[]);catMap.get(c).push(s);});
+  const svcChecks=Array.from(catMap.entries()).map(([cat,svcs])=>`<div style="margin-bottom:10px;"><div style="font-size:12px;font-weight:700;color:var(--text-secondary);margin-bottom:6px;text-transform:uppercase;">${escHtml(cat)}</div><div style="display:flex;flex-wrap:wrap;gap:5px;">${svcs.map(s=>`<label style="display:flex;align-items:center;gap:4px;font-size:13px;cursor:pointer;padding:3px 8px;border-radius:8px;background:var(--bg-tertiary);"><input type="checkbox" value="${s.id}" class="gProSvc" ${(pro?.service_ids||[]).includes(s.id)?'checked':''}> ${escHtml(s.service_name)}</label>`).join('')}</div></div>`).join('');
+  const offChecks=[1,2,3,4,5,6,7].map(d=>`<label style="display:flex;align-items:center;gap:5px;cursor:pointer;padding:5px 10px;border-radius:8px;background:var(--bg-tertiary);"><input type="checkbox" value="${d}" class="gProOff" ${(pro?.off_days||[]).includes(d)?'checked':''}> ${WDAY[d]}</label>`).join('');
+  body.innerHTML=`
+    <div class="form-group"><label class="form-label">Nome <span class="required-star">*</span></label><input class="form-input" id="gProName" value="${escHtml(pro?.full_name||'')}"></div>
+    <div class="form-group"><label class="form-label">Stato</label><select class="form-select" id="gProActive"><option value="1" ${!pro||pro.is_active?'selected':''}>Attivo</option><option value="0" ${pro&&!pro.is_active?'selected':''}>Inattivo</option></select></div>
+    <div class="form-group"><label class="form-label">Email (una per riga)</label><textarea class="form-textarea" id="gProEmails" rows="2" placeholder="valentina@salone.it">${escHtml((pro?.emails||[]).join('\n'))}</textarea></div>
+    <div class="form-group"><label class="form-label">Giorni non disponibili</label><div style="display:flex;flex-wrap:wrap;gap:6px;">${offChecks}</div></div>
+    <div class="form-group"><label class="form-label">Trattamenti abilitati</label><div style="max-height:220px;overflow-y:auto;padding:8px;border:1px solid var(--glass-border);border-radius:12px;"><div style="display:flex;gap:6px;margin-bottom:8px;"><button type="button" class="btn btn-secondary" style="font-size:11px;padding:3px 8px;" onclick="document.querySelectorAll('.gProSvc').forEach(x=>x.checked=true)">✅ Tutti</button><button type="button" class="btn btn-secondary" style="font-size:11px;padding:3px 8px;" onclick="document.querySelectorAll('.gProSvc').forEach(x=>x.checked=false)">❌ Nessuno</button></div>${svcChecks}</div></div>
+    <div style="display:flex;gap:12px;justify-content:flex-end;padding-top:8px;"><button class="btn btn-secondary" onclick="gProCloseForm()">Annulla</button><button class="btn btn-primary" onclick="gProSave(${id||0})">💾 Salva</button></div>`;
+  modal.style.display='flex';modal.style.alignItems='center';modal.style.justifyContent='center';modal.classList.add('show');
+}
+function gProCloseForm(){const m=document.getElementById('gProModal');if(m){m.classList.remove('show');m.style.display='none';}}
+async function gProSave(id){
+  const name=document.getElementById('gProName')?.value?.trim()||'';
+  const active=document.getElementById('gProActive')?.value==='1';
+  const emails=(document.getElementById('gProEmails')?.value||'').split(/[\n,;]+/).map(s=>s.trim()).filter(Boolean);
+  const offDays=Array.from(document.querySelectorAll('.gProOff:checked')).map(x=>parseInt(x.value));
+  const svcIds=Array.from(document.querySelectorAll('.gProSvc:checked')).map(x=>parseInt(x.value));
+  if(!name)return showToast('⚠️ Nome obbligatorio');
+  try{await gFetch('db_professional_save',{method:'POST',body:{id:id||0,full_name:name,is_active:active,emails,off_days:offDays,service_ids:svcIds}});showToast(id?'✅ Aggiornato':'✅ Creato');gProCloseForm();GESTIONE.pros=[];await gProLoad();}
+  catch(e){showToast('⚠️ '+e.message);}
+}
+async function gProDelete(id){
+  const pro=GESTIONE.pros.find(p=>p.id===id);
+  const ok=await showConfirm({icon:'🗑️',title:`Eliminare ${pro?.full_name||''}?`,message:'Azione irreversibile.',confirmLabel:'Elimina',confirmClass:'btn-danger',cancelLabel:'Annulla'});
+  if(!ok)return;
+  try{await gFetch('db_professional_delete',{method:'POST',body:{id}});showToast('✅ Eliminato');GESTIONE.pros=[];await gProLoad();}
+  catch(e){showToast('⚠️ '+e.message);}
+}
+
+// =========================================================
+// CATEGORIE
+// =========================================================
+async function gCatLoad(){
+  const listEl=document.getElementById('gCatList');if(!listEl)return;
+  listEl.innerHTML='<div class="card"><div class="skeleton skeleton-kpi"></div></div>';
+  try{const r=await gFetch('db_categories',{method:'GET'});GESTIONE.cats=r.data||[];gCatRender();}
+  catch(e){listEl.innerHTML=`<div class="card"><div class="empty-state"><div class="empty-state-icon">⚠️</div><div class="empty-state-title">${escHtml(e.message)}</div></div></div>`;}
+}
+function gCatRender(){
+  const listEl=document.getElementById('gCatList');if(!listEl)return;
+  if(!GESTIONE.cats.length){listEl.innerHTML=`<div class="card"><div class="empty-state"><div class="empty-state-icon">🗂️</div><div class="empty-state-title">Nessuna categoria</div></div></div>`;return;}
+  listEl.innerHTML=`<div class="card" style="padding:0;overflow:hidden;"><table style="width:100%;border-collapse:collapse;"><thead><tr style="background:var(--bg-tertiary);"><th style="padding:12px 16px;text-align:left;font-size:12px;color:var(--text-secondary);">Categoria</th><th style="padding:12px 16px;text-align:left;font-size:12px;color:var(--text-secondary);">Slug</th><th style="padding:12px 8px;text-align:center;font-size:12px;color:var(--text-secondary);">Ordine</th><th style="padding:12px 8px;text-align:center;font-size:12px;color:var(--text-secondary);">Trattamenti</th><th style="padding:12px 8px;text-align:center;font-size:12px;color:var(--text-secondary);">Stato</th><th style="padding:12px 16px;text-align:right;font-size:12px;color:var(--text-secondary);">Azioni</th></tr></thead><tbody>${GESTIONE.cats.map((c,i)=>`<tr style="border-top:${i?'1px solid var(--glass-border)':'none'};"><td style="padding:12px 16px;font-weight:700;">${escHtml(c.category_name)}</td><td style="padding:12px 16px;font-size:12px;color:var(--text-secondary);font-family:monospace;">${escHtml(c.slug||'—')}</td><td style="padding:12px 8px;text-align:center;">${c.display_order}</td><td style="padding:12px 8px;text-align:center;"><span class="badge">${c.service_count}</span></td><td style="padding:12px 8px;text-align:center;">${gActiveBadge(c.is_active)}</td><td style="padding:12px 16px;text-align:right;"><div style="display:flex;gap:6px;justify-content:flex-end;"><button class="btn btn-secondary btn-icon" onclick="gCatOpenForm(${c.id})" title="Modifica">✏️</button><button class="btn btn-secondary btn-icon" onclick="gCatManageServices(${c.id})" title="Gestisci trattamenti">📋</button><button class="btn btn-danger btn-icon" onclick="gCatDelete(${c.id})" title="Elimina">🗑️</button></div></td></tr>`).join('')}</tbody></table></div>`;
+}
+async function gCatManageServices(catId){
+  const cat=GESTIONE.cats.find(c=>c.id===catId);
+  if(!cat)return;
+  // Load all services if not already loaded
+  if(!GESTIONE.svcs.length){
+    try{const r=await gFetch('db_services',{method:'GET'});GESTIONE.svcs=r.data||[];}
+    catch(e){showToast('⚠️ '+e.message);return;}
+  }
+  const modal=document.getElementById('gCatSvcModal');
+  if(!modal){showToast('⚠️ Modal non trovato');return;}
+  document.getElementById('gCatSvcModalTitle').textContent=`📋 Trattamenti — ${cat.category_name}`;
+  const allSvcs=GESTIONE.svcs;
+  // Group: in this category vs others
+  const inCat=allSvcs.filter(s=>s.category_id===catId);
+  const other=allSvcs.filter(s=>s.category_id!==catId);
+  const otherCats=[...new Map(other.filter(s=>s.category_id).map(s=>[s.category_id,s.category_name])).entries()];
+  const renderSvcRow=(s,checked)=>`<label style="display:flex;align-items:center;gap:10px;padding:8px 4px;cursor:pointer;border-radius:6px;transition:background .15s;" onmouseover="this.style.background='var(--bg-tertiary)'" onmouseout="this.style.background=''"><input type="checkbox" data-svc-id="${s.id}" ${checked?'checked':''} style="width:16px;height:16px;cursor:pointer;accent-color:var(--primary);"><span style="flex:1;">${s.emoji?s.emoji+' ':''}${escHtml(s.service_name)}</span><span style="font-size:11px;color:var(--text-tertiary);">${s.category_name&&s.category_id!==catId?'('+escHtml(s.category_name)+')':''}</span></label>`;
+  document.getElementById('gCatSvcModalBody').innerHTML=`
+    <p style="margin:0 0 12px;font-size:13px;color:var(--text-secondary);">Spunta i trattamenti che devono appartenere a <strong>${escHtml(cat.category_name)}</strong>. I trattamenti tolti verranno spostati in "nessuna categoria".</p>
+    <div style="margin-bottom:10px;"><input class="form-input" placeholder="🔍 Cerca trattamento..." oninput="gCatSvcFilter(this.value)" style="font-size:13px;padding:8px 12px;"></div>
+    <div id="gCatSvcList" style="max-height:360px;overflow-y:auto;display:flex;flex-direction:column;gap:2px;border:1px solid var(--glass-border);border-radius:8px;padding:8px;">
+      ${inCat.length?`<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text-tertiary);padding:4px 4px 8px;">✅ In questa categoria</div>${inCat.map(s=>renderSvcRow(s,true)).join('')}`:''}
+      ${other.length?`<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text-tertiary);padding:${inCat.length?'12px':'4px'} 4px 8px;">🔲 Altri trattamenti</div>${other.map(s=>renderSvcRow(s,false)).join('')}`:''}
+      ${!allSvcs.length?'<div style="text-align:center;color:var(--text-tertiary);padding:20px;">Nessun trattamento trovato</div>':''}
+    </div>
+    <div style="display:flex;gap:12px;justify-content:flex-end;padding-top:16px;">
+      <button class="btn btn-secondary" onclick="gCatSvcCloseModal()">Annulla</button>
+      <button class="btn btn-primary" onclick="gCatSvcSave(${catId})">💾 Salva assegnazioni</button>
+    </div>`;
+  modal.style.display='flex';modal.style.alignItems='center';modal.style.justifyContent='center';modal.classList.add('show');
+}
+function gCatSvcFilter(q){
+  const list=document.getElementById('gCatSvcList');
+  if(!list)return;
+  const term=q.toLowerCase();
+  list.querySelectorAll('label').forEach(el=>{
+    const txt=el.textContent.toLowerCase();
+    el.style.display=(!term||txt.includes(term))?'flex':'none';
+  });
+  // hide section headers if all items hidden
+  list.querySelectorAll('div').forEach(div=>{
+    if(div.id==='gCatSvcList')return;
+    const next=div.nextElementSibling;
+    div.style.display=(next&&next.tagName==='LABEL'&&next.style.display!=='none')||!term?'':'none';
+  });
+}
+function gCatSvcCloseModal(){
+  const m=document.getElementById('gCatSvcModal');
+  if(m){m.classList.remove('show');m.style.display='none';}
+}
+async function gCatSvcSave(catId){
+  const checks=document.querySelectorAll('#gCatSvcList input[type=checkbox]');
+  const toAdd=[],toRemove=[];
+  checks.forEach(cb=>{
+    const id=parseInt(cb.dataset.svcId);
+    const svc=GESTIONE.svcs.find(s=>s.id===id);
+    if(cb.checked&&svc&&svc.category_id!==catId)toAdd.push(id);
+    if(!cb.checked&&svc&&svc.category_id===catId)toRemove.push(id);
+  });
+  const tasks=[];
+  if(toAdd.length)tasks.push(gFetch('db_category_services_update',{method:'POST',body:{category_id:catId,service_ids:toAdd}}));
+  if(toRemove.length)tasks.push(gFetch('db_category_services_update',{method:'POST',body:{category_id:null,service_ids:toRemove}}));
+  if(!tasks.length){gCatSvcCloseModal();return;}
+  try{
+    await Promise.all(tasks);
+    showToast(`✅ Assegnazioni aggiornate`);
+    gCatSvcCloseModal();
+    GESTIONE.cats=[];GESTIONE.svcs=[];
+    await Promise.all([gCatLoad(),gSvcLoad?gSvcLoad():Promise.resolve()]);
+  }catch(e){showToast('⚠️ '+e.message);}
+}
+}
+function gCatOpenForm(id){
+  const cat=id?(GESTIONE.cats.find(c=>c.id===id)||null):null;
+  const modal=document.getElementById('gCatModal'),title=document.getElementById('gCatModalTitle'),body=document.getElementById('gCatModalBody');
+  if(!modal)return;
+  title.textContent=cat?`✏️ ${cat.category_name}`:'Nuova Categoria';
+  body.innerHTML=`
+    <div class="form-group"><label class="form-label">Nome <span class="required-star">*</span></label><input class="form-input" id="gCatName" value="${escHtml(cat?.category_name||'')}" oninput="gCatAutoSlug()"></div>
+    <div class="form-group"><label class="form-label">Slug</label><input class="form-input" id="gCatSlug" value="${escHtml(cat?.slug||'')}"><span class="form-hint">Lascia vuoto per generazione automatica</span></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+      <div class="form-group"><label class="form-label">Ordine</label><input type="number" class="form-input" id="gCatOrder" value="${cat?.display_order??1000}" min="0"></div>
+      <div class="form-group"><label class="form-label">Stato</label><select class="form-select" id="gCatActive"><option value="1" ${!cat||cat.is_active?'selected':''}>Attiva</option><option value="0" ${cat&&!cat.is_active?'selected':''}>Inattiva</option></select></div>
+    </div>
+    <div style="display:flex;gap:12px;justify-content:flex-end;padding-top:8px;"><button class="btn btn-secondary" onclick="gCatCloseForm()">Annulla</button><button class="btn btn-primary" onclick="gCatSave(${id||0})">💾 Salva</button></div>`;
+  modal.style.display='flex';modal.style.alignItems='center';modal.style.justifyContent='center';modal.classList.add('show');
+}
+function gCatAutoSlug(){const n=document.getElementById('gCatName'),s=document.getElementById('gCatSlug');if(n&&s)s.value=n.value.toLowerCase().replace(/[àáâ]/g,'a').replace(/[èéê]/g,'e').replace(/[ìíî]/g,'i').replace(/[òóô]/g,'o').replace(/[ùúû]/g,'u').replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'');}
+function gCatCloseForm(){const m=document.getElementById('gCatModal');if(m){m.classList.remove('show');m.style.display='none';}}
+async function gCatSave(id){
+  const name=document.getElementById('gCatName')?.value?.trim()||'';
+  const slug=document.getElementById('gCatSlug')?.value?.trim()||'';
+  const order=parseInt(document.getElementById('gCatOrder')?.value||1000);
+  const active=document.getElementById('gCatActive')?.value==='1';
+  if(!name)return showToast('⚠️ Nome obbligatorio');
+  try{await gFetch('db_category_save',{method:'POST',body:{id:id||0,category_name:name,slug,display_order:order,is_active:active}});showToast(id?'✅ Aggiornata':'✅ Creata');gCatCloseForm();GESTIONE.cats=[];await gCatLoad();}
+  catch(e){showToast('⚠️ '+e.message);}
+}
+async function gCatDelete(id){
+  const cat=GESTIONE.cats.find(c=>c.id===id);
+  if((cat?.service_count||0)>0)return showToast(`⚠️ Categoria ha ${cat.service_count} trattamenti attivi`);
+  const ok=await showConfirm({icon:'🗑️',title:`Eliminare "${cat?.category_name}"?`,message:'Azione irreversibile.',confirmLabel:'Elimina',confirmClass:'btn-danger',cancelLabel:'Annulla'});
+  if(!ok)return;
+  try{await gFetch('db_category_delete',{method:'POST',body:{id}});showToast('✅ Eliminata');GESTIONE.cats=[];await gCatLoad();}
+  catch(e){showToast('⚠️ '+e.message);}
+}
+
+// =========================================================
+// TRATTAMENTI
+// =========================================================
+async function gSvcLoad(){
+  const listEl=document.getElementById('gSvcList');if(!listEl)return;
+  listEl.innerHTML='<div class="card"><div class="skeleton skeleton-kpi"></div></div>';
+  await gEnsureCats();
+  try{
+    const r=await gFetch('db_services',{method:'GET'});GESTIONE.svcs=r.data||[];
+    const catSel=document.getElementById('gSvcCatFilter');
+    if(catSel){catSel.querySelectorAll('option:not([value=""])').forEach(o=>o.remove());const uniq=[...new Map(GESTIONE.svcs.filter(s=>s.category_id).map(s=>[s.category_id,s])).values()];uniq.sort((a,b)=>a.category_name.localeCompare(b.category_name,'it'));uniq.forEach(s=>{const o=document.createElement('option');o.value=s.category_id;o.textContent=s.category_name;catSel.appendChild(o);});}
+    gSvcRender();
+  }catch(e){listEl.innerHTML=`<div class="card"><div class="empty-state"><div class="empty-state-icon">⚠️</div><div class="empty-state-title">${escHtml(e.message)}</div></div></div>`;}
+}
+function gSvcRender(){
+  const listEl=document.getElementById('gSvcList');if(!listEl)return;
+  const q=(document.getElementById('gSvcSearch')?.value||'').toLowerCase().trim();
+  const cf=document.getElementById('gSvcCatFilter')?.value||'';
+  const af=document.getElementById('gSvcActiveFilter')?.value||'';
+  let svcs=GESTIONE.svcs;
+  if(q)svcs=svcs.filter(s=>s.service_name.toLowerCase().includes(q)||(s.synonyms||[]).join(' ').toLowerCase().includes(q));
+  if(cf)svcs=svcs.filter(s=>String(s.category_id||'')===cf);
+  if(af!=='')svcs=svcs.filter(s=>af==='1'?s.is_active:!s.is_active);
+  if(!svcs.length){listEl.innerHTML=`<div class="card"><div class="empty-state"><div class="empty-state-icon">💅</div><div class="empty-state-title">Nessun trattamento trovato</div></div></div>`;return;}
+  const catMap=new Map();svcs.forEach(s=>{const c=s.category_name||'Altro';if(!catMap.has(c))catMap.set(c,[]);catMap.get(c).push(s);});
+  listEl.innerHTML=Array.from(catMap.entries()).map(([cat,list])=>`<div class="card" style="margin-bottom:var(--spacing-md);padding:0;overflow:hidden;"><div style="padding:12px 16px;background:var(--bg-tertiary);font-weight:800;font-size:15px;">🗂️ ${escHtml(cat)} <span style="color:var(--text-tertiary);font-weight:600;">(${list.length})</span></div><table style="width:100%;border-collapse:collapse;"><thead><tr style="background:var(--bg-tertiary);border-top:1px solid var(--glass-border);"><th style="padding:10px 16px;text-align:left;font-size:12px;color:var(--text-secondary);">Trattamento</th><th style="padding:10px 8px;text-align:center;font-size:12px;color:var(--text-secondary);">Durata</th><th style="padding:10px 8px;text-align:center;font-size:12px;color:var(--text-secondary);">Prezzo</th><th style="padding:10px 8px;text-align:center;font-size:12px;color:var(--text-secondary);">Prof.</th><th style="padding:10px 8px;text-align:center;font-size:12px;color:var(--text-secondary);">Stato</th><th style="padding:10px 16px;text-align:right;font-size:12px;color:var(--text-secondary);">Azioni</th></tr></thead><tbody>${list.map((s,i)=>`<tr style="border-top:1px solid var(--glass-border);${!s.is_active?'opacity:.65;':''}"><td style="padding:10px 16px;"><span style="font-weight:700;">${s.emoji?s.emoji+' ':''}${escHtml(s.service_name)}</span>${s.synonyms?.length?`<div style="font-size:11px;color:var(--text-tertiary);margin-top:1px;">Sinonimi: ${escHtml(s.synonyms.join(', '))}</div>`:''}</td><td style="padding:10px 8px;text-align:center;">${s.default_duration_min}min</td><td style="padding:10px 8px;text-align:center;">${s.base_price!=null?'€'+Number(s.base_price).toFixed(2):'—'}</td><td style="padding:10px 8px;text-align:center;"><span class="badge">${s.pro_count}</span></td><td style="padding:10px 8px;text-align:center;">${gActiveBadge(s.is_active)}</td><td style="padding:10px 16px;text-align:right;"><div style="display:flex;gap:6px;justify-content:flex-end;"><button class="btn btn-secondary btn-icon" onclick="gSvcOpenForm(${s.id})">✏️</button><button class="btn btn-danger btn-icon" onclick="gSvcDelete(${s.id})">🗑️</button></div></td></tr>`).join('')}</tbody></table></div>`).join('');
+}
+async function gSvcOpenForm(id){
+  await gEnsureCats();
+  const svc=id?(GESTIONE.svcs.find(s=>s.id===id)||null):null;
+  const modal=document.getElementById('gSvcModal'),title=document.getElementById('gSvcModalTitle'),body=document.getElementById('gSvcModalBody');
+  if(!modal)return;
+  title.textContent=svc?`✏️ ${svc.service_name}`:'Nuovo Trattamento';
+  const catOpts=`<option value="">— nessuna —</option>`+GESTIONE.cats.map(c=>`<option value="${c.id}" ${svc?.category_id===c.id?'selected':''}>${escHtml(c.category_name)}</option>`).join('');
+  body.innerHTML=`
+    <div class="form-group"><label class="form-label">Nome <span class="required-star">*</span></label><input class="form-input" id="gSvcName" value="${escHtml(svc?.service_name||'')}"></div>
+    <div class="form-group"><label class="form-label">Categoria</label><select class="form-select" id="gSvcCatId">${catOpts}</select></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;">
+      <div class="form-group"><label class="form-label">Durata (min) <span class="required-star">*</span></label><input type="number" class="form-input" id="gSvcDur" value="${svc?.default_duration_min||30}" min="1"></div>
+      <div class="form-group"><label class="form-label">Prezzo (€)</label><input type="number" class="form-input" id="gSvcPrice" value="${svc?.base_price!=null?svc.base_price:''}" step="0.01" min="0" placeholder="0.00"></div>
+      <div class="form-group"><label class="form-label">Costo mat. (€)</label><input type="number" class="form-input" id="gSvcMatCost" value="${svc?.materials_cost!=null?svc.materials_cost:''}" step="0.01" min="0" placeholder="0.00"></div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;">
+      <div class="form-group"><label class="form-label">Emoji</label><input class="form-input" id="gSvcEmoji" value="${escHtml(svc?.emoji||'')}" placeholder="💅" style="font-size:20px;"></div>
+      <div class="form-group"><label class="form-label">Ordine</label><input type="number" class="form-input" id="gSvcOrder" value="${svc?.display_order??1000}" min="0"></div>
+      <div class="form-group"><label class="form-label">Stato</label><select class="form-select" id="gSvcActive"><option value="1" ${!svc||svc.is_active?'selected':''}>Attivo</option><option value="0" ${svc&&!svc.is_active?'selected':''}>Inattivo</option></select></div>
+    </div>
+    <div class="form-group"><label class="form-label">Sinonimi (uno per riga — usati dal bot)</label><textarea class="form-textarea" id="gSvcSynonyms" rows="3" placeholder="pulizia del viso&#10;facial&#10;viso">${escHtml((svc?.synonyms||[]).join('\n'))}</textarea></div>
+    <div style="display:flex;gap:12px;justify-content:flex-end;padding-top:8px;"><button class="btn btn-secondary" onclick="gSvcCloseForm()">Annulla</button><button class="btn btn-primary" onclick="gSvcSave(${id||0})">💾 Salva</button></div>`;
+  modal.style.display='flex';modal.style.alignItems='center';modal.style.justifyContent='center';modal.classList.add('show');
+}
+function gSvcCloseForm(){const m=document.getElementById('gSvcModal');if(m){m.classList.remove('show');m.style.display='none';}}
+async function gSvcSave(id){
+  const name=document.getElementById('gSvcName')?.value?.trim()||'';
+  const catId=parseInt(document.getElementById('gSvcCatId')?.value||0)||null;
+  const dur=parseInt(document.getElementById('gSvcDur')?.value||30);
+  const pr=document.getElementById('gSvcPrice')?.value?.trim();const price=pr!==''&&pr!=null?parseFloat(pr):null;
+  const mc=document.getElementById('gSvcMatCost')?.value?.trim();const matcost=mc!==''&&mc!=null?parseFloat(mc):null;
+  const emoji=document.getElementById('gSvcEmoji')?.value?.trim()||'';
+  const order=parseInt(document.getElementById('gSvcOrder')?.value||1000);
+  const active=document.getElementById('gSvcActive')?.value==='1';
+  const syns=(document.getElementById('gSvcSynonyms')?.value||'').split('\n').map(s=>s.trim()).filter(Boolean);
+  if(!name)return showToast('⚠️ Nome obbligatorio');if(!dur||dur<1)return showToast('⚠️ Durata non valida');
+  try{await gFetch('db_service_save',{method:'POST',body:{id:id||0,service_name:name,category_id:catId,default_duration_min:dur,base_price:price,materials_cost:matcost,emoji,display_order:order,is_active:active,synonyms:syns}});showToast(id?'✅ Aggiornato':'✅ Creato');gSvcCloseForm();GESTIONE.svcs=[];await gSvcLoad();}
+  catch(e){showToast('⚠️ '+e.message);}
+}
+async function gSvcDelete(id){
+  const svc=GESTIONE.svcs.find(s=>s.id===id);
+  const ok=await showConfirm({icon:'🗑️',title:`Eliminare "${svc?.service_name}"?`,message:'Azione irreversibile.',confirmLabel:'Elimina',confirmClass:'btn-danger',cancelLabel:'Annulla'});
+  if(!ok)return;
+  try{await gFetch('db_service_delete',{method:'POST',body:{id}});showToast('✅ Eliminato');GESTIONE.svcs=[];await gSvcLoad();}
+  catch(e){showToast('⚠️ '+e.message);}
+}
+
+// ---- Patch showSection to auto-load on first visit ----
+(function(){
+  const _orig=window.showSection;
+  window.showSection=function(name,el){
+    if(typeof _orig==='function')_orig.call(this,name,el);
+    if(name==='gestione-appuntamenti'&&!GESTIONE.appts.length)gApptLoad();
+    if(name==='gestione-personale'&&!GESTIONE.pros.length)gProLoad();
+    if(name==='gestione-categorie'){if(GESTIONE.cats.length)gCatRender();else gCatLoad();}
+    if(name==='gestione-trattamenti'&&!GESTIONE.svcs.length)gSvcLoad();
+  };
+})();
+</script>
+
+
+  <!-- WhatsApp Composer Modal -->
+  <div id="waComposerModal" class="modal">
+    <div class="modal-content" style="max-width: 780px;">
+      <div class="modal-header">
+        <h2>💬 Messaggio WhatsApp</h2>
+        <span class="close" onclick="closeWaComposer()">&times;</span>
+      </div>
+
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label">Destinatario</label>
+          <input type="text" class="form-input" id="waTo" placeholder="+39 366... oppure 39366...@c.us">
+          <div class="hint" id="waToHint"></div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Template</label>
+          <select class="form-select" id="waTplSelect" onchange="waFillFromTemplate()"></select>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Messaggio</label>
+          <textarea class="form-textarea" id="waMsg" style="min-height: 170px;" placeholder="Scrivi..."></textarea>
+        </div>
+
+        <details class="wa-media" style="margin-top: 8px;">
+          <summary style="cursor:pointer; font-weight:700;">📎 Media / File (opzionale)</summary>
+
+          <div class="form-group" style="margin-top:10px;">
+            <label class="form-label">URL immagine / PDF (oppure base64 se il server lo supporta)</label>
+            <input type="text" class="form-input mono" id="waMediaUrl" placeholder="https://...">
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">Nome file (solo per file)</label>
+            <input type="text" class="form-input" id="waMediaName" placeholder="promo.pdf">
+          </div>
+
+          <div class="hint">Per inviare media serve un endpoint lato server (es. /api/sendMedia o /api/sendFile). Se non c'è, invia solo testo.</div>
+        </details>
+
+        <div class="wa-console-response mono" id="waComposerResp" style="margin-top:12px; display:none;">—</div>
+      </div>
+
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="closeWaComposer()">Annulla</button>
+        <button class="btn btn-primary" onclick="waSendFromComposer()">🚀 Invia</button>
+      </div>
+    </div>
+  </div>
+
+
+</body>
+</html>

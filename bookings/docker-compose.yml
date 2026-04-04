@@ -1,0 +1,23 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: synkris-postgres
+    environment:
+      POSTGRES_USER: synkris
+      POSTGRES_PASSWORD: CambiaQuestaPassword
+      POSTGRES_DB: synkris
+    ports:
+      - "5432:5432"
+    volumes:
+      - synkris_pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  adminer:
+    image: adminer:latest
+    container_name: synkris-adminer
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+
+volumes:
+  synkris_pgdata:

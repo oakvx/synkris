@@ -25,9 +25,10 @@ export const getPublicKeyPem  = verifier.getPublicKeyPem;
 const DEFAULT_DATA_DIR = path.join(
   process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'),
   'whatsapp-ai',
-  'configs & dashboard'
+  'configs & dashboard',
+  'licenses'
 );
-export const DATA_DIR = process.env.APP_DATA_DIR ? path.normalize(process.env.APP_DATA_DIR) : DEFAULT_DATA_DIR;
+export const DATA_DIR = DEFAULT_DATA_DIR;
 try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch {}
 
 // === HWID come nel generator ===
