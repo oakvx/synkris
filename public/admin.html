@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8">
+  <title>Gestione</title>
+  <style>
+    body { font-family: sans-serif; margin: 20px; }
+    .tabs button { margin-right: 10px; }
+    .section { display: none; margin-top: 20px; }
+    .section.active { display: block; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border: 1px solid #ddd; padding: 8px; }
+  </style>
+</head>
+<body>
+  <h1>Admin – Bot Spa</h1>
+  <div class="tabs">
+    <button data-tab="servizi">Servizi</button>
+    <button data-tab="orari">Orari</button>
+    <button data-tab="intents">Intents</button>
+  </div>
+
+  <div id="servizi" class="section">
+    <h2>Servizi / Trattamenti</h2>
+    <table id="tbl-servizi">
+      <thead><tr><th>Nome</th><th>Durata</th><th>Prezzo</th><th>Professionisti</th><th>Azioni</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <button id="btn-add-servizio">Aggiungi Servizio</button>
+  </div>
+
+  <div id="orari" class="section">
+    <h2>Orari di apertura</h2>
+    <table id="tbl-orari">
+      <thead><tr><th>Giorno (0=Dom…6=Sab)</th><th>Mattina</th><th>Pomeriggio</th><th>Azioni</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <button id="btn-add-orario">Aggiungi</button>
+  </div>
+
+  <div id="intents" class="section">
+    <h2>Intent & Pattern</h2>
+    <table id="tbl-intents">
+      <thead><tr><th>Intent</th><th>Pattern</th><th>Risposta</th><th>Azioni</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <button id="btn-add-intent">Aggiungi Intent</button>
+  </div>
+
+  <script src="admin.js"></script>
+</body>
+</html>
