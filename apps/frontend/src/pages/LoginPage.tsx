@@ -1,12 +1,12 @@
 import { useMemo, useState } from "react";
 import { Navigate, useNavigate, useSearchParams } from "react-router-dom";
 
-import { useAuth } from "../auth/AuthContext";
-import { apiClient } from "../lib/api";
+import { useAuth } from "../auth/useAuth";
+import { apiClient, getErrorMessage } from "../lib/api";
 
 export function LoginPage() {
   const navigate = useNavigate();
-  const { login, register, token } = useAuth();
+  const { isLoading, login, register, token } = useAuth();
   const [searchParams] = useSearchParams();
   const initialResetToken = useMemo(() => searchParams.get("resetToken") ?? "", [searchParams]);
   const [mode, setMode] = useState<"login" | "register" | "recover">("login");
@@ -21,6 +21,10 @@ export function LoginPage() {
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  if (isLoading) {
+    return <div className="empty-state">Sto verificando la tua sessione...</div>;
+  }
 
   if (token) {
     return <Navigate to="/" replace />;
@@ -40,7 +44,7 @@ export function LoginPage() {
       }
       navigate("/", { replace: true });
     } catch (submissionError) {
-      setError(submissionError instanceof Error ? submissionError.message : "Operazione non riuscita.");
+      setError(getErrorMessage(submissionError, "Operazione non riuscita."));
     } finally {
       setIsSubmitting(false);
     }
@@ -63,7 +67,7 @@ export function LoginPage() {
         setResetToken(result.previewToken);
       }
     } catch (submissionError) {
-      setError(submissionError instanceof Error ? submissionError.message : "Operazione non riuscita.");
+      setError(getErrorMessage(submissionError, "Operazione non riuscita."));
     } finally {
       setIsSubmitting(false);
     }
@@ -82,7 +86,7 @@ export function LoginPage() {
       setPassword("");
       setNewPassword("");
     } catch (submissionError) {
-      setError(submissionError instanceof Error ? submissionError.message : "Reset password non riuscito.");
+      setError(getErrorMessage(submissionError, "Reset password non riuscito."));
     } finally {
       setIsSubmitting(false);
     }

@@ -83,10 +83,10 @@ if errorlevel 1 (
   exit /b 1
 )
 
-echo [INFO] Apro una nuova finestra con frontend + API + bot worker...
-start "Synkris Local Dev" cmd /k "cd /d ""%ROOT_DIR%"" && set DATABASE_URL=%LOCAL_DATABASE_URL%&& set API_PORT=4000&& set BOT_WORKER_PORT=4001&& set BOT_WORKER_BASE_URL=http://localhost:4001&& set VITE_API_BASE_URL=%LOCAL_API_URL%&& set FRONTEND_BASE_PATH=/&& set APP_BASE_URL=%LOCAL_APP_BASE_URL%&& set ALLOWED_ORIGINS=%LOCAL_ALLOWED_ORIGINS%&& set BOT_PROVIDER=open-wa&& set BOT_HEADLESS=false&& npm run dev"
-echo [INFO] Apro una seconda finestra con npm start...
-start "Synkris Legacy Start" cmd /k "cd /d ""%ROOT_DIR%"" && set DATABASE_URL=%LOCAL_DATABASE_URL%&& set API_PORT=4000&& set BOT_WORKER_PORT=4001&& set BOT_WORKER_BASE_URL=http://localhost:4001&& set APP_BASE_URL=%LOCAL_APP_BASE_URL%&& set ALLOWED_ORIGINS=%LOCAL_ALLOWED_ORIGINS%&& npm start"
+echo [INFO] Apro una nuova finestra con frontend + API...
+start "Synkris Portal Dev" cmd /k "cd /d ""%ROOT_DIR%"" && set DATABASE_URL=%LOCAL_DATABASE_URL%&& set API_PORT=4000&& set BOT_WORKER_PORT=4001&& set BOT_WORKER_BASE_URL=http://localhost:4001&& set VITE_API_BASE_URL=%LOCAL_API_URL%&& set FRONTEND_BASE_PATH=/&& set APP_BASE_URL=%LOCAL_APP_BASE_URL%&& set ALLOWED_ORIGINS=%LOCAL_ALLOWED_ORIGINS%&& set BOT_PROVIDER=open-wa&& set BOT_HEADLESS=false&& npm run dev:portal"
+echo [INFO] Apro una seconda finestra con il bot worker stabile...
+start "Synkris Bot Worker" cmd /k "cd /d ""%ROOT_DIR%"" && set DATABASE_URL=%LOCAL_DATABASE_URL%&& set API_PORT=4000&& set BOT_WORKER_PORT=4001&& set BOT_WORKER_BASE_URL=http://localhost:4001&& set APP_BASE_URL=%LOCAL_APP_BASE_URL%&& set ALLOWED_ORIGINS=%LOCAL_ALLOWED_ORIGINS%&& set BOT_PROVIDER=open-wa&& set BOT_HEADLESS=false&& set BOT_SESSION_DIR=%ROOT_DIR%\bot-sessions&& npm run build -w @whatsapp-ai/shared&& npm run build -w @whatsapp-ai/bot-worker&& node apps/bot-worker/dist/server.js"
 
 echo.
 echo Ambiente locale avviato.
@@ -97,8 +97,8 @@ echo - API:      %LOCAL_API_URL%
 echo - Worker:   http://localhost:4001
 echo - Postgres: 127.0.0.1:5433
 echo.
-echo La finestra "Synkris Local Dev" contiene i log di frontend, API e bot worker.
-echo La finestra "Synkris Legacy Start" esegue npm start.
+echo La finestra "Synkris Portal Dev" contiene i log di frontend e API.
+echo La finestra "Synkris Bot Worker" compila il worker e poi avvia node apps/bot-worker/dist/server.js.
 echo Se vuoi fermare il database, usa: docker compose stop postgres
 echo.
 exit /b 0

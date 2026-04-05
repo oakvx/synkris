@@ -1,13 +1,23 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
+import { isSystemAdminRole } from "@whatsapp-ai/shared";
 
+import { env } from "../config/env.js";
 import { HttpError } from "../lib/errors.js";
 import { prisma } from "../lib/prisma.js";
 
 type PrismaModelField = (typeof Prisma.dmmf.datamodel.models)[number]["fields"][number];
 type PrismaModel = (typeof Prisma.dmmf.datamodel.models)[number];
 type BotRow = Record<string, unknown>;
+type SqlStatementType = "select" | "show" | "explain" | "insert" | "update" | "delete" | "truncate";
 
 const hiddenModels = new Set(["User", "UserSettings", "PasswordResetToken"]);
+const readStatementTypes = new Set<SqlStatementType>(["select", "show", "explain"]);
+const writeStatementTypes = new Set<SqlStatementType>(["insert", "update", "delete", "truncate"]);
+const maxSqlRows = 200;
+const sensitiveFieldPattern =
+  /(password|passwd|pwd|secret|token|hash|email|mail|phone|telefono|mobile|cell|whatsapp|session|cookie|authorization|credential|api[_-]?key|access[_-]?key|private[_-]?key|path|dir|directory|folder|file|filepath|location)/i;
+const pathLikeValuePattern =
+  /^(?:[a-z]:[\\/]|\\\\|\/(?:users|home|var|srv|opt|tmp|etc|root|app|workspace|data)\b)/i;
 
 const editableModels = Prisma.dmmf.datamodel.models.filter((model) => !hiddenModels.has(model.name));
 const editableModelMap = new Map(editableModels.map((model) => [model.name.toLowerCase(), model]));
@@ -288,7 +298,193 @@ function modelOrThrow(modelName: string): PrismaModel {
   return model;
 }
 
+function parseSqlStatement(sql: string): { sql: string; statementType: SqlStatementType } {
+  const normalizedSql = sql.trim().replace(/;+$/, "").trim();
+  if (!normalizedSql) {
+    throw new HttpError(400, "Inserisci una query SQL valida.", { code: "SQL_EMPTY" });
+  }
+
+  if (normalizedSql.includes(";")) {
+    throw new HttpError(400, "E' consentita una sola query SQL per volta.", {
+      code: "SQL_MULTI_STATEMENT",
+    });
+  }
+
+  const match = normalizedSql.match(/^\s*([a-z]+)/i);
+  const statementType = match?.[1]?.toLowerCase() as SqlStatementType | undefined;
+  if (!statementType || (!readStatementTypes.has(statementType) && !writeStatementTypes.has(statementType))) {
+    throw new HttpError(400, "Sono consentite solo query SELECT, SHOW, EXPLAIN, INSERT, UPDATE, DELETE o TRUNCATE.", {
+      code: "SQL_STATEMENT_NOT_ALLOWED",
+    });
+  }
+
+  return { sql: normalizedSql, statementType };
+}
+
+function isPathLikeString(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return false;
+  }
+
+  if (pathLikeValuePattern.test(trimmed)) {
+    return true;
+  }
+
+  const slashCount = (trimmed.match(/[\\/]/g) ?? []).length;
+  return slashCount >= 3 && !/^https?:\/\//i.test(trimmed);
+}
+
+function maskEmail(value: string) {
+  const [local, domain] = value.split("@");
+  if (!domain) {
+    return "[dato occultato]";
+  }
+
+  const safeLocal = local.length <= 2 ? `${local.charAt(0)}***` : `${local.slice(0, 2)}***`;
+  return `${safeLocal}@${domain}`;
+}
+
+function maskPhone(value: string) {
+  const digits = value.replace(/\D/g, "");
+  if (digits.length < 6) {
+    return "[numero occultato]";
+  }
+
+  return `${digits.slice(0, 2)}***${digits.slice(-2)}`;
+}
+
+function truncateString(value: string, max = 180) {
+  if (value.length <= max) {
+    return value;
+  }
+
+  return `${value.slice(0, max)}...`;
+}
+
+function shouldRedactByFieldName(key: string) {
+  return sensitiveFieldPattern.test(key);
+}
+
+function redactStringValue(key: string, value: string) {
+  const normalizedKey = key.toLowerCase();
+  if (isPathLikeString(value) || /(path|dir|directory|folder|file|filepath|location)/i.test(normalizedKey)) {
+    return "[percorso occultato]";
+  }
+
+  if (value.includes("@") || /(email|mail)/i.test(normalizedKey)) {
+    return maskEmail(value);
+  }
+
+  if (/(phone|telefono|mobile|cell|whatsapp)/i.test(normalizedKey) || /^\+?[0-9\s().-]{7,}$/.test(value)) {
+    return maskPhone(value);
+  }
+
+  if (shouldRedactByFieldName(key)) {
+    return "[dato sensibile occultato]";
+  }
+
+  return truncateString(value);
+}
+
+function redactValue(key: string, value: unknown): unknown {
+  if (value === null || value === undefined) {
+    return value;
+  }
+
+  if (typeof value === "string") {
+    return redactStringValue(key, value);
+  }
+
+  if (typeof value === "bigint") {
+    return value.toString();
+  }
+
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((entry) => redactValue(key, entry));
+  }
+
+  if (typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([childKey, childValue]) => [
+        childKey,
+        redactValue(childKey, childValue),
+      ]),
+    );
+  }
+
+  return value;
+}
+
+function redactSqlRows(rows: BotRow[]) {
+  const redactedColumns = new Set<string>();
+  const redactedRows = rows.map((row) =>
+    Object.fromEntries(
+      Object.entries(row).map(([key, value]) => {
+        const serializedValue = serializeValue(value);
+        const nextValue = redactValue(key, serializedValue);
+        if (JSON.stringify(nextValue) !== JSON.stringify(serializedValue)) {
+          redactedColumns.add(key);
+        }
+        return [key, nextValue];
+      }),
+    ),
+  );
+
+  return {
+    redactedColumns: [...redactedColumns].sort(),
+    rows: redactedRows,
+  };
+}
+
+function redactBotDataRows(rows: BotRow[]) {
+  return redactSqlRows(rows);
+}
+
+function preserveSensitiveColumnsForNonAdmin(
+  model: PrismaModel,
+  currentRows: BotRow[],
+  incomingRows: BotRow[],
+  role: string | null | undefined,
+) {
+  if (isSystemAdminRole(role)) {
+    return incomingRows;
+  }
+
+  const sensitiveFields = scalarFieldsFor(model).filter((field) => sensitiveFieldPattern.test(field.name));
+  if (sensitiveFields.length === 0) {
+    return incomingRows;
+  }
+
+  const currentMap = new Map(currentRows.map((row) => [hasCompleteKey(model, row) ? keyForRow(model, row) : "", row]));
+
+  return incomingRows.map((row) => {
+    const nextRow = { ...row };
+    const currentRow = hasCompleteKey(model, row) ? currentMap.get(keyForRow(model, row)) : undefined;
+
+    for (const field of sensitiveFields) {
+      if (currentRow && field.name in currentRow) {
+        nextRow[field.name] = currentRow[field.name];
+        continue;
+      }
+
+      delete nextRow[field.name];
+    }
+
+    return nextRow;
+  });
+}
+
 export class BotDataRepository {
+  private async fetchRawRows(model: PrismaModel) {
+    const delegate = delegateFor(prisma, model);
+    return delegate.findMany({ select: selectFor(model) });
+  }
+
   listModels() {
     return editableModels.map((model) => ({
       dbName: model.dbName,
@@ -310,23 +506,32 @@ export class BotDataRepository {
     }));
   }
 
-  async getRows(modelName: string) {
+  async getRows(modelName: string, options: { role?: string | null } = {}) {
     const model = modelOrThrow(modelName);
-    const delegate = delegateFor(prisma, model);
-    const rows = await delegate.findMany({ select: selectFor(model) });
+    const rows = await this.fetchRawRows(model);
+    const serializedRows = rows.map((row) =>
+      Object.fromEntries(Object.entries(row).map(([key, value]) => [key, serializeValue(value)])),
+    );
+    const canViewSensitive = isSystemAdminRole(options.role);
+    const redacted = canViewSensitive ? { redactedColumns: [], rows: serializedRows } : redactBotDataRows(serializedRows);
 
     return {
       model: model.name,
+      redactedColumns: redacted.redactedColumns,
       rowCount: rows.length,
-      rows: rows.map((row) =>
-        Object.fromEntries(Object.entries(row).map(([key, value]) => [key, serializeValue(value)])),
-      ),
+      rows: redacted.rows,
     };
   }
 
-  async replaceRows(modelName: string, rows: BotRow[]) {
+  async replaceRows(modelName: string, rows: BotRow[], options: { role?: string | null } = {}) {
     const model = modelOrThrow(modelName);
-    const current = await this.getRows(model.name);
+    const currentRows = await this.fetchRawRows(model);
+    const current = {
+      rows: currentRows.map((row) =>
+        Object.fromEntries(Object.entries(row).map(([key, value]) => [key, serializeValue(value)])),
+      ),
+    };
+    const normalizedRows = preserveSensitiveColumnsForNonAdmin(model, current.rows, rows, options.role);
     const existingMap = new Map(current.rows.map((row) => [keyForRow(model, row), row]));
     const incomingKeys = new Set<string>();
     const rowsToCreate: BotRow[] = [];
@@ -334,7 +539,7 @@ export class BotDataRepository {
     await prisma.$transaction(async (transaction) => {
       const delegate = delegateFor(transaction, model);
 
-      for (const row of rows) {
+      for (const row of normalizedRows) {
         if (!hasCompleteKey(model, row)) {
           validateRowCanBeCreated(model, row);
           rowsToCreate.push(row);
@@ -377,6 +582,85 @@ export class BotDataRepository {
       }
     });
 
-    return this.getRows(model.name);
+    return this.getRows(model.name, options);
+  }
+
+  async executeSql(input: { sql: string; allowWrite: boolean; role?: string | null }) {
+    if (!env.enableBotSqlConsole) {
+      throw new HttpError(403, "La console SQL e' disabilitata in questo ambiente.", {
+        code: "SQL_CONSOLE_DISABLED",
+      });
+    }
+
+    const parsed = parseSqlStatement(input.sql);
+    const { sql, statementType } = parsed;
+    const isWrite = writeStatementTypes.has(statementType);
+
+    if (isWrite && !isSystemAdminRole(input.role)) {
+      throw new HttpError(403, "Le query SQL di scrittura sono riservate al system admin.", {
+        code: "SQL_WRITE_ADMIN_ONLY",
+      });
+    }
+
+    if (isWrite && !input.allowWrite) {
+      throw new HttpError(400, "Questa query modifica i dati. Attiva esplicitamente la modalita scrittura per eseguirla.", {
+        code: "SQL_WRITE_DISABLED",
+      });
+    }
+
+    if (isWrite && /\breturning\b/i.test(sql)) {
+      const rows = await prisma.$queryRawUnsafe<BotRow[]>(sql);
+      const serializedRows = rows.map((row) =>
+        Object.fromEntries(Object.entries(row).map(([key, value]) => [key, serializeValue(value)])),
+      );
+      const redacted = redactSqlRows(serializedRows);
+      const limitedRows = redacted.rows.slice(0, maxSqlRows);
+
+      return {
+        affectedRows: redacted.rows.length,
+        columns: limitedRows.length > 0 ? Object.keys(limitedRows[0] ?? {}) : [],
+        mode: "write" as const,
+        redactedColumns: redacted.redactedColumns,
+        rowCount: limitedRows.length,
+        rows: limitedRows,
+        sql,
+        statementType,
+        truncated: redacted.rows.length > maxSqlRows,
+      };
+    }
+
+    if (isWrite) {
+      const affectedRows = await prisma.$executeRawUnsafe(sql);
+      return {
+        affectedRows,
+        columns: [],
+        mode: "write" as const,
+        redactedColumns: [],
+        rowCount: 0,
+        rows: [],
+        sql,
+        statementType,
+        truncated: false,
+      };
+    }
+
+    const rows = await prisma.$queryRawUnsafe<BotRow[]>(sql);
+    const serializedRows = rows.map((row) =>
+      Object.fromEntries(Object.entries(row).map(([key, value]) => [key, serializeValue(value)])),
+    );
+    const redacted = redactSqlRows(serializedRows);
+    const limitedRows = redacted.rows.slice(0, maxSqlRows);
+
+    return {
+      affectedRows: null,
+      columns: limitedRows.length > 0 ? Object.keys(limitedRows[0] ?? {}) : [],
+      mode: "read" as const,
+      redactedColumns: redacted.redactedColumns,
+      rowCount: limitedRows.length,
+      rows: limitedRows,
+      sql,
+      statementType,
+      truncated: redacted.rows.length > maxSqlRows,
+    };
   }
 }

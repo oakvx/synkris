@@ -1,9 +1,18 @@
 import { useEffect, useMemo, useState } from "react";
 
-import type { BotDataField, BotDataModel, BotDataRow } from "@whatsapp-ai/shared";
+import type {
+  BotDataField,
+  BotDataModel,
+  BotDataRow,
+  BotStatusResponse,
+  ExecuteBotSqlResponse,
+  PortalUser,
+} from "@whatsapp-ai/shared";
+import { isSystemAdminRole } from "@whatsapp-ai/shared";
 
-import { useAuth } from "../auth/AuthContext";
-import { apiClient } from "../lib/api";
+import { useAuth } from "../auth/useAuth";
+import { BotStatusCard } from "../components/BotStatusCard";
+import { apiClient, getErrorMessage } from "../lib/api";
 
 type DraftValue = string | boolean | null;
 type DraftRow = {
@@ -29,6 +38,10 @@ const phoneFieldPattern = /(phone|telefono|mobile|cell|whatsapp|e164|tel)/i;
 const emailFieldPattern = /email/i;
 const timeFieldPattern = /(open|close|start|end)time$/i;
 const longTextFieldPattern = /(body|description|message|notes|note|metadata|prompt|reply|error)/i;
+const sensitiveFieldPattern =
+  /(password|passwd|pwd|secret|token|hash|email|mail|phone|telefono|mobile|cell|whatsapp|session|cookie|authorization|credential|api[_-]?key|access[_-]?key|private[_-]?key|path|dir|directory|folder|file|filepath|location)/i;
+const pathLikeValuePattern =
+  /^(?:[a-z]:[\\/]|\\\\|\/(?:users|home|var|srv|opt|tmp|etc|root|app|workspace|data)\b)/i;
 
 function makeLocalId() {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -89,6 +102,10 @@ function inferFieldKind(field: BotDataField): FieldKind {
   }
 
   return "text";
+}
+
+function isSensitiveField(field: Pick<BotDataField, "name">) {
+  return sensitiveFieldPattern.test(field.name);
 }
 
 function toBooleanDraftValue(value: unknown): DraftValue {
@@ -293,8 +310,7 @@ function parseDraftRows(model: BotDataModel, rows: DraftRow[]): BotDataRow[] {
           nextRow[field.name] = parsed;
         }
       } catch (error) {
-        const message =
-          error instanceof Error ? error.message : `Errore nel campo ${humanizeFieldName(field.name)}.`;
+        const message = getErrorMessage(error, `Errore nel campo ${humanizeFieldName(field.name)}.`);
         throw new Error(`Riga ${rowIndex + 1}: ${message}`);
       }
     }
@@ -415,14 +431,164 @@ function modelLabel(model: BotDataModel) {
   return model.dbName ? `${model.name} (${model.dbName})` : model.name;
 }
 
+function stringifyPreviewValue(value: unknown) {
+  if (value === null || value === undefined) {
+    return "";
+  }
+
+  if (typeof value === "boolean") {
+    return value ? "Si" : "No";
+  }
+
+  if (typeof value === "object") {
+    return stringifyJson(value);
+  }
+
+  return String(value);
+}
+
+function isPathLikeString(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return false;
+  }
+
+  if (pathLikeValuePattern.test(trimmed)) {
+    return true;
+  }
+
+  const slashCount = (trimmed.match(/[\\/]/g) ?? []).length;
+  return slashCount >= 3 && !/^https?:\/\//i.test(trimmed);
+}
+
+function redactPreviewString(key: string, value: string) {
+  const normalizedKey = key.toLowerCase();
+
+  if (isPathLikeString(value) || /(path|dir|directory|folder|file|filepath|location)/i.test(normalizedKey)) {
+    return "[percorso occultato]";
+  }
+
+  if (value.includes("@") || /(email|mail)/i.test(normalizedKey)) {
+    const [local, domain] = value.split("@");
+    if (!domain) {
+      return "[email occultata]";
+    }
+
+    return `${local.slice(0, 2) || local.charAt(0)}***@${domain}`;
+  }
+
+  if (/(phone|telefono|mobile|cell|whatsapp)/i.test(normalizedKey) || /^\+?[0-9\s().-]{7,}$/.test(value)) {
+    const digits = value.replace(/\D/g, "");
+    if (digits.length >= 6) {
+      return `${digits.slice(0, 2)}***${digits.slice(-2)}`;
+    }
+
+    return "[numero occultato]";
+  }
+
+  if (sensitiveFieldPattern.test(key)) {
+    return "[dato sensibile occultato]";
+  }
+
+  const compact = value.replace(/\s+/g, " ").trim();
+  return compact.length > 120 ? `${compact.slice(0, 120)}...` : compact;
+}
+
+function redactPreviewValue(key: string, value: unknown): string {
+  if (value === null || value === undefined || value === "") {
+    return "—";
+  }
+
+  if (typeof value === "boolean") {
+    return value ? "Si" : "No";
+  }
+
+  if (typeof value === "string") {
+    return redactPreviewString(key, value);
+  }
+
+  if (typeof value === "object") {
+    return "[json]";
+  }
+
+  return String(value);
+}
+
+function rowMatchesQuery(model: BotDataModel, row: DraftRow, query: string) {
+  const normalizedQuery = query.trim().toLowerCase();
+  if (!normalizedQuery) {
+    return true;
+  }
+
+  return model.fields.some((field) => {
+    const value = row.values[field.name];
+    return [field.name, humanizeFieldName(field.name), stringifyPreviewValue(value)]
+      .join(" ")
+      .toLowerCase()
+      .includes(normalizedQuery);
+  });
+}
+
+function formatCellPreview(field: BotDataField, value: DraftValue) {
+  return redactPreviewValue(field.name, value);
+}
+
+function escapeSqlIdentifier(value: string) {
+  return `"${value.replace(/"/g, "\"\"")}"`;
+}
+
+function defaultSqlForModel(model: BotDataModel) {
+  return `SELECT *\nFROM ${escapeSqlIdentifier(model.dbName ?? model.name)}\nLIMIT 50`;
+}
+
+function statusLabel(status: BotStatusResponse | null) {
+  switch (status?.status) {
+    case "connected":
+      return "Operativo";
+    case "waiting_qr":
+      return "In attesa QR";
+    case "waiting_pairing":
+      return "In attesa codice";
+    case "connecting":
+      return "Connessione in corso";
+    case "error":
+      return "Errore";
+    case "disconnected":
+      return "Disconnesso";
+    default:
+      return "Da inizializzare";
+  }
+}
+
+function connectionModeLabel(status: BotStatusResponse | null) {
+  if (status?.connectionMode === "pairing") {
+    return "Codice di pairing";
+  }
+
+  if (status?.connectionMode === "qr") {
+    return "QR code";
+  }
+
+  return "Da scegliere";
+}
+
 export function BotDatabasePage() {
-  const { token } = useAuth();
+  const { token, user } = useAuth();
   const [models, setModels] = useState<BotDataModel[]>([]);
+  const [status, setStatus] = useState<BotStatusResponse | null>(null);
   const [selectedModelName, setSelectedModelName] = useState("");
   const [draftRows, setDraftRows] = useState<DraftRow[]>([]);
+  const [redactedColumns, setRedactedColumns] = useState<string[]>([]);
+  const [rowQuery, setRowQuery] = useState("");
+  const [sqlCommand, setSqlCommand] = useState("");
+  const [sqlResult, setSqlResult] = useState<ExecuteBotSqlResponse | null>(null);
+  const [sqlAllowWrite, setSqlAllowWrite] = useState(false);
+  const [sqlError, setSqlError] = useState<string | null>(null);
   const [isLoadingModels, setIsLoadingModels] = useState(true);
   const [isLoadingRows, setIsLoadingRows] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [isRunningSql, setIsRunningSql] = useState(false);
+  const [isDisconnecting, setIsDisconnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
 
@@ -430,6 +596,17 @@ export function BotDatabasePage() {
     () => models.find((model) => model.name === selectedModelName) ?? null,
     [models, selectedModelName],
   );
+  const isSystemAdmin = useMemo(() => isSystemAdminRole(user?.role), [user?.role]);
+  const filteredRows = useMemo(() => {
+    if (!selectedModel) {
+      return [];
+    }
+
+    return draftRows.filter((row) => rowMatchesQuery(selectedModel, row, rowQuery));
+  }, [draftRows, rowQuery, selectedModel]);
+  const previewFields = useMemo(() => selectedModel?.fields.slice(0, 8) ?? [], [selectedModel]);
+  const sqlResultColumns = useMemo(() => sqlResult?.columns ?? [], [sqlResult]);
+  const dashboardLastUpdateLabel = status ? new Date(status.updatedAt).toLocaleString("it-IT") : "Nessun dato ancora";
 
   async function loadModels() {
     if (!token) {
@@ -450,9 +627,22 @@ export function BotDatabasePage() {
         return response.models[0]?.name ?? "";
       });
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "Impossibile leggere le tabelle del bot.");
+      setError(getErrorMessage(loadError, "Impossibile leggere le tabelle del bot."));
     } finally {
       setIsLoadingModels(false);
+    }
+  }
+
+  async function loadStatus() {
+    if (!token) {
+      return;
+    }
+
+    try {
+      const nextStatus = await apiClient.getBotStatus(token);
+      setStatus(nextStatus);
+    } catch (loadError) {
+      setError((current) => current ?? getErrorMessage(loadError, "Impossibile leggere le analitiche del bot."));
     }
   }
 
@@ -473,8 +663,9 @@ export function BotDatabasePage() {
     try {
       const response = await apiClient.getBotDataRows(token, modelName);
       setDraftRows(createDraftRows(model, response.rows));
+      setRedactedColumns(response.redactedColumns ?? []);
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "Impossibile leggere i dati della tabella.");
+      setError(getErrorMessage(loadError, "Impossibile leggere i dati della tabella."));
     } finally {
       setIsLoadingRows(false);
     }
@@ -482,16 +673,32 @@ export function BotDatabasePage() {
 
   useEffect(() => {
     void loadModels();
+    void loadStatus();
   }, [token]);
 
   useEffect(() => {
     if (!selectedModelName) {
       setDraftRows([]);
+      setRedactedColumns([]);
       return;
     }
 
     void loadRows(selectedModelName);
   }, [models, selectedModelName]);
+
+  useEffect(() => {
+    if (!selectedModel) {
+      setSqlCommand("");
+      setSqlResult(null);
+      setSqlError(null);
+      return;
+    }
+
+    setSqlCommand(defaultSqlForModel(selectedModel));
+    setSqlResult(null);
+    setSqlError(null);
+    setSqlAllowWrite(false);
+  }, [selectedModel]);
 
   function updateFieldValue(rowId: string, fieldName: string, value: DraftValue) {
     setDraftRows((current) =>
@@ -524,6 +731,50 @@ export function BotDatabasePage() {
     setMessage(null);
   }
 
+  async function copySqlText(value: string, successMessage: string) {
+    if (!value || typeof navigator === "undefined" || !navigator.clipboard) {
+      setMessage("Copia negli appunti non disponibile in questo browser.");
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(value);
+      setMessage(successMessage);
+    } catch {
+      setMessage("Non sono riuscito a copiare il contenuto richiesto.");
+    }
+  }
+
+  async function executeSql() {
+    if (!token || !sqlCommand.trim()) {
+      return;
+    }
+
+    setIsRunningSql(true);
+    setSqlError(null);
+    setMessage(null);
+
+    try {
+      const result = await apiClient.executeBotSql(token, sqlCommand, sqlAllowWrite);
+      setSqlResult(result);
+      const summary =
+        result.mode === "write"
+          ? `Comando SQL eseguito. Righe toccate: ${result.affectedRows ?? 0}.`
+          : `Query SQL completata. Righe restituite: ${result.rowCount}.`;
+      setMessage(summary);
+
+      if (selectedModel) {
+        await loadRows(selectedModel.name);
+      }
+      await loadStatus();
+    } catch (runError) {
+      setSqlError(getErrorMessage(runError, "Query SQL non riuscita."));
+      setSqlResult(null);
+    } finally {
+      setIsRunningSql(false);
+    }
+  }
+
   async function handleSave() {
     if (!token || !selectedModel) {
       return;
@@ -539,10 +790,41 @@ export function BotDatabasePage() {
       setDraftRows(createDraftRows(selectedModel, saved.rows));
       setMessage(`Tabella ${selectedModel.name} salvata. Righe attuali: ${saved.rowCount}.`);
     } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : "Salvataggio non riuscito.");
+      setError(getErrorMessage(saveError, "Salvataggio non riuscito."));
     } finally {
       setIsSaving(false);
     }
+  }
+
+  async function handleDisconnect() {
+    if (!token) {
+      return;
+    }
+
+    setIsDisconnecting(true);
+    setError(null);
+
+    try {
+      const nextStatus = await apiClient.disconnectBot(token);
+      setStatus(nextStatus);
+      setMessage("Bot disconnesso dalla console database.");
+    } catch (disconnectError) {
+      setError(getErrorMessage(disconnectError, "Disconnessione non riuscita."));
+    } finally {
+      setIsDisconnecting(false);
+    }
+  }
+
+  if (!isSystemAdmin) {
+    return (
+      <section className="card">
+        <p className="eyebrow">Database bot</p>
+        <h2>Accesso limitato</h2>
+        <p className="muted">
+          L&apos;editor del database e la console SQL sono disponibili solo per il system admin.
+        </p>
+      </section>
+    );
   }
 
   if (isLoadingModels) {
@@ -563,11 +845,29 @@ export function BotDatabasePage() {
     <div className="page-stack">
       <section className="hero-card">
         <p className="eyebrow">Database bot</p>
-        <h2>Editor semplice delle tabelle</h2>
+        <h2>Console tabelle stile phpMyAdmin</h2>
         <p className="muted">
-          Ogni campo mostra il tipo di dato in modo pratico, con esempi e istruzioni semplici prima del
-          salvataggio.
+          Sfoglia i record in vista tabellare, filtra le righe, poi apri solo quelle che vuoi modificare.
+          Sotto trovi anche una console SQL per i casi piu' avanzati, con dati sensibili gia' occultati nei risultati.
         </p>
+
+        <div className="hero-metrics">
+          <article className="metric-card">
+            <span className="metric-label">Stato bot</span>
+            <strong>{statusLabel(status)}</strong>
+            <p>{status?.isStale ? "Sto leggendo uno snapshot salvato." : "Stato live disponibile dal worker."}</p>
+          </article>
+          <article className="metric-card">
+            <span className="metric-label">Modalita attiva</span>
+            <strong>{connectionModeLabel(status)}</strong>
+            <p>Ti aiuta a capire se il bot sta lavorando via QR, pairing o sessione gia' pronta.</p>
+          </article>
+          <article className="metric-card">
+            <span className="metric-label">Ultimo aggiornamento</span>
+            <strong>{dashboardLastUpdateLabel}</strong>
+            <p>Utile mentre confronti record, query SQL e stato del worker nella stessa vista.</p>
+          </article>
+        </div>
 
         <div className="db-toolbar">
           <label>
@@ -582,6 +882,16 @@ export function BotDatabasePage() {
                 </option>
               ))}
             </select>
+          </label>
+
+          <label>
+            Cerca tra righe e campi
+            <input
+              onChange={(event) => setRowQuery(event.target.value)}
+              placeholder="Cerca id, telefono, email, note..."
+              type="search"
+              value={rowQuery}
+            />
           </label>
 
           <div className="action-row db-actions">
@@ -614,11 +924,85 @@ export function BotDatabasePage() {
             <strong>Campi disponibili</strong>
             <p className="muted">{selectedModel.fields.length}</p>
           </article>
+          <article className="connection-panel">
+            <strong>Righe in vista</strong>
+            <p className="muted">
+              {filteredRows.length} su {draftRows.length}
+            </p>
+          </article>
         </div>
       </section>
 
       {error ? <p className="error-banner">{error}</p> : null}
       {message ? <p className="success-banner">{message}</p> : null}
+      {!isSystemAdmin && redactedColumns.length > 0 ? (
+        <p className="warning-banner">
+          Alcuni campi sensibili di questa tabella sono occultati. Solo il system admin puo' visualizzarli o
+          modificarli direttamente.
+        </p>
+      ) : null}
+
+      <BotStatusCard isBusy={isDisconnecting} onDisconnect={handleDisconnect} status={status} />
+
+      <section className="card">
+        <div className="card-heading">
+          <div>
+            <p className="eyebrow">Sfoglia</p>
+            <h3>Vista tabellare rapida</h3>
+          </div>
+          <p className="muted">
+            {rowQuery.trim()
+              ? `Filtro attivo: ${filteredRows.length} righe corrispondenti`
+              : "Anteprima stile phpMyAdmin delle righe attualmente caricate"}
+          </p>
+        </div>
+
+        {isLoadingRows ? (
+          <div className="db-empty">Sto preparando l'anteprima tabellare...</div>
+        ) : filteredRows.length === 0 ? (
+          <div className="db-empty">
+            {draftRows.length === 0
+              ? "Nessuna riga da mostrare in questa tabella."
+              : "Nessuna riga corrisponde al filtro attuale."}
+          </div>
+        ) : (
+          <div className="db-browser-shell">
+            <div className="db-browser-meta">
+              <span className="field-badge">Sfoglia</span>
+              <span className="muted">
+                Prime {previewFields.length} colonne mostrate. Apri la riga sotto per modificare tutti i campi.
+              </span>
+            </div>
+
+            <div className="db-browser-table-wrap">
+              <table className="db-browser-table">
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    {previewFields.map((field) => (
+                      <th key={field.name}>{humanizeFieldName(field.name)}</th>
+                    ))}
+                    <th>Stato</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredRows.map((row, index) => (
+                    <tr key={row.localId}>
+                      <td>{index + 1}</td>
+                      {previewFields.map((field) => (
+                        <td key={field.name} title={formatCellPreview(field, row.values[field.name] ?? "")}>
+                          {formatCellPreview(field, row.values[field.name] ?? "")}
+                        </td>
+                      ))}
+                      <td>{row.isNew ? "Nuova" : "Esistente"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </section>
 
       <section className="card">
         <div className="card-heading">
@@ -627,14 +1011,16 @@ export function BotDatabasePage() {
             <h3>{selectedModel.name}</h3>
           </div>
           <p className="muted">
-            {isLoadingRows ? "Sto leggendo i record..." : `${draftRows.length} righe pronte da modificare`}
+            {isLoadingRows
+              ? "Sto leggendo i record..."
+              : `${filteredRows.length} righe visibili su ${draftRows.length} pronte da modificare`}
           </p>
         </div>
 
         <div className="field-chips">
           {selectedModel.fields.map((field) => (
             <span className="field-chip" key={field.name}>
-              {humanizeFieldName(field.name)} · {field.type}
+              {humanizeFieldName(field.name)} - {field.type}
             </span>
           ))}
         </div>
@@ -650,9 +1036,9 @@ export function BotDatabasePage() {
           </div>
         ) : null}
 
-        {!isLoadingRows && draftRows.length > 0 ? (
+        {!isLoadingRows && filteredRows.length > 0 ? (
           <div className="db-row-list">
-            {draftRows.map((row, index) => (
+            {filteredRows.map((row, index) => (
               <details className="db-row-card" key={row.localId} open={row.isNew || index === 0}>
                 <summary className="db-row-summary">
                   <div>
@@ -675,6 +1061,7 @@ export function BotDatabasePage() {
                     const kind = inferFieldKind(field);
                     const value = row.values[field.name];
                     const helperText = helperTextForField(field, selectedModel);
+                    const fieldIsRestricted = !isSystemAdmin && isSensitiveField(field);
 
                     return (
                       <label className="db-field" key={field.name}>
@@ -689,9 +1076,15 @@ export function BotDatabasePage() {
                           {field.isUnique ? <span className="field-badge">Unico</span> : null}
                           {field.hasDefaultValue ? <span className="field-badge">Default</span> : null}
                           {field.isGenerated ? <span className="field-badge">Generato</span> : null}
+                          {fieldIsRestricted ? <span className="field-badge">Solo system admin</span> : null}
                         </div>
 
-                        {kind === "boolean" ? (
+                        {fieldIsRestricted ? (
+                          <div className="db-field-lock">
+                            <strong>Campo sensibile</strong>
+                            <p>Solo l&apos;admin del sistema puo&apos; visualizzare o modificare questo valore.</p>
+                          </div>
+                        ) : kind === "boolean" ? (
                           <select
                             value={boolSelectValue(value)}
                             onChange={(event) => {
@@ -738,9 +1131,13 @@ export function BotDatabasePage() {
 
                         <span className="field-meta">
                           Nome tecnico: {field.name}
-                          {field.dbName ? ` · Colonna DB: ${field.dbName}` : ""}
+                          {field.dbName ? ` - Colonna DB: ${field.dbName}` : ""}
                         </span>
-                        <span className="field-help">{helperText}</span>
+                        <span className="field-help">
+                          {fieldIsRestricted
+                            ? "Valore protetto per sicurezza operativa: il portale lo nasconde ai profili non amministrativi."
+                            : helperText}
+                        </span>
                       </label>
                     );
                   })}
@@ -749,6 +1146,126 @@ export function BotDatabasePage() {
             ))}
           </div>
         ) : null}
+      </section>
+
+      <section className="card">
+        <div className="card-heading">
+          <div>
+            <p className="eyebrow">SQL</p>
+            <h3>Console SQL</h3>
+          </div>
+          <div className="action-row db-actions">
+            <button
+              className="ghost-button"
+              onClick={() => void copySqlText(sqlCommand, "Comando SQL copiato negli appunti.")}
+              type="button"
+            >
+              Copia comando
+            </button>
+            <button disabled={isRunningSql || !sqlCommand.trim()} onClick={() => void executeSql()} type="button">
+              {isRunningSql ? "Eseguo..." : "Esegui SQL"}
+            </button>
+          </div>
+        </div>
+
+        <p className="warning-banner">
+          Solo utenti esperti: i risultati vengono redatti automaticamente per nascondere email, telefoni, token,
+          password, percorsi locali e altri valori sensibili.
+        </p>
+        <p className="muted">
+          Una query per volta. Le query di scrittura richiedono l&apos;attivazione esplicita della modalita avanzata.
+        </p>
+
+        <label className="editor-label">
+          Comando SQL
+          <textarea
+            className="db-editor"
+            onChange={(event) => setSqlCommand(event.target.value)}
+            rows={9}
+            spellCheck={false}
+            value={sqlCommand}
+          />
+        </label>
+
+        {isSystemAdmin ? (
+          <label className="checkbox-row">
+            <input
+              checked={sqlAllowWrite}
+              onChange={(event) => setSqlAllowWrite(event.target.checked)}
+              type="checkbox"
+            />
+            <span>Consenti query di scrittura SQL su questa sessione</span>
+          </label>
+        ) : (
+          <p className="warning-banner">
+            La modalita SQL di scrittura e&apos; riservata al system admin. Qui puoi usare solo query di lettura con
+            risultati gia&apos; redatti.
+          </p>
+        )}
+
+        {sqlError ? <p className="error-banner">{sqlError}</p> : null}
+
+        {sqlResult ? (
+          <div className="sql-console-results">
+            <div className="db-browser-meta">
+              <span className="field-badge">{sqlResult.mode === "write" ? "Scrittura" : "Lettura"}</span>
+              <span className="field-badge">{sqlResult.statementType.toUpperCase()}</span>
+              <span className="muted">
+                {sqlResult.mode === "write"
+                  ? `Righe toccate: ${sqlResult.affectedRows ?? 0}`
+                  : `Righe visibili: ${sqlResult.rowCount}`}
+              </span>
+              {sqlResult.truncated ? <span className="field-badge">Limitato a 200 righe</span> : null}
+            </div>
+
+            {sqlResult.redactedColumns.length > 0 ? (
+              <div className="field-chips">
+                {sqlResult.redactedColumns.map((column) => (
+                  <span className="field-chip" key={column}>
+                    Occultato: {column}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+
+            {sqlResult.rows.length > 0 ? (
+              <div className="db-browser-table-wrap">
+                <table className="db-browser-table">
+                  <thead>
+                    <tr>
+                      <th>#</th>
+                      {sqlResultColumns.map((column) => (
+                        <th key={column}>{humanizeFieldName(column)}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sqlResult.rows.map((row, index) => (
+                      <tr key={`sql-row-${index}`}>
+                        <td>{index + 1}</td>
+                        {sqlResultColumns.map((column) => (
+                          <td key={column} title={stringifyPreviewValue(row[column])}>
+                            {redactPreviewValue(column, row[column])}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="db-empty">
+                {sqlResult.mode === "write"
+                  ? "Il comando e' stato eseguito. Questa istruzione non restituisce righe da mostrare."
+                  : "La query non ha restituito righe."}
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="db-empty">
+            Esegui una query SQL e qui vedrai il risultato tabellare con i dati sensibili gia' occultati.
+          </div>
+        )}
       </section>
     </div>
   );

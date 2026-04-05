@@ -1,11 +1,13 @@
 import type { Request, Response } from "express";
 import {
+  AuthResponseSchema,
   ForgotPasswordRequestSchema,
   LoginRequestSchema,
   RegisterRequestSchema,
   ResetPasswordRequestSchema,
 } from "@whatsapp-ai/shared";
 
+import { clearSessionCookie, PUBLIC_SESSION_TOKEN, setSessionCookie } from "../lib/authCookies.js";
 import { AuthService } from "../services/authService.js";
 
 const authService = new AuthService();
@@ -13,13 +15,15 @@ const authService = new AuthService();
 export async function register(request: Request, response: Response) {
   const payload = RegisterRequestSchema.parse(request.body);
   const result = await authService.register(payload);
-  response.status(201).json(result);
+  setSessionCookie(response, result.sessionToken);
+  response.status(201).json(AuthResponseSchema.parse({ token: PUBLIC_SESSION_TOKEN, user: result.user }));
 }
 
 export async function login(request: Request, response: Response) {
   const payload = LoginRequestSchema.parse(request.body);
   const result = await authService.login(payload);
-  response.json(result);
+  setSessionCookie(response, result.sessionToken);
+  response.json(AuthResponseSchema.parse({ token: PUBLIC_SESSION_TOKEN, user: result.user }));
 }
 
 export async function forgotPassword(request: Request, response: Response) {
@@ -37,4 +41,9 @@ export async function resetPassword(request: Request, response: Response) {
 export async function me(request: Request, response: Response) {
   const user = await authService.getMe(request.auth!.sub);
   response.json(user);
+}
+
+export async function logout(_request: Request, response: Response) {
+  clearSessionCookie(response);
+  response.json({ message: "Sessione terminata." });
 }

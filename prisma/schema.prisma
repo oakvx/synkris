@@ -28,6 +28,8 @@ model User {
   updatedAt    DateTime      @updatedAt @map("updated_at")
   settings            UserSettings?
   botInstances        BotInstance[]
+  auditEvents         AuditEvent[]
+  botEvents           BotEvent[]
   passwordResetTokens PasswordResetToken[]
 
   @@map("users")
@@ -65,6 +67,7 @@ model BotInstance {
   createdAt       DateTime            @default(now()) @map("created_at")
   updatedAt       DateTime            @updatedAt @map("updated_at")
   user            User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  events          BotEvent[]
   sessionMetadata BotSessionMetadata?
 
   @@unique([userId, name])
@@ -84,6 +87,44 @@ model BotSessionMetadata {
   instance          BotInstance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
 
   @@map("bot_session_metadata")
+}
+
+model AuditEvent {
+  id         String   @id @default(cuid())
+  userId     String?  @map("user_id")
+  actorEmail String?  @map("actor_email")
+  actorRole  String?  @map("actor_role")
+  category   String
+  action     String
+  targetType String?  @map("target_type")
+  targetId   String?  @map("target_id")
+  summary    String
+  metadata   Json?
+  createdAt  DateTime @default(now()) @map("created_at")
+  user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt])
+  @@index([category, createdAt])
+  @@map("audit_events")
+}
+
+model BotEvent {
+  id        String               @id @default(cuid())
+  userId    String               @map("user_id")
+  instanceId String?             @map("instance_id")
+  level     String               @default("info")
+  code      String
+  status    BotConnectionStatus?
+  provider  String?
+  message   String
+  details   Json?
+  createdAt DateTime             @default(now()) @map("created_at")
+  user      User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  instance  BotInstance?         @relation(fields: [instanceId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([instanceId, createdAt])
+  @@map("bot_events")
 }
 
 model ServiceCategory {

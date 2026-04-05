@@ -20,11 +20,14 @@ export class BotRepository {
       status: instance.status,
       connectionMode: null,
       qrCodeDataUrl: instance.qrCodeDataUrl,
+      qrCodeAscii: null,
       pairingCode: instance.pairingCode,
       phoneNumber: instance.phoneNumber,
       lastError: instance.lastError,
       sessionPersisted: Boolean(instance.sessionPath),
       connectedAt: instance.connectedAt?.toISOString() ?? null,
+      isStale: false,
+      staleReason: null,
       updatedAt: instance.updatedAt.toISOString(),
     };
   }

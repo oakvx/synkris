@@ -1,30 +1,3 @@
-2026/04/05-00:46:52.667 6dcc Reusing MANIFEST Q:\whatsapp-ai - Copy\session.json\_IGNORE_whatsapp-ai\Default\IndexedDB\https_web.whatsapp.com_0.indexeddb.leveldb/MANIFEST-015067
-2026/04/05-00:46:52.668 6dcc Recovering log #15986
-2026/04/05-00:46:52.695 6dcc Reusing old log Q:\whatsapp-ai - Copy\session.json\_IGNORE_whatsapp-ai\Default\IndexedDB\https_web.whatsapp.com_0.indexeddb.leveldb/015986.log 
-2026/04/05-00:46:59.589 46cc Level-0 table #16008: started
-2026/04/05-00:46:59.637 46cc Level-0 table #16008: 1272897 bytes OK
-2026/04/05-00:46:59.639 46cc Delete type=0 #15986
-2026/04/05-00:46:59.647 46cc Compacting 1@0 + 0@1 files
-2026/04/05-00:46:59.680 46cc Generated table #16009@0: 26292 keys, 634655 bytes
-2026/04/05-00:46:59.686 46cc Generated table #16010@0: 6684 keys, 83695 bytes
-2026/04/05-00:46:59.686 46cc Compacted 1@0 + 0@1 files => 718350 bytes
-2026/04/05-00:46:59.688 46cc compacted to: files[ 0 2 18 0 0 0 0 ]
-2026/04/05-00:46:59.695 46cc Compacting 1@1 + 8@2 files
-2026/04/05-00:46:59.752 46cc Generated table #16011@1: 2682 keys, 2143582 bytes
-2026/04/05-00:46:59.819 46cc Generated table #16012@1: 2637 keys, 2143020 bytes
-2026/04/05-00:46:59.885 46cc Generated table #16013@1: 10002 keys, 2152551 bytes
-2026/04/05-00:47:00.020 46cc Generated table #16014@1: 37292 keys, 2247628 bytes
-2026/04/05-00:47:00.087 46cc Generated table #16015@1: 26837 keys, 1123693 bytes
-2026/04/05-00:47:00.087 46cc Compacted 1@1 + 8@2 files => 9810474 bytes
-2026/04/05-00:47:00.089 46cc compacted to: files[ 0 1 15 0 0 0 0 ]
-2026/04/05-00:47:00.090 46cc Delete type=2 #16008
-2026/04/05-00:47:00.112 5db0 Compacting 1@1 + 9@2 files
-2026/04/05-00:47:00.208 5db0 Generated table #16016@1: 12289 keys, 2138508 bytes
-2026/04/05-00:47:00.285 5db0 Generated table #16017@1: 5370 keys, 2129326 bytes
-2026/04/05-00:47:00.405 5db0 Generated table #16018@1: 94053 keys, 2240398 bytes
-2026/04/05-00:47:00.523 5db0 Generated table #16019@1: 114432 keys, 2267297 bytes
-2026/04/05-00:47:00.627 5db0 Generated table #16020@1: 114319 keys, 2265214 bytes
-2026/04/05-00:47:00.746 5db0 Generated table #16021@1: 114433 keys, 2266619 bytes
-2026/04/05-00:47:00.872 5db0 Generated table #16022@1: 113903 keys, 2265729 bytes
-2026/04/05-00:47:01.021 5db0 Generated table #16023@1: 94825 keys, 2244808 bytes
-2026/04/05-00:47:01.078 5db0 Level-0 table #16026: started
+2026/04/05-12:47:54.938 8900 Reusing MANIFEST q:\whatsapp-ai - Copy\session.json\_IGNORE_whatsapp-ai\Default\IndexedDB\https_web.whatsapp.com_0.indexeddb.leveldb/MANIFEST-015067
+2026/04/05-12:47:54.940 8900 Recovering log #16059
+2026/04/05-12:47:54.960 8900 Reusing old log q:\whatsapp-ai - Copy\session.json\_IGNORE_whatsapp-ai\Default\IndexedDB\https_web.whatsapp.com_0.indexeddb.leveldb/016059.log 

@@ -3,16 +3,23 @@ import {
   BotDataModelsResponseSchema,
   BotDataRowsResponseSchema,
   BotStatusResponseSchema,
+  ExecuteBotSqlResponseSchema,
+  ErrorResponseSchema,
   ForgotPasswordResponseSchema,
   PortalUserSchema,
+  StartClientBotResponseSchema,
+  type ApiErrorPayload,
+  type ApiErrorSource,
   type AuthResponse,
   type BotDataModelsResponse,
   type BotDataRow,
   type BotDataRowsResponse,
   type BotStatusResponse,
   type ConnectionMode,
+  type ExecuteBotSqlResponse,
   type ForgotPasswordResponse,
   type PortalUser,
+  type StartClientBotResponse,
   type UserSettings,
   UserSettingsSchema,
 } from "@whatsapp-ai/shared";
@@ -25,26 +32,150 @@ type RequestOptions = {
   body?: unknown;
 };
 
+type ApiClientErrorInit = {
+  code?: string;
+  source?: ApiErrorSource;
+  retryable?: boolean;
+  statusCode?: number;
+  details?: unknown;
+  traceId?: string | null;
+};
+
+export class ApiClientError extends Error {
+  readonly code: string;
+  readonly source: ApiErrorSource;
+  readonly retryable: boolean;
+  readonly statusCode?: number;
+  readonly details?: unknown;
+  readonly traceId: string | null;
+
+  constructor(message: string, init: ApiClientErrorInit = {}) {
+    super(message);
+    this.name = "ApiClientError";
+    this.code = init.code ?? "API_ERROR";
+    this.source = init.source ?? "api";
+    this.retryable = init.retryable ?? false;
+    this.statusCode = init.statusCode;
+    this.details = init.details;
+    this.traceId = init.traceId ?? null;
+  }
+}
+
+function buildApiClientError(
+  payload: Partial<ApiErrorPayload> & { message: string },
+  statusCode?: number,
+): ApiClientError {
+  return new ApiClientError(payload.message, {
+    code: payload.code,
+    source: payload.source,
+    retryable: payload.retryable,
+    statusCode: payload.statusCode ?? statusCode,
+    details: payload.details,
+    traceId: payload.traceId ?? null,
+  });
+}
+
+function parseErrorPayload(rawPayload: unknown, statusCode: number): ApiClientError {
+  const parsed = ErrorResponseSchema.safeParse(rawPayload);
+  if (parsed.success) {
+    return buildApiClientError(parsed.data.error, statusCode);
+  }
+
+  if (rawPayload && typeof rawPayload === "object" && "error" in rawPayload) {
+    const legacyMessage = (rawPayload as Record<string, unknown>).error;
+    if (typeof legacyMessage === "string" && legacyMessage.trim()) {
+      return new ApiClientError(legacyMessage, {
+        code: statusCode >= 500 ? "API_REQUEST_FAILED" : "API_BAD_REQUEST",
+        source: "api",
+        retryable: statusCode >= 500,
+        statusCode,
+      });
+    }
+  }
+
+  return new ApiClientError("Richiesta fallita.", {
+    code: statusCode >= 500 ? "API_REQUEST_FAILED" : "API_BAD_REQUEST",
+    source: "api",
+    retryable: statusCode >= 500,
+    statusCode,
+    details: rawPayload,
+  });
+}
+
+export function getErrorMessage(error: unknown, fallback = "Operazione non riuscita."): string {
+  if (error instanceof ApiClientError) {
+    return error.message || fallback;
+  }
+
+  if (error instanceof Error) {
+    return error.message || fallback;
+  }
+
+  return fallback;
+}
+
+export function isRetryableError(error: unknown): boolean {
+  return error instanceof ApiClientError ? error.retryable : false;
+}
+
+function isBearerToken(token: string | null | undefined) {
+  if (!token) {
+    return false;
+  }
+
+  return token.split(".").length === 3;
+}
+
 async function request<T>(
   path: string,
   options: RequestOptions,
   parser: (value: unknown) => T,
 ): Promise<T> {
-  const response = await fetch(`${appConfig.apiBaseUrl}${path}`, {
-    method: options.method ?? "GET",
-    headers: {
-      "content-type": "application/json",
-      ...(options.token ? { authorization: `Bearer ${options.token}` } : {}),
-    },
-    body: options.body === undefined ? undefined : JSON.stringify(options.body),
-  });
-
-  const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
-  if (!response.ok) {
-    throw new Error((payload.error as string | undefined) ?? "Richiesta fallita.");
+  let response: Response;
+  try {
+    response = await fetch(`${appConfig.apiBaseUrl}${path}`, {
+      method: options.method ?? "GET",
+      credentials: "include",
+      headers: {
+        "content-type": "application/json",
+        ...(isBearerToken(options.token) ? { authorization: `Bearer ${options.token}` } : {}),
+      },
+      body: options.body === undefined ? undefined : JSON.stringify(options.body),
+    });
+  } catch (error) {
+    throw new ApiClientError("Impossibile contattare il server.", {
+      code: "NETWORK_ERROR",
+      source: "network",
+      retryable: true,
+      details: error instanceof Error ? error.message : String(error),
+    });
   }
 
-  return parser(payload);
+  const rawText = await response.text();
+  let payload: unknown = {};
+  if (rawText) {
+    try {
+      payload = JSON.parse(rawText) as unknown;
+    } catch {
+      payload = rawText;
+    }
+  }
+
+  if (!response.ok) {
+    throw parseErrorPayload(payload, response.status);
+  }
+
+  try {
+    return parser(payload);
+  } catch (error) {
+    throw new ApiClientError("Risposta del server non valida.", {
+      code: "INVALID_API_RESPONSE",
+      source: "api",
+      retryable: true,
+      statusCode: response.status,
+      details: error instanceof Error ? error.message : String(error),
+    });
+  }
 }
 
 export const apiClient = {
@@ -76,49 +207,66 @@ export const apiClient = {
       (value) => value as { message: string },
     );
   },
-  me(token: string): Promise<PortalUser> {
+  logout(token?: string | null): Promise<{ message: string }> {
+    return request("/auth/logout", { method: "POST", token }, (value) => value as { message: string });
+  },
+  me(token?: string | null): Promise<PortalUser> {
     return request("/auth/me", { token }, (value) => PortalUserSchema.parse(value));
   },
-  getBotStatus(token: string): Promise<BotStatusResponse> {
+  getBotStatus(token?: string | null): Promise<BotStatusResponse> {
     return request("/bot/status", { token }, (value) => BotStatusResponseSchema.parse(value));
   },
-  initBotConnection(token: string, mode: ConnectionMode): Promise<BotStatusResponse> {
+  initBotConnection(token: string | null | undefined, mode: ConnectionMode): Promise<BotStatusResponse> {
     return request(
       "/bot/connect/init",
       { method: "POST", token, body: { mode } },
       (value) => BotStatusResponseSchema.parse(value),
     );
   },
-  getQr(token: string): Promise<BotStatusResponse> {
+  getQr(token: string | null | undefined): Promise<BotStatusResponse> {
     return request("/bot/connect/qr", { token }, (value) => BotStatusResponseSchema.parse(value));
   },
-  getPairingCode(token: string): Promise<BotStatusResponse> {
+  getPairingCode(token: string | null | undefined): Promise<BotStatusResponse> {
     return request("/bot/connect/pairing-code", { token }, (value) => BotStatusResponseSchema.parse(value));
   },
-  disconnectBot(token: string): Promise<BotStatusResponse> {
+  disconnectBot(token: string | null | undefined): Promise<BotStatusResponse> {
     return request("/bot/disconnect", { method: "POST", token }, (value) => BotStatusResponseSchema.parse(value));
   },
-  getBotDataModels(token: string): Promise<BotDataModelsResponse> {
+  startClientBot(token: string | null | undefined, directory?: string): Promise<StartClientBotResponse> {
+    return request(
+      "/bot/client/start",
+      { method: "POST", token, body: directory?.trim() ? { directory } : {} },
+      (value) => StartClientBotResponseSchema.parse(value),
+    );
+  },
+  getBotDataModels(token: string | null | undefined): Promise<BotDataModelsResponse> {
     return request("/bot/db/models", { token }, (value) => BotDataModelsResponseSchema.parse(value));
   },
-  getBotDataRows(token: string, model: string): Promise<BotDataRowsResponse> {
+  getBotDataRows(token: string | null | undefined, model: string): Promise<BotDataRowsResponse> {
     return request(
       `/bot/db/${encodeURIComponent(model)}`,
       { token },
       (value) => BotDataRowsResponseSchema.parse(value),
     );
   },
-  saveBotDataRows(token: string, model: string, rows: BotDataRow[]): Promise<BotDataRowsResponse> {
+  saveBotDataRows(token: string | null | undefined, model: string, rows: BotDataRow[]): Promise<BotDataRowsResponse> {
     return request(
       `/bot/db/${encodeURIComponent(model)}`,
       { method: "PUT", token, body: { rows } },
       (value) => BotDataRowsResponseSchema.parse(value),
     );
   },
-  getSettings(token: string): Promise<UserSettings> {
+  executeBotSql(token: string | null | undefined, sql: string, allowWrite = false): Promise<ExecuteBotSqlResponse> {
+    return request(
+      "/bot/db/sql",
+      { method: "POST", token, body: { allowWrite, sql } },
+      (value) => ExecuteBotSqlResponseSchema.parse(value),
+    );
+  },
+  getSettings(token: string | null | undefined): Promise<UserSettings> {
     return request("/settings", { token }, (value) => UserSettingsSchema.parse(value));
   },
-  updateSettings(token: string, settings: UserSettings): Promise<UserSettings> {
+  updateSettings(token: string | null | undefined, settings: UserSettings): Promise<UserSettings> {
     return request(
       "/settings",
       { method: "PUT", token, body: settings },

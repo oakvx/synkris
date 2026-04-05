@@ -1,0 +1,38 @@
+:root {
+  --font-sans: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  --color-bg: #f3f6fb;
+  --color-bg-strong: #e8eef6;
+  --color-surface: rgba(255, 255, 255, 0.94);
+  --color-surface-strong: #ffffff;
+  --color-surface-muted: #f8fafc;
+  --color-sidebar: #0f172a;
+  --color-sidebar-soft: #1e293b;
+  --color-text: #0f172a;
+  --color-text-soft: #475569;
+  --color-text-muted: #64748b;
+  --color-border: rgba(15, 23, 42, 0.1);
+  --color-border-strong: rgba(15, 23, 42, 0.16);
+  --color-accent: #0f766e;
+  --color-accent-strong: #115e59;
+  --color-accent-soft: rgba(20, 184, 166, 0.14);
+  --color-warning: #b45309;
+  --color-warning-soft: rgba(245, 158, 11, 0.16);
+  --color-danger: #b42318;
+  --color-danger-soft: rgba(217, 45, 32, 0.12);
+  --color-success: #0f766e;
+  --color-success-soft: rgba(16, 185, 129, 0.14);
+  --shadow-soft: 0 20px 50px rgba(15, 23, 42, 0.08);
+  --shadow-card: 0 12px 32px rgba(15, 23, 42, 0.08);
+  --radius-2xl: 28px;
+  --radius-xl: 22px;
+  --radius-lg: 18px;
+  --radius-md: 14px;
+  --radius-sm: 10px;
+  --space-xs: 0.4rem;
+  --space-sm: 0.7rem;
+  --space-md: 1rem;
+  --space-lg: 1.4rem;
+  --space-xl: 1.8rem;
+  --space-2xl: 2.4rem;
+  color-scheme: light;
+}

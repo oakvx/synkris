@@ -9,7 +9,59 @@ const labels: Record<BotStatusResponse["status"], string> = {
   error: "Errore",
 };
 
-export function BotStatusCard({ status }: { status: BotStatusResponse | null }) {
+type BotStatusCardProps = {
+  status: BotStatusResponse | null;
+  onDisconnect?: () => Promise<void>;
+  isBusy?: boolean;
+};
+
+function persistenceLabel(status: BotStatusResponse) {
+  if (status.sessionPersisted) {
+    return "Si, sessione salvata sul server";
+  }
+
+  if (status.status === "connected") {
+    return "Connessione attiva, persistenza non ancora confermata";
+  }
+
+  if (status.status === "connecting" || status.status === "waiting_qr" || status.status === "waiting_pairing") {
+    return "Il worker sta ancora preparando o verificando la sessione";
+  }
+
+  return "No, serve un nuovo accesso";
+}
+
+function statusDescription(status: BotStatusResponse) {
+  if (status.isStale) {
+    return "Sto mostrando uno snapshot salvato: il worker non sta fornendo stato fresco in questo momento.";
+  }
+
+  if (status.status === "connected") {
+    return status.sessionPersisted
+      ? "Bot attivo, sessione WhatsApp valida e gia' confermata sul server."
+      : "Bot attivo e collegato adesso. La persistenza della sessione non e' ancora stata confermata dal worker.";
+  }
+
+  if (status.status === "waiting_qr") {
+    return "Sessione assente o scaduta: scansiona il QR reale mostrato dal worker.";
+  }
+
+  if (status.status === "waiting_pairing") {
+    return "Sessione assente o scaduta: usa il codice di pairing reale.";
+  }
+
+  if (status.status === "connecting") {
+    return "Il worker sta aprendo la pagina WhatsApp e verificando la sessione.";
+  }
+
+  if (status.status === "error") {
+    return "Il worker ha incontrato un errore. Controlla il messaggio sotto e riprova.";
+  }
+
+  return "Bot fermo o non inizializzato.";
+}
+
+export function BotStatusCard({ status, onDisconnect, isBusy = false }: BotStatusCardProps) {
   if (!status) {
     return (
       <section className="card">
@@ -39,8 +91,8 @@ export function BotStatusCard({ status }: { status: BotStatusResponse | null }) 
           <dd>{status.phoneNumber ?? "Non disponibile"}</dd>
         </div>
         <div>
-          <dt>Sessione persistita</dt>
-          <dd>{status.sessionPersisted ? "Si, sessione attiva sul server" : "No, serve un nuovo accesso"}</dd>
+          <dt>Persistenza sessione</dt>
+          <dd>{persistenceLabel(status)}</dd>
         </div>
         <div>
           <dt>Aggiornato</dt>
@@ -48,21 +100,21 @@ export function BotStatusCard({ status }: { status: BotStatusResponse | null }) 
         </div>
       </dl>
 
-      <p className="muted">
-        {status.status === "connected"
-          ? "Bot attivo e sessione WhatsApp valida."
-          : status.status === "waiting_qr"
-            ? "Sessione assente o scaduta: scansiona il QR reale mostrato dal worker."
-            : status.status === "waiting_pairing"
-              ? "Sessione assente o scaduta: usa il codice di pairing reale."
-              : status.status === "connecting"
-                ? "Il worker sta aprendo la pagina WhatsApp e verificando la sessione."
-                : status.status === "error"
-                  ? "Il worker ha incontrato un errore. Controlla il messaggio sotto e riprova."
-                  : "Bot fermo o non inizializzato."}
-      </p>
+      <p className="muted">{statusDescription(status)}</p>
 
+      {status.isStale ? <p className="warning-banner">{status.staleReason ?? "Stato non aggiornato in tempo reale."}</p> : null}
       {status.lastError ? <p className="error-banner">{status.lastError}</p> : null}
+
+      {onDisconnect ? (
+        <div className="action-row status-actions">
+          <button className="danger-button" disabled={isBusy} onClick={() => void onDisconnect()} type="button">
+            {isBusy ? "Disconnessione..." : "Disconnetti bot"}
+          </button>
+          <span className="status-note">
+            Chiude la sessione corrente e richiedera' un nuovo QR o un nuovo codice di pairing.
+          </span>
+        </div>
+      ) : null}
     </section>
   );
 }

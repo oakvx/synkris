@@ -31,6 +31,10 @@ services:
       BOT_WORKER_BASE_URL: http://bot-worker:4001
       INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-change-me-internal-token}
       APP_BASE_URL: ${APP_BASE_URL:-http://localhost:8091/#/login}
+      ALLOW_SELF_REGISTRATION: ${ALLOW_SELF_REGISTRATION:-false}
+      ENABLE_BOT_SQL_CONSOLE: ${ENABLE_BOT_SQL_CONSOLE:-false}
+      ALLOW_CLIENT_BOT_START: ${ALLOW_CLIENT_BOT_START:-false}
+      AUTH_COOKIE_SECURE: ${AUTH_COOKIE_SECURE:-true}
     depends_on:
       postgres:
         condition: service_healthy

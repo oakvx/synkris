@@ -40,10 +40,23 @@ function parseOptionalString(input: string | undefined): string | null {
   return value ? value : null;
 }
 
+function isPlaceholderSecret(input: string | undefined): boolean {
+  const normalized = (input ?? "").trim().toLowerCase();
+  if (!normalized) {
+    return true;
+  }
+
+  return ["change-me-internal-token"].includes(normalized);
+}
+
+const nodeEnv = (process.env.NODE_ENV ?? "development").trim().toLowerCase();
+const isProductionLike = !["development", "test"].includes(nodeEnv);
+const internalToken = process.env.INTERNAL_SERVICE_TOKEN ?? "change-me-internal-token";
+
 export const env = {
   nodeEnv: process.env.NODE_ENV ?? "development",
   port: parsePort(process.env.BOT_WORKER_PORT ?? process.env.PORT, 4001),
-  internalToken: process.env.INTERNAL_SERVICE_TOKEN ?? "change-me-internal-token",
+  internalToken,
   provider: (process.env.BOT_PROVIDER ?? "open-wa").trim().toLowerCase(),
   databaseUrl: process.env.DATABASE_URL ?? "",
   sessionDir: path.resolve(process.env.BOT_SESSION_DIR ?? "./bot-sessions"),
@@ -53,3 +66,21 @@ export const env = {
   authTimeoutMs: parsePort(process.env.AUTH_TIMEOUT_MS, 0),
   qrLogSkip: parseBoolean(process.env.BOT_QR_LOG_SKIP, false),
 };
+
+const envProblems: string[] = [];
+if (!env.databaseUrl.trim()) {
+  envProblems.push("DATABASE_URL mancante.");
+}
+
+if (isPlaceholderSecret(env.internalToken) || env.internalToken.trim().length < 24) {
+  const message = "INTERNAL_SERVICE_TOKEN debole o placeholder.";
+  if (isProductionLike) {
+    envProblems.push(message);
+  } else {
+    console.warn(`[bot-worker] ${message}`);
+  }
+}
+
+if (envProblems.length > 0) {
+  throw new Error(`[bot-worker] Configurazione non sicura: ${envProblems.join(" ")}`);
+}

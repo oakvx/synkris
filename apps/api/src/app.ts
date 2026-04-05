@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import cors from "cors";
 import express from "express";
 import { ZodError } from "zod";
@@ -11,18 +12,36 @@ import { settingsRoutes } from "./routes/settingsRoutes.js";
 
 export function createApp() {
   const app = express();
+  const allowDynamicDevelopmentOrigins = env.allowedOrigins.length === 0 && env.nodeEnv === "development";
+
+  app.disable("x-powered-by");
+  app.set("trust proxy", 1);
+
+  app.use((request, response, next) => {
+    response.setHeader("Permissions-Policy", "camera=(), geolocation=(), microphone=()");
+    response.setHeader("Referrer-Policy", "no-referrer");
+    response.setHeader("X-Content-Type-Options", "nosniff");
+    response.setHeader("X-Frame-Options", "DENY");
+    response.setHeader("Cross-Origin-Opener-Policy", "same-origin");
+    response.setHeader("Cross-Origin-Resource-Policy", "same-site");
+    if (request.path.startsWith("/auth")) {
+      response.setHeader("Cache-Control", "no-store");
+    }
+    next();
+  });
 
   app.use(
     cors({
       origin(origin, callback) {
-        if (!origin || env.allowedOrigins.length === 0 || env.allowedOrigins.includes(origin)) {
+        if (!origin || allowDynamicDevelopmentOrigins || env.allowedOrigins.includes(origin)) {
           callback(null, true);
           return;
         }
 
         callback(new Error(`Origin non consentita: ${origin}`));
       },
-      credentials: false,
+      credentials: true,
+      maxAge: 60 * 10,
     }),
   );
 
@@ -34,21 +53,39 @@ export function createApp() {
   app.use("/settings", settingsRoutes);
 
   app.use((error: unknown, _request: express.Request, response: express.Response, _next: express.NextFunction) => {
+    const traceId = randomUUID();
+
     if (error instanceof ZodError) {
       response.status(400).json({
-        error: "Payload non valido.",
-        details: error.flatten(),
+        error: {
+          code: "VALIDATION_ERROR",
+          message: "Payload non valido.",
+          source: "validation",
+          retryable: false,
+          statusCode: 400,
+          details: error.flatten(),
+          traceId,
+        },
       });
       return;
     }
 
     if (isHttpError(error)) {
-      response.status(error.statusCode).json({ error: error.message });
+      response.status(error.statusCode).json({ error: error.toPayload(traceId) });
       return;
     }
 
-    console.error("[api] unexpected error", error);
-    response.status(500).json({ error: "Errore interno del server." });
+    console.error(`[api] unexpected error ${traceId}`, error);
+    response.status(500).json({
+      error: {
+        code: "INTERNAL_SERVER_ERROR",
+        message: "Errore interno del server.",
+        source: "api",
+        retryable: true,
+        statusCode: 500,
+        traceId,
+      },
+    });
   });
 
   return app;

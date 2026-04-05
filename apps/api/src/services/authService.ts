@@ -1,7 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 
 import {
-  AuthResponseSchema,
   ForgotPasswordResponseSchema,
   type PortalUser,
 } from "@whatsapp-ai/shared";
@@ -27,6 +26,11 @@ function hashResetToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
 }
 
+type AuthSessionResult = {
+  sessionToken: string;
+  user: PortalUser;
+};
+
 export class AuthService {
   constructor(
     private readonly userRepository = new UserRepository(),
@@ -35,6 +39,11 @@ export class AuthService {
   ) {}
 
   async register(input: { email: string; password: string; displayName: string }) {
+    const userCount = await this.userRepository.countUsers();
+    if (!env.allowSelfRegistration && userCount > 0) {
+      throw new HttpError(403, "La registrazione pubblica e' disabilitata. Chiedi a un amministratore di creare il tuo account.");
+    }
+
     const existing = await this.userRepository.findByEmail(input.email);
     if (existing) {
       throw new HttpError(409, "Esiste gia un utente con questa email.");
@@ -44,13 +53,14 @@ export class AuthService {
       email: input.email,
       passwordHash: hashPassword(input.password),
       displayName: input.displayName,
+      role: userCount === 0 ? "admin" : "user",
     });
 
     await this.settingsRepository.getOrCreate(user.id, {
       displayName: input.displayName,
     });
 
-    return this.issueAuthResponse(user);
+    return this.issueAuthSession(user);
   }
 
   async login(input: { email: string; password: string }) {
@@ -59,7 +69,7 @@ export class AuthService {
       throw new HttpError(401, "Credenziali non valide.");
     }
 
-    return this.issueAuthResponse(user);
+    return this.issueAuthSession(user);
   }
 
   async getMe(userId: string): Promise<PortalUser> {
@@ -118,17 +128,18 @@ export class AuthService {
     return { message: "Password aggiornata correttamente." };
   }
 
-  private issueAuthResponse(input: { id: string; email: string; displayName: string | null; role: string }) {
+  private issueAuthSession(input: { id: string; email: string; displayName: string | null; role: string }): AuthSessionResult {
     const user = toPortalUser(input);
-    const token = signAccessToken(
+    const sessionToken = signAccessToken(
       {
         sub: user.id,
         email: user.email,
         role: user.role,
       },
       env.jwtSecret,
+      env.authSessionTtlSeconds,
     );
 
-    return AuthResponseSchema.parse({ token, user });
+    return { sessionToken, user };
   }
 }

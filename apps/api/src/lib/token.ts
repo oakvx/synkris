@@ -1,4 +1,4 @@
-import { createHmac } from "node:crypto";
+import { createHmac, timingSafeEqual } from "node:crypto";
 
 import { HttpError } from "./errors.js";
 
@@ -18,8 +18,8 @@ function decodeBase64Url<T>(value: string): T {
   return JSON.parse(raw) as T;
 }
 
-function signSegment(value: string, secret: string): string {
-  return createHmac("sha256", secret).update(value).digest("base64url");
+function signSegment(value: string, secret: string): Buffer {
+  return createHmac("sha256", secret).update(value).digest();
 }
 
 export function signAccessToken(
@@ -34,7 +34,7 @@ export function signAccessToken(
 
   const header = encodeBase64Url(JSON.stringify({ alg: "HS256", typ: "JWT" }));
   const body = encodeBase64Url(JSON.stringify(completePayload));
-  const signature = signSegment(`${header}.${body}`, secret);
+  const signature = signSegment(`${header}.${body}`, secret).toString("base64url");
 
   return `${header}.${body}.${signature}`;
 }
@@ -46,7 +46,11 @@ export function verifyAccessToken(token: string, secret: string): AccessTokenPay
   }
 
   const expectedSignature = signSegment(`${header}.${body}`, secret);
-  if (expectedSignature !== signature) {
+  const receivedSignature = Buffer.from(signature, "base64url");
+  if (
+    expectedSignature.length !== receivedSignature.length ||
+    !timingSafeEqual(expectedSignature, receivedSignature)
+  ) {
     throw new HttpError(401, "Token non valido.");
   }
 

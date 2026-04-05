@@ -2,8 +2,8 @@ import { useEffect, useState } from "react";
 
 import type { UserSettings } from "@whatsapp-ai/shared";
 
-import { useAuth } from "../auth/AuthContext";
-import { apiClient } from "../lib/api";
+import { useAuth } from "../auth/useAuth";
+import { apiClient, getErrorMessage } from "../lib/api";
 
 const defaultSettings: UserSettings = {
   displayName: "",
@@ -37,7 +37,7 @@ export function SettingsPage() {
         }
       } catch (loadError) {
         if (active) {
-          setError(loadError instanceof Error ? loadError.message : "Impossibile caricare le impostazioni.");
+          setError(getErrorMessage(loadError, "Impossibile caricare le impostazioni."));
         }
       } finally {
         if (active) {
@@ -67,7 +67,7 @@ export function SettingsPage() {
       setSettings(saved);
       setMessage("Impostazioni salvate correttamente.");
     } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : "Salvataggio non riuscito.");
+      setError(getErrorMessage(saveError, "Salvataggio non riuscito."));
     } finally {
       setIsSaving(false);
     }

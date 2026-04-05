@@ -22,6 +22,7 @@
     "legacy:start:raw": "node index.js",
     "start:prepare": "node infrastructure/scripts/start-legacy-bot.mjs --prepare-only",
     "dev": "npm run build -w @whatsapp-ai/shared && concurrently \"npm run dev -w @whatsapp-ai/api\" \"npm run dev -w @whatsapp-ai/bot-worker\" \"npm run dev -w @whatsapp-ai/frontend\"",
+    "dev:portal": "npm run build -w @whatsapp-ai/shared && concurrently \"npm run dev -w @whatsapp-ai/api\" \"npm run dev -w @whatsapp-ai/frontend\"",
     "dev:frontend": "npm run build -w @whatsapp-ai/shared && npm run dev -w @whatsapp-ai/frontend",
     "dev:api": "npm run build -w @whatsapp-ai/shared && npm run dev -w @whatsapp-ai/api",
     "dev:bot-worker": "npm run build -w @whatsapp-ai/shared && npm run dev -w @whatsapp-ai/bot-worker",

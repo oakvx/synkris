@@ -8,15 +8,42 @@ import {
 } from "./gcal.js";
 import * as GCAL from "./gcal.js";
 // ============== Logger ==============
-const LV = ["error", "warn", "info", "debug"];
+const LEVEL_PRIORITY = {
+  error: 0,
+  warn: 1,
+  info: 2,
+  analytics: 2,
+  debug: 3,
+};
 const CUR = (process.env.LOG_LEVEL || "info").toLowerCase();
-const okLevel = (l) => LV.indexOf(l) <= LV.indexOf(CUR);
+const CUR_LEVEL = Object.prototype.hasOwnProperty.call(LEVEL_PRIORITY, CUR) ? CUR : "info";
+const okLevel = (l) => {
+  const lvl = String(l || "").toLowerCase();
+  if (!Object.prototype.hasOwnProperty.call(LEVEL_PRIORITY, lvl)) return false;
+  return LEVEL_PRIORITY[lvl] <= LEVEL_PRIORITY[CUR_LEVEL];
+};
 function safeJSON(o) {
   try {
     return JSON.stringify(o);
   } catch {
     return "[circular]";
   }
+}
+function toErrorMeta(error) {
+  if (error instanceof Error) {
+    return {
+      name: error.name,
+      message: error.message,
+      stack: error.stack || null,
+    };
+  }
+  return { message: String(error) };
+}
+function logIgnoredError(scope, error, context = null) {
+  log("warn", `[IGNORED] ${scope}`, {
+    error: toErrorMeta(error),
+    ...(context ? { context } : {}),
+  });
 }
 function log(level, msg, payload = null) {
   const lvl = String(level || "").toLowerCase();
@@ -31,11 +58,69 @@ function log(level, msg, payload = null) {
       : console.log)(line);
 }
 let inactivityClient = null;
+class SafeSendError extends Error {
+  constructor(message, details = {}) {
+    super(message);
+    this.name = "SafeSendError";
+    this.details = details;
+  }
+}
 // --- mini lock per chat ---
 const __busyChats = new Set();
 const __busySince = new Map();
 const BUSY_TTL_MS = Number(process.env.BUSY_TTL_MS || 45000);
 const __delay = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function __normalizeText(value, { stripPunctuation = false, collapseWhitespace = false } = {}) {
+  let out = String(value || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "");
+
+  if (stripPunctuation) out = out.replace(/[^a-z0-9 ]+/g, " ");
+  if (collapseWhitespace) out = out.replace(/\s+/g, " ").trim();
+  return out;
+}
+
+function __toValidDate(value) {
+  if (value === null || typeof value === "undefined" || value === "") return null;
+  const date = value instanceof Date ? value : new Date(value);
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return null;
+  return date;
+}
+
+const __pad2 = (n) => String(n).padStart(2, "0");
+
+function __toHHMM(h, m) {
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return null;
+  if (h < 0 || h > 23 || m < 0 || m > 59) return null;
+  return `${__pad2(h)}:${__pad2(m)}`;
+}
+
+function __sleepSync(ms) {
+  const t = Math.max(0, Number(ms) || 0);
+  if (!t) return;
+  const sab = new SharedArrayBuffer(4);
+  Atomics.wait(new Int32Array(sab), 0, 0, t);
+}
+
+function __writeJsonAtomic(targetPath, data, { ensureDir = true, label = "json" } = {}) {
+  const dir = path.dirname(targetPath);
+  if (ensureDir && !fsSync.existsSync(dir)) fsSync.mkdirSync(dir, { recursive: true });
+
+  const tmp = `${targetPath}.tmp`;
+  try {
+    fsSync.writeFileSync(tmp, JSON.stringify(data, null, 2), "utf8");
+    fsSync.renameSync(tmp, targetPath);
+  } catch (error) {
+    try {
+      if (fsSync.existsSync(tmp)) fsSync.unlinkSync(tmp);
+    } catch (cleanupError) {
+      logIgnoredError(`${label}.cleanupTmp`, cleanupError, { targetPath });
+    }
+    throw error;
+  }
+}
 
 // ==== Dedupe INGRESSO (anti doppio invio WhatsApp / doppia esecuzione) ====
 // Memorizza l’ultimo testo normalizzato per chat e scarta duplicati entro una finestra breve.
@@ -89,7 +174,7 @@ function ensureJsonFile(fileName, defaultValue) {
     } catch {
       const bak = `${p}.bak.${Date.now()}`;
       try { fsSync.copyFileSync(p, bak); } catch (err) {
-        log("warn", "[CATCH] Errore ignorato", { error: String(err) }); // ✅ FIX Bug #17
+        logIgnoredError("ensureJsonFile.copyBackup", err, { fileName, bak });
       }
       fsSync.writeFileSync(p, JSON.stringify(defaultValue, null, 2), "utf8");
       log("warn", "[INIT] JSON invalido riparato:", { fileName, bak });
@@ -130,6 +215,29 @@ const BOOKINGS_PATH = path.join(DATA_DIR, "bookings.json");
 
 const CANCEL_POLICY_HOURS = 3;
 
+function __updateChatDB(chatId, updater) {
+  const key = String(chatId || "");
+  if (!key || typeof updater !== "function") return null;
+
+  const db = loadChatDB();
+  const now = Date.now();
+  const current = db[key] || { msgs: [] };
+  const next = updater(current, now) || current;
+
+  next.firstSeenAt = next.firstSeenAt || now;
+  next.lastActive = now;
+  next.phone = next.phone || chatIdToE164(key) || key;
+
+  db[key] = next;
+  saveChatDB(db);
+  return next;
+}
+
+function __getChatMemory(chatId) {
+  const db = loadChatDB();
+  return db?.[chatId]?.memory || null;
+}
+
 
 // === NEW: re-entry scheduler to avoid lock recursion ===
 function scheduleReenter(client, chatId, text, tools = {}) {
@@ -143,7 +251,7 @@ function scheduleReenter(client, chatId, text, tools = {}) {
             error: String(err && err.stack ? err.stack : err),
           });
         } catch (err) {
-          log("warn", "[CATCH] Errore ignorato", { error: String(err) }); // ✅ FIX Bug #17
+          logIgnoredError("scheduleReenter.handleMessage", err, { chatId });
         }
       });
     }, 0);
@@ -180,9 +288,8 @@ const MESSAGES = {
 
 function formatDateWithWeekdayIT(d) {
   try {
-    if (d === null || typeof d === "undefined" || d === "") return "";
-    const dt = d instanceof Date ? d : new Date(d);
-    if (!dt || Number.isNaN(dt.getTime())) return "";
+    const dt = __toValidDate(d);
+    if (!dt) return "";
     const wd = typeof itaWeekdayName === "function" ? itaWeekdayName(dt) : "";
     const ds = typeof fmtDate === "function" ? fmtDate(dt) : dt.toLocaleDateString("it-IT");
     return wd ? `${wd} ${ds}` : ds;
@@ -765,13 +872,6 @@ function saveBookings(arr) {
     log('warn', '[bookings] Backup fallito', { error: String(err) });
   }
 
-  const sleepSync = (ms) => {
-    const t = Math.max(0, Number(ms) || 0);
-    if (!t) return;
-    const sab = new SharedArrayBuffer(4);
-    Atomics.wait(new Int32Array(sab), 0, 0, t);
-  };
-
   const MAX_TRIES = 5;
   const BASE_DELAY = 60;
   let lastErr = null;
@@ -792,13 +892,13 @@ function saveBookings(arr) {
           log("warn", "[CATCH] Errore ignorato", { error: String(err) }); // ✅ FIX Bug #17
         }
         lastErr = verifyErr;
-        sleepSync(BASE_DELAY * (i + 1));
+        __sleepSync(BASE_DELAY * (i + 1));
         continue;
       }
     } catch (e) {
       log('warn', '[bookings] Write tmp fallito', { attempt: i + 1, error: String(e) });
       lastErr = e;
-      sleepSync(BASE_DELAY * (i + 1));
+      __sleepSync(BASE_DELAY * (i + 1));
       continue;
     }
 
@@ -844,7 +944,7 @@ function saveBookings(arr) {
         try { fsSync.unlinkSync(tmpPath); } catch (err) {
           log("warn", "[CATCH] Errore ignorato", { error: String(err) }); // ✅ FIX Bug #17
         }
-        sleepSync(BASE_DELAY * (i + 1));
+        __sleepSync(BASE_DELAY * (i + 1));
         continue;
       }
     }
@@ -1164,9 +1264,7 @@ function loadHolds() {
 
 function saveHolds(arr) {
   try {
-    const tmp = HOLDS_PATH + ".tmp";
-    fsSync.writeFileSync(tmp, JSON.stringify(arr, null, 2), "utf8");
-    fsSync.renameSync(tmp, HOLDS_PATH);
+    __writeJsonAtomic(HOLDS_PATH, arr, { label: "holds" });
   } catch (e) {
     log("warn", "[holds] save error:", e?.message || e);
   }
@@ -2059,12 +2157,8 @@ function loadChatDB() {
   }
 }
 function saveChatDB(db) {
-  // === corpo di saveChatDB ===
   try {
-    const tmp = CHATDB_PATH + ".tmp";
-    const json = JSON.stringify(db, null, 2);
-    fsSync.writeFileSync(tmp, json, "utf8");
-    fsSync.renameSync(tmp, CHATDB_PATH);
+    __writeJsonAtomic(CHATDB_PATH, db, { label: "chatdb" });
   } catch (e) {
     log("warn", "[chatdb] save error:", e?.message || e);
   }
@@ -2125,17 +2219,14 @@ function chatdbDeleteEntry(chatId) {
 }
 
 function markPrivacySent(chatId) {
-  const db = loadChatDB();
-  const now = Date.now();
-  const entry = db[chatId] || { msgs: [] };
-  entry.firstSeenAt = entry.firstSeenAt || now;
-  entry.lastActive = now;
-  entry.phone = entry.phone || chatIdToE164(chatId) || String(chatId || "");
-  entry.privacy = entry.privacy || {};
-  entry.privacy.version = PRIVACY_NOTICE_VERSION;
-  entry.privacy.sentAt = entry.privacy.sentAt || now;
-  db[chatId] = entry;
-  saveChatDB(db);
+  __updateChatDB(chatId, (entry, now) => ({
+    ...entry,
+    privacy: {
+      ...(entry?.privacy || {}),
+      version: PRIVACY_NOTICE_VERSION,
+      sentAt: entry?.privacy?.sentAt || now,
+    },
+  }));
 }
 
 async function maybeSendPrivacyNotice(client, chatId) {
@@ -2159,16 +2250,14 @@ async function maybeSendPrivacyNotice(client, chatId) {
     if (!__sent) return false;
 
     // 2) persisti dopo invio
-    const now = Date.now();
-    const next = entry || { msgs: [] };
-    next.firstSeenAt = next.firstSeenAt || now;
-    next.lastActive = now;
-    next.phone = next.phone || chatIdToE164(chatId) || String(chatId || "");
-    next.privacy = next.privacy || {};
-    next.privacy.version = PRIVACY_NOTICE_VERSION;
-    next.privacy.sentAt = now;
-    db[chatId] = next;
-    saveChatDB(db);
+    __updateChatDB(chatId, (current, now) => ({
+      ...(current || entry || { msgs: [] }),
+      privacy: {
+        ...((current || entry)?.privacy || {}),
+        version: PRIVACY_NOTICE_VERSION,
+        sentAt: now,
+      },
+    }));
 
     log("info", "[privacy] sent", { chatId });
     return true;
@@ -2211,16 +2300,39 @@ function getRecentMessages(chatId) {
   return db?.[chatId]?.msgs || [];
 }
 function getLastService(chatId) {
+  const memoryService = __getChatMemory(chatId)?.lastService || null;
+  if (memoryService) return memoryService;
+
   const arr = loadBookings()
     .filter((b) => b.clientPhone === chatId && b.status === "confirmed")
     .sort((a, b) => new Date(b.startTime) - new Date(a.startTime));
   return arr[0]?.service || null;
 }
-function getLastInfoTopic(_) {
-  return null;
+function getLastInfoTopic(chatId) {
+  return __getChatMemory(chatId)?.lastInfoTopic || null;
 }
-function rememberService(_) { }
-function rememberInfoTopic(_) { }
+function rememberService(chatId, service) {
+  if (!chatId || !service) return null;
+  return __updateChatDB(chatId, (entry, now) => ({
+    ...entry,
+    memory: {
+      ...(entry?.memory || {}),
+      lastService: String(service),
+      lastServiceAt: now,
+    },
+  }));
+}
+function rememberInfoTopic(chatId, topic) {
+  if (!chatId || !topic) return null;
+  return __updateChatDB(chatId, (entry, now) => ({
+    ...entry,
+    memory: {
+      ...(entry?.memory || {}),
+      lastInfoTopic: String(topic),
+      lastInfoTopicAt: now,
+    },
+  }));
+}
 
 // ============== Safe send & reply (+ booking footer) ==============
 // Dedup messaggi identici consecutivi (riduce spam quando due reply uguali finiscono uno dopo l'altro)
@@ -2255,33 +2367,47 @@ export async function safeSend(client, chatId, text, opts = {}) {
   // ✅ PATCH: Verifica che il client sia pronto
   if (!client || typeof client.sendText !== "function") {
     log("warn", "safeSend: client.sendText not available", { chatId });
+    if (opts?.throwOnError) {
+      throw new SafeSendError("client.sendText not available", { chatId });
+    }
     return "";
   }
 
-  // ✅ PATCH: Aggiungi retry con delay
-  const MAX_RETRIES = 3;
-  const RETRY_DELAY = 1000;
+  const MAX_RETRIES = Math.max(1, Number(opts?.maxRetries) || 3);
+  const RETRY_DELAY = Math.max(100, Number(opts?.retryDelayMs) || 1000);
+  let lastError = null;
+  let delivered = false;
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
       await client.sendText(chatId, t);
       __dedupRemember(chatId, t);
       log("info", `[SEND OK] attempt ${attempt}`, { chatId, preview: t.slice(0, 50) });
-      break; // Successo, esci dal loop
+      delivered = true;
+      break;
     } catch (e) {
+      lastError = e;
       log("warn", `[SEND FAIL] attempt ${attempt}/${MAX_RETRIES}`, {
         chatId,
         err: e?.message || String(e)
       });
 
-      if (attempt === MAX_RETRIES) {
-        log("error", "safeSend: tutti i tentativi falliti", { chatId });
-        return "";
+      if (attempt < MAX_RETRIES) {
+        await new Promise(resolve => setTimeout(resolve, RETRY_DELAY * attempt));
       }
-
-      // Attendi prima di riprovare
-      await new Promise(resolve => setTimeout(resolve, RETRY_DELAY * attempt));
     }
+  }
+
+  if (!delivered) {
+    const sendError = new SafeSendError("safeSend: tutti i tentativi falliti", {
+      chatId,
+      preview: t.slice(0, 120),
+      attempts: MAX_RETRIES,
+      cause: toErrorMeta(lastError),
+    });
+    log("error", sendError.message, sendError.details);
+    if (opts?.throwOnError) throw sendError;
+    return "";
   }
 
   // Footer automatico (solo dopo invio riuscito)
@@ -2479,7 +2605,8 @@ async function fetchWithTimeout(url, opts = {}, timeoutMs = 6000) {
 
 // ISO locale senza "Z" (coerente con Google Calendar wrappers)
 function toISOStringLocal(dateLike) {
-  const d = dateLike instanceof Date ? dateLike : new Date(dateLike);
+  const d = __toValidDate(dateLike);
+  if (!d) return "";
   const tz = d.getTimezoneOffset();
   const local = new Date(d.getTime() - tz * 60_000);
   // yyyy-mm-ddThh:mm:ss
@@ -2901,7 +3028,7 @@ export async function warmOllama() {
         return;
       }
     } catch (err) {
-      log("warn", "[CATCH] Errore ignorato", { error: String(err) }); // ✅ FIX Bug #17
+      logIgnoredError("warmOllama.generate", err, { base, model });
     }
 
     // 2) fallback /api/chat (scalda anche il percorso chat)
@@ -3155,24 +3282,15 @@ function listToOptions(arr) {
   return arr.map((v, i) => `${i + 1}) ${v}`).join("\n");
 }
 function fmtDate(d) {
-  if (d === null || typeof d === "undefined" || d === "") return "";
-  const D = d instanceof Date ? d : new Date(d);
-  if (!D || Number.isNaN(D.getTime())) return "";
+  const D = __toValidDate(d);
+  if (!D) return "";
   if (D.getFullYear && D.getFullYear() <= 1971) return "";
-  return `${String(D.getDate()).padStart(2, "0")}/${String(
-    D.getMonth() + 1
-  ).padStart(2, "0")}/${D.getFullYear()}`;
+  return `${__pad2(D.getDate())}/${__pad2(D.getMonth() + 1)}/${D.getFullYear()}`;
 }
 
 // "domenica 28/12/2025"
 function fmtDateWithWeekdayIT(d) {
-  if (d === null || typeof d === "undefined" || d === "") return "";
-  const D = d instanceof Date ? d : new Date(d);
-  if (!D || Number.isNaN(D.getTime())) return "";
-  if (D.getFullYear && D.getFullYear() <= 1971) return "";
-  const wd = typeof itaWeekdayName === "function" ? itaWeekdayName(D) : "";
-  const ds = fmtDate(D);
-  return wd ? `${wd} ${ds}` : ds;
+  return formatDateWithWeekdayIT(d);
 }
 
 function _buildRescheduleConfirmation(prevStartISO, nextStartISO) {
@@ -3213,10 +3331,7 @@ function _buildRescheduleConfirmation(prevStartISO, nextStartISO) {
 }
 
 function timeToMinutes(hhmm) {
-  const parts = String(hhmm || "").split(":");
-  const h = Number(parts[0] || 0);
-  const m = Number(parts[1] || 0);
-  return h * 60 + (m || 0);
+  return __hhmmToMinutes(hhmm) ?? 0;
 }
 // Ritorna true se il professionista è OFF per tutta la giornata (da config.unavailability)
 function isProfessionalOffFullDay({ professionalEmail, day }) {
@@ -3352,8 +3467,7 @@ function isProfessionalOffFullDay({ professionalEmail, day }) {
 function minutesToHHMM(min) {
   const H = Math.floor(min / 60);
   const M = min % 60;
-  const pad2 = (n) => (n < 10 ? "0" + n : "" + n);
-  return `${pad2(H)}:${pad2(M)}`;
+  return __toHHMM(H, M) || "00:00";
 }
 
 /**
@@ -3380,13 +3494,6 @@ function parseNaturalTime(s = "") {
   if (!t) return null;
 
   const txt = String(t).trim();
-
-  const pad2 = (n) => String(n).padStart(2, "0");
-  const clamp = (h, m) => {
-    if (!Number.isFinite(h) || !Number.isFinite(m)) return null;
-    if (h < 0 || h > 23 || m < 0 || m > 59) return null;
-    return `${pad2(h)}:${pad2(m)}`;
-  };
 
   const normSpaces = (x) => String(x || "").trim().replace(/\s+/g, " ");
 
@@ -3490,7 +3597,7 @@ function parseNaturalTime(s = "") {
     if (m) {
       const h = applyMeridiem(+m[1], m[3]);
       const mm = +m[2];
-      const out = clamp(h, mm);
+      const out = __toHHMM(h, mm);
       if (out) return out;
     }
   }
@@ -3507,7 +3614,7 @@ function parseNaturalTime(s = "") {
       const mm0 = parseMinToken(m[2]);
       if (h0 != null && mm0 != null) {
         const h = applyMeridiem(h0, null);
-        const out = clamp(h, mm0);
+        const out = __toHHMM(h, mm0);
         if (out) return out;
       }
     }
@@ -3527,7 +3634,7 @@ function parseNaturalTime(s = "") {
         const hMer = applyMeridiem(hRaw, null);
         const h = (hMer - 1 + 24) % 24;
         const mm = 60 - mmRaw;
-        const out = clamp(h, mm);
+        const out = __toHHMM(h, mm);
         if (out) return out;
       }
     }
@@ -3555,7 +3662,7 @@ function parseNaturalTime(s = "") {
         if (hh <= 23 && mm <= 59) {
           const mer = txt.match(/\b(a\.?m\.?|p\.?m\.?|am|pm)\b/i)?.[1] || null;
           const h = applyMeridiem(hh, mer);
-          const out = clamp(h, mm);
+          const out = __toHHMM(h, mm);
           if (out) return out;
         }
       }
@@ -3583,7 +3690,7 @@ function parseNaturalTime(s = "") {
         const h0 = parseHourToken(m[1]);
         if (h0 != null) {
           const h = applyMeridiem(h0, m[2]);
-          const out = clamp(h, 0);
+          const out = __toHHMM(h, 0);
           if (out) return out;
         }
       }
@@ -3602,7 +3709,7 @@ function parseNaturalTime(s = "") {
       if (isSafe) {
         const mer = txt.match(/\b(a\.?m\.?|p\.?m\.?|am|pm)\b/i)?.[1] || null;
         const h = applyMeridiem(+m[1], mer);
-        const out = clamp(h, +m[2]);
+        const out = __toHHMM(h, +m[2]);
         if (out) return out;
       }
     }
@@ -3623,13 +3730,6 @@ function parseTimeRangeFallback(s = "") {
     .trim();
 
   if (!t) return null;
-
-  const pad2 = (n) => String(n).padStart(2, "0");
-  const clamp = (h, m) => {
-    if (!Number.isFinite(h) || !Number.isFinite(m)) return null;
-    if (h < 0 || h > 23 || m < 0 || m > 59) return null;
-    return `${pad2(h)}:${pad2(m)}`;
-  };
 
   // Attiva fallback solo se ci sono indizi di "range/approssimazione"
   // (evita di sovrascrivere date reali tipo 11/12 come "orario")
@@ -3675,7 +3775,7 @@ function parseTimeRangeFallback(s = "") {
     mm = 0;
   }
 
-  return clamp(hh, mm);
+  return __toHHMM(hh, mm);
 }
 
 
@@ -3891,13 +3991,7 @@ function nextOpenDay(fromDate) {
   return atNoon(fromDate);
 }
 function simpleNorm(s) {
-  return (s || "")
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/\p{Diacritic}/gu, "")
-    .replace(/[^a-z0-9 ]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+  return __normalizeText(s, { stripPunctuation: true, collapseWhitespace: true });
 }
 
 function setTime(date, hhmm) {
@@ -3953,10 +4047,7 @@ const INT_IT = {
 };
 
 function _norm(s) {
-  return String(s || "")
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/\p{Diacritic}/gu, "");
+  return __normalizeText(s);
 }
 function _startOfISOWeek(d) {
   const x = new Date(d);
@@ -3982,10 +4073,7 @@ function _toInt(tok) {
 
 
 function norm(text) {
-  return String(text || "")
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase();
+  return __normalizeText(text);
 }
 
 // ============== Riconoscimento servizio ==============
@@ -8225,7 +8313,7 @@ export async function handleMessage(client, chatId, textRaw, tools = {}) {
     try {
       __privacySentNow = await maybeSendPrivacyNotice(client, chatId);
     } catch (err) {
-      log("warn", "[privacy] errore ignorato", err?.message || err);
+      logIgnoredError("privacy.notice", err, { chatId });
     }
 
     // Review reply (non avvia prenotazione)
@@ -8235,7 +8323,7 @@ export async function handleMessage(client, chatId, textRaw, tools = {}) {
         if (__handled) return "";
       }
     } catch (err) {
-      log("warn", "[review-reply] errore ignorato", err?.message || err);
+      logIgnoredError("review.reply", err, { chatId });
     }
 
     // Saluto solo se NON ho appena inviato privacy (evita doppio messaggio)
@@ -8256,11 +8344,11 @@ export async function handleMessage(client, chatId, textRaw, tools = {}) {
 
     if (inFlow && lastAt && Date.now() - lastAt > MAX_IDLE) {
       try { pending.delete(chatId); } catch (err) {
-        log("warn", "[CATCH] Errore ignorato", { error: String(err) }); // ✅ FIX Bug #17
+        logIgnoredError("handleMessage.pending.delete", err, { chatId });
       }
       try { __dateParsingLocks.delete(chatId); } catch { }
       try { releaseSoftHoldByChat?.(chatId); } catch (err) {
-        log("warn", "[CATCH] Errore ignorato", { error: String(err) }); // ✅ FIX Bug #17
+        logIgnoredError("handleMessage.releaseSoftHold", err, { chatId });
       }
 
       // Riparti pulito
@@ -8278,7 +8366,7 @@ export async function handleMessage(client, chatId, textRaw, tools = {}) {
       return "";
     }
   } catch (err) {
-    log("warn", "[CATCH] Errore ignorato", { error: String(err) }); // ✅ FIX Bug #17
+    logIgnoredError("handleMessage.idle-reset", err, { chatId });
   }
 
   // Tracking leggero per capire se l'utente è bloccato nello stesso step (per suggerimenti)
@@ -8309,7 +8397,7 @@ export async function handleMessage(client, chatId, textRaw, tools = {}) {
 
     pending.set(chatId, state);
   } catch (err) {
-    log("warn", "[CATCH] Errore ignorato", { error: String(err) }); // ✅ FIX Bug #17
+    logIgnoredError("handleMessage.step-tracking", err, { chatId, step: state?.step || null });
   }
 
   // ============================================================================
@@ -15558,18 +15646,6 @@ async function greetIfReturningUser(chatId, client, state) {
  * @returns The `setAndPersist` function returns different values based on the input arguments:
  */
 export function setAndPersist(a, b, c, d) {
-  const writeAtomic = (targetPath, data) => {
-    try {
-      const dir = path.dirname(targetPath);
-      if (!fsSync.existsSync(dir)) fsSync.mkdirSync(dir, { recursive: true });
-      const tmp = targetPath + ".tmp";
-      fsSync.writeFileSync(tmp, JSON.stringify(data, null, 2), "utf8");
-      fsSync.renameSync(tmp, targetPath);
-    } catch (e) {
-      throw new Error(`writeAtomic failed: ${e?.message || e}`);
-    }
-  };
-
   const resolvePath = (p) =>
     path.isAbsolute(String(p || ""))
       ? p
@@ -15579,7 +15655,7 @@ export function setAndPersist(a, b, c, d) {
     // caso: (filePath, obj)
     if (typeof a === "string" && typeof b === "object" && b !== null && c === undefined) {
       const filePath = resolvePath(a);
-      writeAtomic(filePath, b);
+      __writeJsonAtomic(filePath, b, { label: "setAndPersist" });
       return b;
     }
 
@@ -15587,7 +15663,7 @@ export function setAndPersist(a, b, c, d) {
     if (typeof a === "object" && a !== null && typeof b === "string" && c === undefined) {
       const stateObj = a;
       const filePath = resolvePath(b);
-      writeAtomic(filePath, stateObj);
+      __writeJsonAtomic(filePath, stateObj, { label: "setAndPersist" });
       return stateObj;
     }
 
@@ -15603,7 +15679,7 @@ export function setAndPersist(a, b, c, d) {
           : path.join(DATA_DIR || ".", "state.json");
       // aggiorna in-place
       stateObj[key] = value;
-      writeAtomic(filePath, stateObj);
+      __writeJsonAtomic(filePath, stateObj, { label: "setAndPersist" });
       return stateObj;
     }
 

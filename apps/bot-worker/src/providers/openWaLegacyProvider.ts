@@ -2,6 +2,7 @@ import { mkdir, readdir } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
 
+import { getChromePath } from "chrome-launcher";
 import type { ConnectionMode } from "@whatsapp-ai/shared";
 
 import { env } from "../config/env.js";
@@ -79,6 +80,7 @@ type RuntimeSession = {
   reminderIntervalId?: NodeJS.Timeout;
   sessionId: string;
   stateListenerAttached: boolean;
+  terminalQrCleanup?: () => void;
   userId: string;
   wildcardListener?: RuntimeListener;
 };
@@ -87,10 +89,30 @@ const runtimes = new Map<string, RuntimeSession>();
 const require = createRequire(import.meta.url);
 const TerminalQrCode = require("qrcode-terminal/vendor/QRCode");
 const TerminalQrErrorLevel = require("qrcode-terminal/vendor/QRCode/QRErrorCorrectLevel");
+const terminalQrConsumers = new Map<string, (payload: { dataUrl: string | null; ascii: string }) => void>();
+const terminalQrAnsiPattern = /\u001b\[[0-9;?]*[ -/]*[@-~]/g;
+const terminalQrFullBlock = "\u2588";
+const terminalQrUpperHalfBlock = "\u2580";
+const terminalQrLowerHalfBlock = "\u2584";
+const terminalQrVerticalBorder = "\u2502";
+const terminalQrTopLeftBorder = "\u250c";
+const terminalQrTopRightBorder = "\u2510";
+const terminalQrBottomLeftBorder = "\u2514";
+const terminalQrBottomRightBorder = "\u2518";
+const terminalQrCellPattern = new RegExp(
+  `[${terminalQrUpperHalfBlock}${terminalQrLowerHalfBlock}${terminalQrFullBlock}]`,
+  "u",
+);
 
 let openWaModulePromise: Promise<OpenWaRuntimeModule> | null = null;
 let legacyRuntimePromise: Promise<LegacyRuntimeModule> | null = null;
 let legacyWarmupPromise: Promise<void> | null = null;
+let detectedChromePath: string | null | undefined;
+let terminalQrObserverInstalled = false;
+let terminalQrActiveSessionId: string | null = null;
+let terminalQrCapturedLines: string[] = [];
+let terminalQrStdoutBuffer = "";
+let terminalQrStderrBuffer = "";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -120,6 +142,29 @@ function toErrorMessage(error: unknown): string {
   return String(error);
 }
 
+function resolveChromeExecutablePath(): string | null {
+  if (env.chromePath) {
+    return env.chromePath;
+  }
+
+  if (detectedChromePath !== undefined) {
+    return detectedChromePath;
+  }
+
+  try {
+    const chromePath = getChromePath()?.trim();
+    detectedChromePath = chromePath || null;
+    if (detectedChromePath) {
+      log(`Chrome rilevato automaticamente: ${detectedChromePath}`);
+    }
+  } catch (error) {
+    detectedChromePath = null;
+    warn("rilevamento automatico di Chrome fallito", error);
+  }
+
+  return detectedChromePath;
+}
+
 function normalizePhoneNumber(input: string | null | undefined): string | null {
   const digits = String(input ?? "").replace(/\D/g, "");
   return digits ? digits : null;
@@ -129,7 +174,7 @@ function svgToDataUrl(svg: string): string {
   return `data:image/svg+xml;base64,${Buffer.from(svg, "utf8").toString("base64")}`;
 }
 
-function renderQrDataUrlFromRaw(value: string): string | null {
+function buildQrMatrixFromRaw(value: string): boolean[][] | null {
   const raw = value.trim();
   if (!raw) {
     return null;
@@ -141,14 +186,40 @@ function renderQrDataUrlFromRaw(value: string): string | null {
     qr.make();
 
     const moduleCount = Number(qr.getModuleCount?.() ?? 0);
-    const padding = 4;
-    const pixelSize = 8;
-    const canvasSize = (moduleCount + padding * 2) * pixelSize;
-    const cells: string[] = [];
+    const matrix: boolean[][] = [];
 
     for (let row = 0; row < moduleCount; row += 1) {
+      const matrixRow: boolean[] = [];
       for (let col = 0; col < moduleCount; col += 1) {
-        if (!qr.isDark(row, col)) {
+        matrixRow.push(Boolean(qr.isDark(row, col)));
+      }
+      matrix.push(matrixRow);
+    }
+
+    return matrix;
+  } catch (error) {
+    warn("ricostruzione matrice QR dal dato grezzo fallita", error);
+    return null;
+  }
+}
+
+function renderQrDataUrlFromMatrix(matrix: boolean[][]): string | null {
+  if (matrix.length === 0 || matrix[0]?.length === 0) {
+    return null;
+  }
+
+  try {
+    const padding = 4;
+    const pixelSize = 8;
+    const rows = matrix.length;
+    const columns = matrix[0]!.length;
+    const canvasWidth = (columns + padding * 2) * pixelSize;
+    const canvasHeight = (rows + padding * 2) * pixelSize;
+    const cells: string[] = [];
+
+    for (let row = 0; row < rows; row += 1) {
+      for (let col = 0; col < columns; col += 1) {
+        if (!matrix[row]?.[col]) {
           continue;
         }
 
@@ -159,8 +230,8 @@ function renderQrDataUrlFromRaw(value: string): string | null {
     }
 
     const svg = [
-      `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${canvasSize} ${canvasSize}" width="${canvasSize}" height="${canvasSize}" shape-rendering="crispEdges">`,
-      `<rect width="${canvasSize}" height="${canvasSize}" fill="#ffffff" />`,
+      `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${canvasWidth} ${canvasHeight}" width="${canvasWidth}" height="${canvasHeight}" shape-rendering="crispEdges">`,
+      `<rect width="${canvasWidth}" height="${canvasHeight}" fill="#ffffff" />`,
       `<g fill="#111111">`,
       cells.join(""),
       "</g>",
@@ -174,6 +245,456 @@ function renderQrDataUrlFromRaw(value: string): string | null {
   }
 }
 
+function renderQrDataUrlFromRaw(value: string): string | null {
+  const matrix = buildQrMatrixFromRaw(value);
+  if (!matrix) {
+    return null;
+  }
+
+  return renderQrDataUrlFromMatrix(matrix);
+}
+
+function encodeTerminalQrCell(top: boolean, bottom: boolean): string {
+  if (top && bottom) {
+    return terminalQrFullBlock;
+  }
+
+  if (top) {
+    return terminalQrUpperHalfBlock;
+  }
+
+  if (bottom) {
+    return terminalQrLowerHalfBlock;
+  }
+
+  return " ";
+}
+
+function renderTerminalQrAsciiFromMatrix(matrix: boolean[][]): string | null {
+  const trimmed = trimTerminalQrMatrix(matrix);
+  if (trimmed.length === 0 || trimmed[0]?.length === 0) {
+    return null;
+  }
+
+  const quietZone = 2;
+  const columns = trimmed[0]!.length + quietZone * 2;
+  const paddedRows: boolean[][] = [];
+
+  for (let index = 0; index < quietZone; index += 1) {
+    paddedRows.push(Array.from({ length: columns }, () => false));
+  }
+
+  for (const row of trimmed) {
+    paddedRows.push([
+      ...Array.from({ length: quietZone }, () => false),
+      ...row,
+      ...Array.from({ length: quietZone }, () => false),
+    ]);
+  }
+
+  for (let index = 0; index < quietZone; index += 1) {
+    paddedRows.push(Array.from({ length: columns }, () => false));
+  }
+
+  if (paddedRows.length % 2 !== 0) {
+    paddedRows.push(Array.from({ length: columns }, () => false));
+  }
+
+  const contentLines: string[] = [];
+
+  for (let row = 0; row < paddedRows.length; row += 2) {
+    const topRow = paddedRows[row]!;
+    const bottomRow = paddedRows[row + 1]!;
+    let content = "";
+
+    for (let col = 0; col < columns; col += 1) {
+      content += encodeTerminalQrCell(Boolean(topRow[col]), Boolean(bottomRow[col]));
+    }
+
+    contentLines.push(`${terminalQrVerticalBorder}${content}${terminalQrVerticalBorder}`);
+  }
+
+  const width = contentLines[0]?.length ?? 0;
+  if (!width) {
+    return null;
+  }
+
+  const topBorder = `${terminalQrTopLeftBorder}${"─".repeat(Math.max(0, width - 2))}${terminalQrTopRightBorder}`;
+  const bottomBorder = `${terminalQrBottomLeftBorder}${"─".repeat(Math.max(0, width - 2))}${terminalQrBottomRightBorder}`;
+  return [topBorder, ...contentLines, bottomBorder].join("\n");
+}
+
+function renderTerminalQrAsciiFromRaw(value: string): string | null {
+  const matrix = buildQrMatrixFromRaw(value);
+  if (!matrix) {
+    return null;
+  }
+
+  return renderTerminalQrAsciiFromMatrix(matrix);
+}
+
+function stripTerminalAnsi(value: string): string {
+  return value.replace(terminalQrAnsiPattern, "").replace(/\r/g, "");
+}
+
+function isTerminalQrCell(value: string): boolean {
+  return terminalQrCellPattern.test(value);
+}
+
+function matchTerminalQrStartLine(value: string): string | null {
+  const escapedTopLeft = terminalQrTopLeftBorder.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const escapedTopRight = terminalQrTopRightBorder.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = value.match(new RegExp(`^${escapedTopLeft}.*\\b(session-[A-Za-z0-9_-]+)\\b.*${escapedTopRight}$`, "u"));
+  return match?.[1] ?? null;
+}
+
+function isTerminalQrEndLine(value: string): boolean {
+  const trimmed = value.trim();
+  return trimmed.startsWith(terminalQrBottomLeftBorder) && trimmed.endsWith(terminalQrBottomRightBorder);
+}
+
+function tryRenderQrDataUrlFromTerminalBlock(lines: string[]): string | null {
+  const borderlessLines = lines.map((line) => {
+    const cleaned = stripTerminalAnsi(line);
+    const characters = [...cleaned];
+    if (characters[0] === terminalQrVerticalBorder && characters[characters.length - 1] === terminalQrVerticalBorder) {
+      return characters.slice(1, -1).join("");
+    }
+
+    return cleaned;
+  });
+
+  let firstQrRow = -1;
+  let lastQrRow = -1;
+
+  for (let index = 0; index < borderlessLines.length; index += 1) {
+    if (isTerminalQrCell(borderlessLines[index]!)) {
+      firstQrRow = index;
+      break;
+    }
+  }
+
+  for (let index = borderlessLines.length - 1; index >= 0; index -= 1) {
+    if (isTerminalQrCell(borderlessLines[index]!)) {
+      lastQrRow = index;
+      break;
+    }
+  }
+
+  if (firstQrRow === -1 || lastQrRow === -1 || firstQrRow > lastQrRow) {
+    return null;
+  }
+
+  const relevantLines = borderlessLines.slice(firstQrRow, lastQrRow + 1).map((line) => [...line]);
+  let minColumn = Number.POSITIVE_INFINITY;
+  let maxColumn = -1;
+
+  for (const line of relevantLines) {
+    for (let index = 0; index < line.length; index += 1) {
+      if (!isTerminalQrCell(line[index]!)) {
+        continue;
+      }
+
+      minColumn = Math.min(minColumn, index);
+      maxColumn = Math.max(maxColumn, index);
+    }
+  }
+
+  if (!Number.isFinite(minColumn) || maxColumn < minColumn) {
+    return null;
+  }
+
+  const matrix: boolean[][] = [];
+
+  for (const line of relevantLines) {
+    const topRow: boolean[] = [];
+    const bottomRow: boolean[] = [];
+
+    for (let index = minColumn; index <= maxColumn; index += 1) {
+      const [topCell, bottomCell] = decodeTerminalQrCell(line[index] ?? " ");
+      topRow.push(topCell);
+      bottomRow.push(bottomCell);
+    }
+
+    matrix.push(topRow, bottomRow);
+  }
+
+  return renderQrDataUrlFromMatrix(trimTerminalQrMatrix(matrix));
+}
+
+function decodeTerminalQrCell(value: string): [boolean, boolean] {
+  if (value === terminalQrFullBlock) {
+    return [true, true];
+  }
+
+  if (value === terminalQrUpperHalfBlock) {
+    return [true, false];
+  }
+
+  if (value === terminalQrLowerHalfBlock) {
+    return [false, true];
+  }
+
+  switch (value) {
+    case "█":
+      return [true, true];
+    case "▀":
+      return [true, false];
+    case "▄":
+      return [false, true];
+    default:
+      return [false, false];
+  }
+}
+
+function trimTerminalQrMatrix(matrix: boolean[][]): boolean[][] {
+  let top = 0;
+  let bottom = matrix.length - 1;
+
+  while (top <= bottom && matrix[top]!.every((cell) => !cell)) {
+    top += 1;
+  }
+
+  while (bottom >= top && matrix[bottom]!.every((cell) => !cell)) {
+    bottom -= 1;
+  }
+
+  if (top > bottom) {
+    return [];
+  }
+
+  let left = 0;
+  let right = matrix[0]!.length - 1;
+
+  while (left <= right && matrix.every((row) => !row[left])) {
+    left += 1;
+  }
+
+  while (right >= left && matrix.every((row) => !row[right])) {
+    right -= 1;
+  }
+
+  if (left > right) {
+    return [];
+  }
+
+  return matrix.slice(top, bottom + 1).map((row) => row.slice(left, right + 1));
+}
+
+function buildTerminalQrAsciiBlock(lines: string[]): string {
+  return lines.map((line) => stripTerminalAnsi(line).trimEnd()).join("\n").trim();
+}
+
+function renderQrDataUrlFromTerminalBlock(lines: string[]): string | null {
+  const robustDataUrl = tryRenderQrDataUrlFromTerminalBlock(lines);
+  if (robustDataUrl) {
+    return robustDataUrl;
+  }
+
+  const borderlessLines = lines.map((line) => {
+    const cleaned = stripTerminalAnsi(line);
+    const characters = [...cleaned];
+    if (characters[0] === "│" && characters[characters.length - 1] === "│") {
+      return characters.slice(1, -1).join("");
+    }
+
+    return cleaned;
+  });
+
+  let firstQrRow = -1;
+  let lastQrRow = -1;
+
+  for (let index = 0; index < borderlessLines.length; index += 1) {
+    if (/[▀▄█]/u.test(borderlessLines[index]!)) {
+      firstQrRow = index;
+      break;
+    }
+  }
+
+  for (let index = borderlessLines.length - 1; index >= 0; index -= 1) {
+    if (/[▀▄█]/u.test(borderlessLines[index]!)) {
+      lastQrRow = index;
+      break;
+    }
+  }
+
+  if (firstQrRow === -1 || lastQrRow === -1 || firstQrRow > lastQrRow) {
+    return null;
+  }
+
+  const relevantLines = borderlessLines.slice(firstQrRow, lastQrRow + 1).map((line) => [...line]);
+  let minColumn = Number.POSITIVE_INFINITY;
+  let maxColumn = -1;
+
+  for (const line of relevantLines) {
+    for (let index = 0; index < line.length; index += 1) {
+      if (!/[▀▄█]/u.test(line[index]!)) {
+        continue;
+      }
+
+      minColumn = Math.min(minColumn, index);
+      maxColumn = Math.max(maxColumn, index);
+    }
+  }
+
+  if (!Number.isFinite(minColumn) || maxColumn < minColumn) {
+    return null;
+  }
+
+  const matrix: boolean[][] = [];
+
+  for (const line of relevantLines) {
+    const topRow: boolean[] = [];
+    const bottomRow: boolean[] = [];
+
+    for (let index = minColumn; index <= maxColumn; index += 1) {
+      const [topCell, bottomCell] = decodeTerminalQrCell(line[index] ?? " ");
+      topRow.push(topCell);
+      bottomRow.push(bottomCell);
+    }
+
+    matrix.push(topRow, bottomRow);
+  }
+
+  return renderQrDataUrlFromMatrix(trimTerminalQrMatrix(matrix));
+}
+
+function applyTerminalQrData(runtime: RuntimeSession, dataUrl: string | null, qrCodeAscii: string | null = null) {
+  runtime.record = withUpdatedRecord(runtime.record, {
+    status: "waiting_qr",
+    qrCodeDataUrl: dataUrl,
+    qrCodeAscii,
+    pairingCode: null,
+    lastError: null,
+    connectedAt: null,
+  });
+}
+
+function processTerminalQrLine(line: string) {
+  const cleaned = stripTerminalAnsi(line);
+  if (!cleaned) {
+    return;
+  }
+
+  const matchedSessionId = matchTerminalQrStartLine(cleaned);
+  if (matchedSessionId) {
+    terminalQrActiveSessionId = matchedSessionId;
+    terminalQrCapturedLines = [cleaned];
+    return;
+  }
+
+  const startMatch = cleaned.match(/^┌.*\b(session-[A-Za-z0-9_-]+)\b.*┐$/u);
+  if (startMatch) {
+    terminalQrActiveSessionId = startMatch[1]!;
+    terminalQrCapturedLines = [cleaned];
+    return;
+  }
+
+  if (!terminalQrActiveSessionId) {
+    return;
+  }
+
+  terminalQrCapturedLines.push(cleaned);
+  if (isTerminalQrEndLine(cleaned)) {
+    const consumer = terminalQrConsumers.get(terminalQrActiveSessionId);
+    const ascii = buildTerminalQrAsciiBlock(terminalQrCapturedLines);
+    const dataUrl = renderQrDataUrlFromTerminalBlock(terminalQrCapturedLines);
+    if (consumer) {
+      consumer({ dataUrl, ascii });
+    }
+
+    terminalQrActiveSessionId = null;
+    terminalQrCapturedLines = [];
+    return;
+  }
+  if (!cleaned.trim().startsWith("└") || !cleaned.trim().endsWith("┘")) {
+    return;
+  }
+
+  const consumer = terminalQrConsumers.get(terminalQrActiveSessionId);
+  const ascii = buildTerminalQrAsciiBlock(terminalQrCapturedLines);
+  const dataUrl = renderQrDataUrlFromTerminalBlock(terminalQrCapturedLines);
+  if (consumer) {
+    consumer({ dataUrl, ascii });
+  }
+
+  terminalQrActiveSessionId = null;
+  terminalQrCapturedLines = [];
+}
+
+function installTerminalQrObserver() {
+  if (terminalQrObserverInstalled) {
+    return;
+  }
+
+  const interceptStream = (
+    stream: NodeJS.WriteStream,
+    getBuffer: () => string,
+    setBuffer: (value: string) => void,
+  ) => {
+    const target = stream as NodeJS.WriteStream & { write: (...args: unknown[]) => boolean };
+    const originalWrite = target.write.bind(target);
+
+    target.write = (...args: unknown[]) => {
+      const [chunk, encoding] = args;
+      const normalizedEncoding =
+        typeof encoding === "string" && Buffer.isEncoding(encoding)
+          ? (encoding as BufferEncoding)
+          : undefined;
+      const text = Buffer.isBuffer(chunk)
+        ? chunk.toString(normalizedEncoding)
+        : typeof chunk === "string"
+          ? chunk
+          : String(chunk ?? "");
+
+      if (text) {
+        let buffer = getBuffer() + text;
+        const lines = buffer.split(/\r?\n/u);
+        buffer = lines.pop() ?? "";
+        setBuffer(buffer);
+        for (const line of lines) {
+          processTerminalQrLine(line);
+        }
+      }
+
+      return originalWrite(...args);
+    };
+  };
+
+  interceptStream(process.stdout, () => terminalQrStdoutBuffer, (value) => {
+    terminalQrStdoutBuffer = value;
+  });
+  interceptStream(process.stderr, () => terminalQrStderrBuffer, (value) => {
+    terminalQrStderrBuffer = value;
+  });
+  terminalQrObserverInstalled = true;
+}
+
+function ensureTerminalQrFallback(runtime: RuntimeSession) {
+  if (runtime.terminalQrCleanup) {
+    return;
+  }
+
+  installTerminalQrObserver();
+  const consumer = (payload: { dataUrl: string | null; ascii: string }) => {
+    applyTerminalQrData(runtime, payload.dataUrl, payload.ascii);
+    log(`QR ASCII catturato dal terminale per ${runtime.userId}`, {
+      sessionId: runtime.sessionId,
+      hasImage: Boolean(payload.dataUrl),
+      asciiLength: payload.ascii.length,
+    });
+  };
+
+  terminalQrConsumers.set(runtime.sessionId, consumer);
+  runtime.terminalQrCleanup = () => {
+    const currentConsumer = terminalQrConsumers.get(runtime.sessionId);
+    if (currentConsumer === consumer) {
+      terminalQrConsumers.delete(runtime.sessionId);
+    }
+    runtime.terminalQrCleanup = undefined;
+  };
+}
+
 function withUpdatedRecord(record: SessionRecord, patch: Partial<SessionRecord>): SessionRecord {
   return {
     ...record,
@@ -182,10 +703,30 @@ function withUpdatedRecord(record: SessionRecord, patch: Partial<SessionRecord>)
   };
 }
 
+function mergeRuntimeRecord(
+  liveRecord: SessionRecord,
+  incomingRecord: SessionRecord,
+  mode: ConnectionMode | null = null,
+): SessionRecord {
+  return {
+    ...incomingRecord,
+    ...liveRecord,
+    connectionMode: mode ?? liveRecord.connectionMode ?? incomingRecord.connectionMode,
+    qrCodeDataUrl: liveRecord.qrCodeDataUrl ?? incomingRecord.qrCodeDataUrl ?? null,
+    qrCodeAscii: liveRecord.qrCodeAscii ?? incomingRecord.qrCodeAscii ?? null,
+    pairingCode: liveRecord.pairingCode ?? incomingRecord.pairingCode ?? null,
+    phoneNumber: liveRecord.phoneNumber ?? incomingRecord.phoneNumber ?? null,
+    lastError: liveRecord.lastError ?? incomingRecord.lastError ?? null,
+    connectedAt: liveRecord.connectedAt ?? incomingRecord.connectedAt ?? null,
+    sessionPersisted: liveRecord.sessionPersisted || incomingRecord.sessionPersisted,
+    autoConnectAt: liveRecord.autoConnectAt ?? incomingRecord.autoConnectAt ?? null,
+  };
+}
+
 async function hasPersistedArtifacts(userId: string): Promise<boolean> {
   try {
-    const entries = await readdir(resolveUserDir(userId), { withFileTypes: true });
-    return entries.some((entry) => entry.name !== "session.json");
+    const entries = await readdir(resolveSessionDataDir(userId), { withFileTypes: true });
+    return entries.some((entry) => entry.name !== ".DS_Store");
   } catch {
     return false;
   }
@@ -194,11 +735,7 @@ async function hasPersistedArtifacts(userId: string): Promise<boolean> {
 function getOrCreateRuntime(record: SessionRecord, mode: ConnectionMode | null): RuntimeSession {
   const existing = runtimes.get(record.userId);
   if (existing) {
-    existing.record = {
-      ...existing.record,
-      ...record,
-      connectionMode: mode ?? existing.record.connectionMode,
-    };
+    existing.record = mergeRuntimeRecord(existing.record, record, mode);
     if (mode) {
       existing.mode = mode;
     }
@@ -320,6 +857,10 @@ async function disposeRuntime(runtime: RuntimeSession, removeFromCache = false) 
   await stopRuntimeClient(runtime);
 
   if (removeFromCache) {
+    runtime.terminalQrCleanup?.();
+  }
+
+  if (removeFromCache) {
     runtimes.delete(runtime.userId);
   }
 }
@@ -332,6 +873,7 @@ function mapState(runtime: RuntimeSession, state: string): Partial<SessionRecord
       return {
         status: "connected",
         qrCodeDataUrl: null,
+        qrCodeAscii: null,
         pairingCode: null,
         lastError: null,
         connectedAt: runtime.record.connectedAt ?? nowIso(),
@@ -398,6 +940,7 @@ async function snapshotClient(runtime: RuntimeSession): Promise<Partial<SessionR
       patch.connectedAt = runtime.record.connectedAt ?? nowIso();
       patch.lastError = null;
       patch.qrCodeDataUrl = null;
+      patch.qrCodeAscii = null;
       patch.pairingCode = null;
     }
   } catch (error) {
@@ -432,13 +975,7 @@ function handleQrPayload(runtime: RuntimeSession, payload: unknown) {
   }
 
   if (value.startsWith("data:image/")) {
-    runtime.record = withUpdatedRecord(runtime.record, {
-      status: "waiting_qr",
-      qrCodeDataUrl: value,
-      pairingCode: null,
-      lastError: null,
-      connectedAt: null,
-    });
+    applyTerminalQrData(runtime, value, runtime.record.qrCodeAscii ?? null);
     return;
   }
 
@@ -447,6 +984,7 @@ function handleQrPayload(runtime: RuntimeSession, payload: unknown) {
       status: "waiting_pairing",
       pairingCode: value,
       qrCodeDataUrl: null,
+      qrCodeAscii: null,
       lastError: null,
       connectedAt: null,
     });
@@ -454,14 +992,9 @@ function handleQrPayload(runtime: RuntimeSession, payload: unknown) {
   }
 
   const rebuiltQr = renderQrDataUrlFromRaw(value);
-  if (rebuiltQr) {
-    runtime.record = withUpdatedRecord(runtime.record, {
-      status: "waiting_qr",
-      qrCodeDataUrl: rebuiltQr,
-      pairingCode: null,
-      lastError: null,
-      connectedAt: null,
-    });
+  const qrAscii = renderTerminalQrAsciiFromRaw(value);
+  if (rebuiltQr || qrAscii) {
+    applyTerminalQrData(runtime, rebuiltQr, qrAscii);
     return;
   }
 
@@ -469,6 +1002,7 @@ function handleQrPayload(runtime: RuntimeSession, payload: unknown) {
     status: "waiting_pairing",
     pairingCode: value,
     qrCodeDataUrl: null,
+    qrCodeAscii: null,
     lastError: null,
     connectedAt: null,
   });
@@ -512,6 +1046,7 @@ function attachEmitterListeners(runtime: RuntimeSession, eventEmitter: WaEventEm
           runtime.record = withUpdatedRecord(runtime.record, {
             status: "connected",
             qrCodeDataUrl: null,
+            qrCodeAscii: null,
             pairingCode: null,
             connectedAt: runtime.record.connectedAt ?? nowIso(),
             lastError: null,
@@ -626,6 +1161,7 @@ async function startRuntime(runtime: RuntimeSession, record: SessionRecord, mode
       connectionMode: mode,
       lastError: "Inserisci prima il numero telefono nelle impostazioni per usare il pairing code.",
       qrCodeDataUrl: null,
+      qrCodeAscii: null,
       pairingCode: null,
       sessionPersisted: await hasPersistedArtifacts(record.userId),
       connectedAt: null,
@@ -633,62 +1169,63 @@ async function startRuntime(runtime: RuntimeSession, record: SessionRecord, mode
     return runtime.record;
   }
 
-  await mkdir(resolveSessionDataDir(record.userId), { recursive: true });
-
   const generation = runtime.generation + 1;
   runtime.generation = generation;
   runtime.mode = mode;
+  ensureTerminalQrFallback(runtime);
   runtime.record = withUpdatedRecord(record, {
     status: mode === "pairing" ? "waiting_pairing" : "waiting_qr",
     connectionMode: mode,
     phoneNumber,
     qrCodeDataUrl: null,
+    qrCodeAscii: null,
     pairingCode: null,
     lastError: null,
-    sessionPersisted: await hasPersistedArtifacts(record.userId),
+    sessionPersisted: record.sessionPersisted,
     connectedAt: null,
   });
 
-  const { create, ev } = await loadOpenWaModule();
-  attachEmitterListeners(runtime, ev);
+  const chromePath = resolveChromeExecutablePath();
+  let launchPromise: Promise<WaClient | null>;
+  launchPromise = (async () => {
+      await mkdir(resolveSessionDataDir(record.userId), { recursive: true });
+      runtime.record = withUpdatedRecord(runtime.record, {
+        sessionPersisted: await hasPersistedArtifacts(record.userId),
+      });
 
-  const chromiumArgs = [
-    "--no-sandbox",
-    "--disable-dev-shm-usage",
-    "--disable-gpu",
-    "--disable-extensions",
-    "--no-first-run",
-    "--no-default-browser-check",
-    "--disable-background-timer-throttling",
-    "--disable-backgrounding-occluded-windows",
-    "--disable-renderer-backgrounding",
-  ];
+      const { create, ev } = await loadOpenWaModule();
+      attachEmitterListeners(runtime, ev);
 
-  const config: Record<string, unknown> = {
-    authTimeout: env.authTimeoutMs,
-    autoRefresh: true,
-    cacheEnabled: false,
-    chromiumArgs,
-    executablePath: env.chromePath ?? undefined,
-    headless: env.headless,
-    killClientOnLogout: false,
-    logConsole: false,
-    multiDevice: true,
-    popup: false,
-    qrLogSkip: env.qrLogSkip,
-    qrTimeout: env.qrTimeoutMs,
-    sessionDataPath: resolveSessionDataDir(record.userId),
-    sessionId: runtime.sessionId,
-    useChrome: true,
-    waitForRipeSession: true,
-  };
+      const config: Record<string, unknown> = {
+        authTimeout: env.authTimeoutMs,
+        autoRefresh: true,
+        cacheEnabled: false,
+        headless: env.headless,
+        killClientOnLogout: false,
+        logConsole: false,
+        multiDevice: true,
+        popup: false,
+        qrLogSkip: env.qrLogSkip,
+        qrTimeout: env.qrTimeoutMs,
+        sessionDataPath: resolveSessionDataDir(record.userId),
+        sessionId: runtime.sessionId,
+        useChrome: true,
+        waitForRipeSession: true,
+      };
 
-  if (mode === "pairing" && phoneNumber) {
-    config.linkCode = phoneNumber;
-  }
+      if (chromePath) {
+        config.executablePath = chromePath;
+      }
 
-  runtime.createPromise = create(config)
-    .then(async (client) => {
+      if (process.platform === "linux") {
+        config.chromiumArgs = ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"];
+      }
+
+      if (mode === "pairing" && phoneNumber) {
+        config.linkCode = phoneNumber;
+      }
+
+      const client = await create(config);
       if (runtime.generation !== generation) {
         try {
           await client.kill?.("stale_generation");
@@ -707,6 +1244,7 @@ async function startRuntime(runtime: RuntimeSession, record: SessionRecord, mode
         ...snapshot,
         status: snapshot.status ?? "connected",
         qrCodeDataUrl: null,
+        qrCodeAscii: null,
         pairingCode: null,
         lastError: null,
         connectedAt: snapshot.connectedAt ?? runtime.record.connectedAt ?? nowIso(),
@@ -717,7 +1255,7 @@ async function startRuntime(runtime: RuntimeSession, record: SessionRecord, mode
         phoneNumber: runtime.record.phoneNumber,
       });
       return client;
-    })
+    })()
     .catch(async (error) => {
       if (runtime.generation === generation) {
         runtime.record = withUpdatedRecord(runtime.record, {
@@ -728,8 +1266,14 @@ async function startRuntime(runtime: RuntimeSession, record: SessionRecord, mode
       }
       warn("Avvio open-wa fallito", error);
       return null;
+    })
+    .finally(() => {
+      if (runtime.createPromise === launchPromise) {
+        runtime.createPromise = undefined;
+      }
     });
 
+  runtime.createPromise = launchPromise;
   void runtime.createPromise.catch(() => undefined);
   return runtime.record;
 }
@@ -772,31 +1316,19 @@ export class OpenWaLegacyProvider implements WhatsAppProvider {
   async getStatus(record: SessionRecord): Promise<SessionRecord> {
     const runtime = runtimes.get(record.userId);
     if (runtime) {
-      runtime.record = {
-        ...runtime.record,
-        ...record,
-        connectionMode: runtime.record.connectionMode ?? record.connectionMode,
-      };
+      runtime.record = mergeRuntimeRecord(runtime.record, record);
       return refreshRuntime(runtime);
     }
 
     const sessionPersisted = await hasPersistedArtifacts(record.userId);
-    if (sessionPersisted) {
-      const started = getOrCreateRuntime(
-        withUpdatedRecord(record, {
-          sessionPersisted: true,
-          status: record.status === "connected" ? "connected" : "connecting",
-        }),
-        record.connectionMode ?? "qr",
-      );
-      return startRuntime(started, started.record, started.mode ?? "qr");
-    }
-
     return withUpdatedRecord(record, {
-      sessionPersisted: false,
-      status: record.status === "connected" ? "connected" : "disconnected",
+      sessionPersisted,
+      status: "disconnected",
       qrCodeDataUrl: null,
+      qrCodeAscii: null,
       pairingCode: null,
+      connectedAt: null,
+      lastError: null,
     });
   }
 
@@ -809,6 +1341,7 @@ export class OpenWaLegacyProvider implements WhatsAppProvider {
     return withUpdatedRecord(record, {
       status: "disconnected",
       qrCodeDataUrl: null,
+      qrCodeAscii: null,
       pairingCode: null,
       lastError: null,
       sessionPersisted: false,

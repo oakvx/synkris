@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import type { NextFunction, Request, Response } from "express";
 import { Router } from "express";
 import { ConnectionModeSchema } from "@whatsapp-ai/shared";
@@ -7,8 +8,23 @@ import { SessionManager } from "../session/sessionManager.js";
 
 function requireInternalToken(request: Request, response: Response, next: NextFunction) {
   const receivedToken = request.header("x-internal-token");
-  if (!receivedToken || receivedToken !== env.internalToken) {
-    response.status(401).json({ error: "Unauthorized" });
+  const expectedBuffer = Buffer.from(env.internalToken, "utf8");
+  const receivedBuffer = Buffer.from(receivedToken ?? "", "utf8");
+  const isValid =
+    expectedBuffer.length > 0 &&
+    expectedBuffer.length === receivedBuffer.length &&
+    timingSafeEqual(expectedBuffer, receivedBuffer);
+
+  if (!isValid) {
+    response.status(401).json({
+      error: {
+        code: "INTERNAL_AUTH_FAILED",
+        message: "Unauthorized",
+        source: "bot-worker",
+        retryable: false,
+        statusCode: 401,
+      },
+    });
     return;
   }
 

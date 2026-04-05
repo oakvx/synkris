@@ -7,11 +7,14 @@ export type SessionRecord = {
   status: BotStatus;
   connectionMode: ConnectionMode | null;
   qrCodeDataUrl: string | null;
+  qrCodeAscii: string | null;
   pairingCode: string | null;
   phoneNumber: string | null;
   lastError: string | null;
   sessionPersisted: boolean;
   connectedAt: string | null;
+  isStale: boolean;
+  staleReason: string | null;
   updatedAt: string;
   autoConnectAt?: string | null;
 };

@@ -51,6 +51,7 @@ function maybePromoteToConnected(record: SessionRecord): SessionRecord {
     ...record,
     status: "connected",
     qrCodeDataUrl: null,
+    qrCodeAscii: null,
     pairingCode: null,
     sessionPersisted: true,
     connectedAt: record.connectedAt ?? nowIso(),
@@ -66,11 +67,14 @@ export class MockWhatsAppProvider implements WhatsAppProvider {
       status: mode === "pairing" ? "waiting_pairing" : "waiting_qr",
       connectionMode: mode,
       qrCodeDataUrl: mode === "qr" ? buildMockQrCode(record.userId, record.instanceId) : null,
+      qrCodeAscii: null,
       pairingCode: mode === "pairing" ? buildMockPairingCode(record.userId) : null,
       phoneNumber: buildMockPhone(record.userId),
       lastError: null,
       sessionPersisted: false,
       connectedAt: null,
+      isStale: false,
+      staleReason: null,
       updatedAt: nowIso(),
       autoConnectAt: new Date(Date.now() + 15_000).toISOString(),
     };
@@ -79,6 +83,8 @@ export class MockWhatsAppProvider implements WhatsAppProvider {
   async getStatus(record: SessionRecord): Promise<SessionRecord> {
     return maybePromoteToConnected({
       ...record,
+      isStale: false,
+      staleReason: null,
       updatedAt: nowIso(),
     });
   }
@@ -88,10 +94,13 @@ export class MockWhatsAppProvider implements WhatsAppProvider {
       ...record,
       status: "disconnected",
       qrCodeDataUrl: null,
+      qrCodeAscii: null,
       pairingCode: null,
       lastError: null,
       connectedAt: null,
       sessionPersisted: false,
+      isStale: false,
+      staleReason: null,
       updatedAt: nowIso(),
       autoConnectAt: null,
     };

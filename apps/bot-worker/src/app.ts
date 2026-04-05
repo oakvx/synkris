@@ -1,4 +1,6 @@
+import { randomUUID } from "node:crypto";
 import express from "express";
+import { ZodError } from "zod";
 
 import { env } from "./config/env.js";
 import { warn } from "./lib/logger.js";
@@ -40,5 +42,37 @@ export async function createApp() {
   });
 
   app.use("/internal", createInternalRoutes(sessionManager));
+
+  app.use((error: unknown, _request: express.Request, response: express.Response, _next: express.NextFunction) => {
+    const traceId = randomUUID();
+
+    if (error instanceof ZodError) {
+      response.status(400).json({
+        error: {
+          code: "VALIDATION_ERROR",
+          message: "Payload non valido.",
+          source: "validation",
+          retryable: false,
+          statusCode: 400,
+          details: error.flatten(),
+          traceId,
+        },
+      });
+      return;
+    }
+
+    console.error(`[bot-worker] unexpected error ${traceId}`, error);
+    response.status(500).json({
+      error: {
+        code: "BOT_WORKER_INTERNAL_ERROR",
+        message: error instanceof Error ? error.message : "Errore interno del bot worker.",
+        source: "bot-worker",
+        retryable: true,
+        statusCode: 500,
+        traceId,
+      },
+    });
+  });
+
   return app;
 }
