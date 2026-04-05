@@ -10,10 +10,10 @@ export function AppShell({ children }: { children: ReactNode }) {
     <div className="portal-layout">
       <aside className="sidebar">
         <div className="brand-block">
-          <p className="eyebrow">GitHub Pages frontend</p>
+          <p className="eyebrow">Frontend localhost</p>
           <h1>WhatsApp AI Portal</h1>
           <p className="muted">
-            Dashboard statica che parla solo con API HTTPS. Sessioni WhatsApp e database restano lato server.
+            Dashboard statica che parla solo con API locali. Sessioni WhatsApp e database restano lato server.
           </p>
         </div>
 
@@ -22,6 +22,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             Dashboard
           </NavLink>
           <NavLink to="/connect">Connetti WhatsApp</NavLink>
+          <NavLink to="/database">Database bot</NavLink>
           <NavLink to="/settings">Impostazioni</NavLink>
         </nav>
 

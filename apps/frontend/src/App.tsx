@@ -3,6 +3,7 @@ import { HashRouter, Route, Routes } from "react-router-dom";
 import { AuthProvider } from "./auth/AuthContext";
 import { AppShell } from "./components/AppShell";
 import { ProtectedRoute } from "./components/ProtectedRoute";
+import { BotDatabasePage } from "./pages/BotDatabasePage";
 import { ConnectWhatsAppPage } from "./pages/ConnectWhatsAppPage";
 import { DashboardPage } from "./pages/DashboardPage";
 import { LoginPage } from "./pages/LoginPage";
@@ -30,6 +31,16 @@ export function App() {
               <ProtectedRoute>
                 <AppShell>
                   <ConnectWhatsAppPage />
+                </AppShell>
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/database"
+            element={
+              <ProtectedRoute>
+                <AppShell>
+                  <BotDatabasePage />
                 </AppShell>
               </ProtectedRoute>
             }

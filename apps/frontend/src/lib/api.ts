@@ -1,9 +1,14 @@
 import {
   AuthResponseSchema,
+  BotDataModelsResponseSchema,
+  BotDataRowsResponseSchema,
   BotStatusResponseSchema,
   ForgotPasswordResponseSchema,
   PortalUserSchema,
   type AuthResponse,
+  type BotDataModelsResponse,
+  type BotDataRow,
+  type BotDataRowsResponse,
   type BotStatusResponse,
   type ConnectionMode,
   type ForgotPasswordResponse,
@@ -92,6 +97,23 @@ export const apiClient = {
   },
   disconnectBot(token: string): Promise<BotStatusResponse> {
     return request("/bot/disconnect", { method: "POST", token }, (value) => BotStatusResponseSchema.parse(value));
+  },
+  getBotDataModels(token: string): Promise<BotDataModelsResponse> {
+    return request("/bot/db/models", { token }, (value) => BotDataModelsResponseSchema.parse(value));
+  },
+  getBotDataRows(token: string, model: string): Promise<BotDataRowsResponse> {
+    return request(
+      `/bot/db/${encodeURIComponent(model)}`,
+      { token },
+      (value) => BotDataRowsResponseSchema.parse(value),
+    );
+  },
+  saveBotDataRows(token: string, model: string, rows: BotDataRow[]): Promise<BotDataRowsResponse> {
+    return request(
+      `/bot/db/${encodeURIComponent(model)}`,
+      { method: "PUT", token, body: { rows } },
+      (value) => BotDataRowsResponseSchema.parse(value),
+    );
   },
   getSettings(token: string): Promise<UserSettings> {
     return request("/settings", { token }, (value) => UserSettingsSchema.parse(value));

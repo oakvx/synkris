@@ -38,8 +38,8 @@ export function ConnectionCard({
       </div>
 
       <p className="muted">
-        Il browser visualizza solo QR o pairing code ricevuti dall’API. La sessione reale resta sul server e viene
-        persistita nel volume del bot-worker.
+        Il portale mostra QR e pairing code reali ricevuti dal bot-worker. Se la sessione manca, il QR arriva dalla
+        pagina WhatsApp aperta dal worker e viene anche stampato nel terminale come fallback.
       </p>
 
       <div className="connection-grid">
@@ -65,9 +65,7 @@ export function ConnectionCard({
             </button>
           </div>
           <div className="pairing-box">{status?.pairingCode ?? "---- ----"}</div>
-          <p className="muted">
-            Utile quando preferisci collegare il dispositivo via codice al posto del QR.
-          </p>
+          <p className="muted">Utile quando preferisci collegare il dispositivo via codice al posto del QR.</p>
         </article>
       </div>
     </section>

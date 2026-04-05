@@ -40,13 +40,27 @@ export function BotStatusCard({ status }: { status: BotStatusResponse | null }) 
         </div>
         <div>
           <dt>Sessione persistita</dt>
-          <dd>{status.sessionPersisted ? "Sì" : "Non ancora"}</dd>
+          <dd>{status.sessionPersisted ? "Si, sessione attiva sul server" : "No, serve un nuovo accesso"}</dd>
         </div>
         <div>
           <dt>Aggiornato</dt>
           <dd>{new Date(status.updatedAt).toLocaleString("it-IT")}</dd>
         </div>
       </dl>
+
+      <p className="muted">
+        {status.status === "connected"
+          ? "Bot attivo e sessione WhatsApp valida."
+          : status.status === "waiting_qr"
+            ? "Sessione assente o scaduta: scansiona il QR reale mostrato dal worker."
+            : status.status === "waiting_pairing"
+              ? "Sessione assente o scaduta: usa il codice di pairing reale."
+              : status.status === "connecting"
+                ? "Il worker sta aprendo la pagina WhatsApp e verificando la sessione."
+                : status.status === "error"
+                  ? "Il worker ha incontrato un errore. Controlla il messaggio sotto e riprova."
+                  : "Bot fermo o non inizializzato."}
+      </p>
 
       {status.lastError ? <p className="error-banner">{status.lastError}</p> : null}
     </section>

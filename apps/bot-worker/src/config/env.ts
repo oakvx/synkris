@@ -5,11 +5,51 @@ function parsePort(input: string | undefined, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function parseBoolean(input: string | undefined, fallback: boolean): boolean {
+  if (input === undefined) {
+    return fallback;
+  }
+
+  const normalized = input.trim().toLowerCase();
+  if (["1", "true", "yes", "y", "on"].includes(normalized)) {
+    return true;
+  }
+
+  if (["0", "false", "no", "n", "off"].includes(normalized)) {
+    return false;
+  }
+
+  return fallback;
+}
+
+function parseHeadless(input: string | undefined): boolean | "new" {
+  const normalized = (input ?? "").trim().toLowerCase();
+  if (normalized === "new") {
+    return "new";
+  }
+
+  if (["0", "false", "no", "off"].includes(normalized)) {
+    return false;
+  }
+
+  return true;
+}
+
+function parseOptionalString(input: string | undefined): string | null {
+  const value = input?.trim();
+  return value ? value : null;
+}
+
 export const env = {
   nodeEnv: process.env.NODE_ENV ?? "development",
   port: parsePort(process.env.BOT_WORKER_PORT ?? process.env.PORT, 4001),
   internalToken: process.env.INTERNAL_SERVICE_TOKEN ?? "change-me-internal-token",
-  provider: (process.env.BOT_PROVIDER ?? "mock").trim().toLowerCase(),
+  provider: (process.env.BOT_PROVIDER ?? "open-wa").trim().toLowerCase(),
   databaseUrl: process.env.DATABASE_URL ?? "",
   sessionDir: path.resolve(process.env.BOT_SESSION_DIR ?? "./bot-sessions"),
+  chromePath: parseOptionalString(process.env.CHROME_PATH ?? process.env.PUPPETEER_EXECUTABLE_PATH),
+  headless: parseHeadless(process.env.BOT_HEADLESS),
+  qrTimeoutMs: parsePort(process.env.QR_TIMEOUT_MS, 0),
+  authTimeoutMs: parsePort(process.env.AUTH_TIMEOUT_MS, 0),
+  qrLogSkip: parseBoolean(process.env.BOT_QR_LOG_SKIP, false),
 };

@@ -1,3 +1,15 @@
-2026/03/17-19:14:40.575 5bb0 Reusing MANIFEST Q:\whatsapp-ai\session.json\_IGNORE_whatsapp-ai\Default\Local Storage\leveldb/MANIFEST-000001
-2026/03/17-19:14:40.583 5bb0 Recovering log #417
-2026/03/17-19:14:40.585 5bb0 Reusing old log Q:\whatsapp-ai\session.json\_IGNORE_whatsapp-ai\Default\Local Storage\leveldb/000417.log 
+2026/03/17-19:15:25.086 3044 Reusing MANIFEST Q:\whatsapp-ai\session.json\_IGNORE_whatsapp-ai\Default\Local Storage\leveldb/MANIFEST-000001
+2026/03/17-19:15:25.097 3044 Recovering log #417
+2026/03/17-19:15:25.101 3044 Reusing old log Q:\whatsapp-ai\session.json\_IGNORE_whatsapp-ai\Default\Local Storage\leveldb/000417.log 
+2026/03/17-20:55:56.089 3044 Level-0 table #421: started
+2026/03/17-20:55:56.095 3044 Level-0 table #421: 14580 bytes OK
+2026/03/17-20:55:56.097 3044 Delete type=0 #417
+2026/03/17-20:55:56.097 3044 Compacting 4@0 + 1@1 files
+2026/03/17-20:55:56.105 3044 Generated table #422@0: 2765 keys, 149194 bytes
+2026/03/17-20:55:56.105 3044 Compacted 4@0 + 1@1 files => 149194 bytes
+2026/03/17-20:55:56.106 3044 compacted to: files[ 0 1 1 0 0 0 0 ]
+2026/03/17-20:55:56.107 3044 Delete type=2 #409
+2026/03/17-20:55:56.107 3044 Delete type=2 #412
+2026/03/17-20:55:56.107 3044 Delete type=2 #415
+2026/03/17-20:55:56.107 3044 Delete type=2 #418
+2026/03/17-20:55:56.107 3044 Delete type=2 #421

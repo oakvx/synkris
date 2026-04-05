@@ -53,20 +53,29 @@ export class SessionManager {
       return fromDisk;
     }
 
-    const instance = await prisma.botInstance.findFirst({
-      where: { userId, name: "default" },
-      orderBy: { updatedAt: "desc" },
-    });
+    const [instance, settings] = await Promise.all([
+      prisma.botInstance.findFirst({
+        where: { userId, name: "default" },
+        orderBy: { updatedAt: "desc" },
+      }),
+      prisma.userSettings.findUnique({
+        where: { userId },
+        select: {
+          phoneNumber: true,
+          preferredConnectionMode: true,
+        },
+      }),
+    ]);
 
     return {
       instanceId: instance?.id ?? randomUUID(),
       userId,
       provider: instance?.provider ?? env.provider,
       status: instance?.status ?? "disconnected",
-      connectionMode: null,
+      connectionMode: (instance?.status === "disconnected" ? settings?.preferredConnectionMode : null) as ConnectionMode | null,
       qrCodeDataUrl: instance?.qrCodeDataUrl ?? null,
       pairingCode: instance?.pairingCode ?? null,
-      phoneNumber: instance?.phoneNumber ?? null,
+      phoneNumber: instance?.phoneNumber ?? settings?.phoneNumber ?? null,
       lastError: instance?.lastError ?? null,
       sessionPersisted: Boolean(instance?.sessionPath),
       connectedAt: instance?.connectedAt?.toISOString() ?? null,

@@ -85,6 +85,49 @@ export const BotStatusResponseSchema = z.object({
 });
 export type BotStatusResponse = z.infer<typeof BotStatusResponseSchema>;
 
+export const BotDataFieldSchema = z.object({
+  name: z.string(),
+  dbName: z.string().nullable().optional(),
+  type: z.string(),
+  isRequired: z.boolean(),
+  isList: z.boolean(),
+  isId: z.boolean(),
+  isUnique: z.boolean(),
+  isReadOnly: z.boolean(),
+  hasDefaultValue: z.boolean(),
+  isGenerated: z.boolean().optional(),
+  isUpdatedAt: z.boolean().optional(),
+});
+export type BotDataField = z.infer<typeof BotDataFieldSchema>;
+
+export const BotDataModelSchema = z.object({
+  name: z.string(),
+  dbName: z.string().nullable().optional(),
+  primaryKey: z.array(z.string()),
+  fields: z.array(BotDataFieldSchema),
+});
+export type BotDataModel = z.infer<typeof BotDataModelSchema>;
+
+export const BotDataModelsResponseSchema = z.object({
+  models: z.array(BotDataModelSchema),
+});
+export type BotDataModelsResponse = z.infer<typeof BotDataModelsResponseSchema>;
+
+export const BotDataRowSchema = z.record(z.string(), z.unknown());
+export type BotDataRow = z.infer<typeof BotDataRowSchema>;
+
+export const BotDataRowsResponseSchema = z.object({
+  model: z.string(),
+  rowCount: z.number().int().nonnegative(),
+  rows: z.array(BotDataRowSchema),
+});
+export type BotDataRowsResponse = z.infer<typeof BotDataRowsResponseSchema>;
+
+export const SaveBotDataRequestSchema = z.object({
+  rows: z.array(BotDataRowSchema),
+});
+export type SaveBotDataRequest = z.infer<typeof SaveBotDataRequestSchema>;
+
 export const InitConnectionRequestSchema = z.object({
   mode: ConnectionModeSchema.default("qr"),
 });

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 
 import type { BotStatusResponse } from "@whatsapp-ai/shared";
 
@@ -40,11 +41,11 @@ export function DashboardPage() {
   return (
     <div className="page-stack">
       <section className="hero-card">
-        <p className="eyebrow">Architettura target</p>
-        <h2>Frontend statico, API centrale, bot-worker separato, sessioni persistenti lato server.</h2>
+        <p className="eyebrow">Centro operativo</p>
+        <h2>Controllo bot, sessione WhatsApp e database dallo stesso gestionale.</h2>
         <p className="muted">
-          Il portale mostra lo stato del tuo bot e invia richieste HTTP verso il backend. Il browser non salva mai la
-          sessione WhatsApp.
+          Da qui puoi vedere se il bot e&apos; davvero connesso, aprire il flusso QR reale e modificare i dati del database
+          senza passare da file sparsi o terminali secondari.
         </p>
       </section>
 
@@ -53,19 +54,34 @@ export function DashboardPage() {
       <BotStatusCard status={status} />
 
       <section className="card">
-        <h2>Flusso operativo</h2>
+        <div className="card-heading">
+          <div>
+            <p className="eyebrow">Azioni rapide</p>
+            <h2>Lavora in modo piu pratico</h2>
+          </div>
+        </div>
+
         <div className="timeline-grid">
-          <article>
-            <strong>1. Portale utente</strong>
-            <p>Login, dashboard, stato istanza e impostazioni base.</p>
+          <article className="action-panel">
+            <strong>Connessione WhatsApp</strong>
+            <p>Apri il QR reale, controlla pairing code e forza una nuova inizializzazione del worker.</p>
+            <Link className="inline-action" to="/connect">
+              Vai alla connessione
+            </Link>
           </article>
-          <article>
-            <strong>2. Backend API</strong>
-            <p>Auth, validazione input, CORS e coordinamento dei servizi interni.</p>
+          <article className="action-panel">
+            <strong>Database bot</strong>
+            <p>Modifica record e tabelle operative del bot direttamente dal portale in formato JSON strutturato.</p>
+            <Link className="inline-action" to="/database">
+              Apri editor DB
+            </Link>
           </article>
-          <article>
-            <strong>3. Bot worker</strong>
-            <p>Generazione QR/pairing, persistenza sessioni su volume Docker e sync dello stato.</p>
+          <article className="action-panel">
+            <strong>Preferenze account</strong>
+            <p>Aggiorna modalita preferita, numero telefono e dati base usati dal flusso di collegamento.</p>
+            <Link className="inline-action" to="/settings">
+              Apri impostazioni
+            </Link>
           </article>
         </div>
       </section>

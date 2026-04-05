@@ -17,8 +17,10 @@
     "node": ">=18.18.0"
   },
   "scripts": {
-    "start": "node index.js",
-    "legacy:start": "node index.js",
+    "start": "node infrastructure/scripts/start-legacy-bot.mjs",
+    "legacy:start": "node infrastructure/scripts/start-legacy-bot.mjs",
+    "legacy:start:raw": "node index.js",
+    "start:prepare": "node infrastructure/scripts/start-legacy-bot.mjs --prepare-only",
     "dev": "npm run build -w @whatsapp-ai/shared && concurrently \"npm run dev -w @whatsapp-ai/api\" \"npm run dev -w @whatsapp-ai/bot-worker\" \"npm run dev -w @whatsapp-ai/frontend\"",
     "dev:frontend": "npm run build -w @whatsapp-ai/shared && npm run dev -w @whatsapp-ai/frontend",
     "dev:api": "npm run build -w @whatsapp-ai/shared && npm run dev -w @whatsapp-ai/api",

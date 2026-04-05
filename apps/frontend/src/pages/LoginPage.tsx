@@ -94,8 +94,8 @@ export function LoginPage() {
         <p className="eyebrow">Portale statico + API server-side</p>
         <h1>Accedi alla tua dashboard WhatsApp</h1>
         <p className="muted">
-          Questo frontend puo vivere su GitHub Pages. Tutta la logica, il database e la sessione WhatsApp rimangono
-          sul server. Per ora le chiamate puntano a localhost.
+          Per ora tutto gira in locale su localhost. Tutta la logica, il database e la sessione WhatsApp rimangono
+          lato server, mentre il browser mostra solo dashboard e stato connessione.
         </p>
 
         <div className="toggle-group">
@@ -207,7 +207,7 @@ export function LoginPage() {
             {previewToken ? <code>{previewToken}</code> : null}
             {previewUrl ? (
               <a href={previewUrl} rel="noreferrer" target="_blank">
-                Apri link locale di reset
+                Apri link di reset su localhost
               </a>
             ) : null}
           </div>

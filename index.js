@@ -25,12 +25,6 @@ import { verifyLicenseText } from './license-utils.js';
 import { createRequire } from 'node:module';
 import net from 'node:net';
 import { warmOllama } from './util.js';
-
-<<<<<<< HEAD
-
-
-=======
->>>>>>> cb2ce82c3adee543966e2ab604875118a8bba208
 function normalizeLicenseText(s) {
   return String(s).replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').trim() + '\n';
 }

@@ -4,11 +4,11 @@
 Questo repository ora evolve verso un monorepo con separazione netta tra frontend statico, backend API, bot worker, database PostgreSQL e reverse proxy Caddy.
 
 Flusso target:
-Frontend statico (GitHub Pages o Vite locale) -> API HTTP/HTTPS -> backend API -> bot-worker + PostgreSQL + session storage server-side.
+Frontend statico locale -> API HTTP su localhost -> backend API -> bot-worker + PostgreSQL + session storage server-side.
 
 La root storica resta come riferimento e compatibilita per il vecchio bot Node (`index.js`, `util.js`, `gcal.js`, `bookings-norm-pg.js`), ma la nuova struttura di lavoro e' questa:
 
-- `apps/frontend`: portale React + Vite + TypeScript, statico e compatibile con GitHub Pages.
+- `apps/frontend`: portale React + Vite + TypeScript, statico e allineato a localhost.
 - `apps/api`: API Express + TypeScript con auth, CORS, impostazioni, stato bot e recupero password.
 - `apps/bot-worker`: worker separato con provider WhatsApp astratto e storage persistente su volume Docker.
 - `packages/shared`: contratti condivisi, tipi e schemi zod.
@@ -16,12 +16,53 @@ La root storica resta come riferimento e compatibilita per il vecchio bot Node (
 - `infrastructure/caddy`: Caddyfile per reverse proxy locale/produzione.
 - `infrastructure/scripts`: script di supporto, incluso il wrapper per importare dati legacy.
 
-## URL frontend GitHub Pages
-Il sito statico finale e' previsto su:
+## URL locali
 
-- `https://oakvxish.github.io/synkris`
+- `http://localhost:5173` per il frontend Vite in sviluppo
+- `http://localhost:4000` per l'API diretta
+- `http://localhost:4001` per il bot worker diretto
+- `http://localhost:8090` per l'API dietro Caddy
+- `http://localhost:8091` per il frontend statico servito da Caddy dopo la build
+- `localhost:5433` per PostgreSQL esposto all'host
 
-Per questo motivo il frontend e' configurato con base path GitHub Pages `'/synkris/'` e il recupero password genera link compatibili con `https://oakvxish.github.io/synkris/#/login` quando usi `APP_BASE_URL` di produzione.
+Per ora l'intero progetto e' allineato a localhost. I riferimenti a GitHub Pages o a domini reali sono sospesi finche' non si passa a un deploy remoto.
+
+## Avvio rapido su Windows
+Se vuoi avviare tutto in locale con un solo doppio click o da terminale PowerShell/CMD, usa:
+
+- `.\avvia-tutto.bat`
+
+Lo script fa in automatico:
+
+- verifica Node e npm;
+- crea `.env` da `.env.example` se manca;
+- installa le dipendenze se `node_modules` non esiste;
+- avvia Docker Desktop se non e' gia' attivo;
+- avvia `postgres` via Docker Compose;
+- esegue `npm run db:generate`;
+- esegue `npm run db:migrate`;
+- apre una nuova finestra con `npm run dev` per frontend, API e bot worker.
+
+Il file usa forzatamente il profilo locale corretto per evitare che un vecchio `.env` continui a puntare a `5432` invece del database locale del progetto su `5433`.
+Durante l'installazione automatica imposta anche `PUPPETEER_SKIP_DOWNLOAD=1`, cosi' non prova a scaricare Chromium se sulla macchina usi gia' Chrome locale.
+
+## Avvio bot legacy con npm start
+Per il bot legacy in root ora puoi usare direttamente:
+
+- `npm start`
+
+Questo bootstrap:
+
+- applica default locali minimi per `SESSION_PATH`, `CALENDAR_ID` e `LICENSE_PASSPHRASE` se non li hai valorizzati;
+- usa `keys/public_key.pem` come chiave pubblica di default se non hai gia' configurato `LICENSE_PUBLIC_KEY_*`;
+- genera automaticamente chiavi e licenza development se non trova una licenza valida;
+- poi avvia `index.js`.
+
+Script utili:
+
+- `npm start` avvia il bot con auto-bootstrap licenza
+- `npm run start:prepare` prepara chiavi/licenza senza avviare il bot
+- `npm run legacy:start:raw` avvia `index.js` senza bootstrap extra
 
 ## Architettura attuale trovata nel repository
 Prima del refactor il repository conteneva gia materiale utile:
@@ -53,9 +94,9 @@ I gap principali rispetto al target erano:
 - impostazioni base;
 - API client centralizzato;
 - sessione frontend tramite token API;
-- routing con `HashRouter` per compatibilita con GitHub Pages.
+- routing pensato per uso locale e frontend statico.
 
-Per ora il frontend punta in locale a `http://localhost:4000` tramite `VITE_API_BASE_URL`. In produzione potrai lasciare il sito su `https://oakvxish.github.io/synkris` e puntare `VITE_API_BASE_URL` verso il tuo server reale.
+Per ora il frontend punta in locale a `http://localhost:4000` tramite `VITE_API_BASE_URL`.
 
 ### Backend API
 `apps/api` espone:
@@ -103,22 +144,23 @@ Sono presenti le migrazioni:
 - `20260404190000_init_portal_stack`
 - `20260404193000_add_password_reset_tokens`
 
-## GitHub Pages e frontend statico
+## Frontend statico locale
 Il frontend non contiene logica server, non parla con PostgreSQL e non salva la sessione WhatsApp nel browser.
 
-Per deploy statico su `https://oakvxish.github.io/synkris`:
+Per usare il frontend in locale:
 
 1. imposta `VITE_API_BASE_URL` verso la tua API reale;
-2. usa `GITHUB_PAGES_BASE=/synkris/`;
+2. usa `FRONTEND_BASE_PATH=/`;
 3. esegui `npm run build -w @whatsapp-ai/frontend`;
-4. pubblica `apps/frontend/dist` su GitHub Pages.
+4. servi `apps/frontend/dist` con Caddy su `http://localhost:8091` oppure usa Vite su `http://localhost:5173`.
+
+Se usi il frontend statico buildato via Caddy, imposta anche `APP_BASE_URL=http://localhost:8091/#/login`.
 
 ## Caddy
 `infrastructure/caddy/Caddyfile` include:
 
-- blocco locale `:8080` per reverse proxy verso l'API;
-- blocco `api.miodominio.tld` pronto per produzione;
-- blocco `app.miodominio.tld` per servire il frontend statico dal server se in futuro non vuoi usare GitHub Pages.
+- blocco locale `http://localhost:8090` per reverse proxy verso l'API;
+- blocco locale `http://localhost:8091` per servire il frontend statico buildato.
 
 ## Docker Compose
 `docker-compose.yml` orchestra:
@@ -137,6 +179,7 @@ Caratteristiche incluse:
 - restart policy `unless-stopped`;
 - PostgreSQL non esposto pubblicamente;
 - bot-worker non esposto pubblicamente.
+- porte pubblicate solo su loopback `127.0.0.1` per sviluppo locale.
 
 ## Sviluppo locale
 ### Prerequisiti
@@ -157,7 +200,7 @@ Caratteristiche incluse:
 Oppure usa Docker Compose per la parte server:
 
 1. `docker compose up --build -d postgres bot-worker api caddy`
-2. frontend via Vite o build statico.
+2. frontend via Vite su `http://localhost:5173` o build statico su `http://localhost:8091`.
 
 ### Import dati legacy
 Se vuoi importare i dati storici JSON nel database normalizzato:
@@ -167,19 +210,21 @@ Se vuoi importare i dati storici JSON nel database normalizzato:
 Il wrapper invoca l'attuale `01_migrate_json_to_pg.mjs` presente in root.
 
 ## Deploy server Windows con Docker
-1. prepara `.env` con valori reali per database, JWT e domini;
-2. esegui `docker compose build`;
-3. esegui `docker compose up -d`;
-4. configura DNS verso il server;
-5. usa Caddy per terminare HTTPS e proxyare l'API.
+Per ora il profilo consigliato e' solo locale. Quando passerai a un server reale dovrai:
+
+1. aggiornare `.env` con domini e URL pubblici;
+2. riadattare `Caddyfile` per host reali e HTTPS;
+3. rivedere `ALLOWED_ORIGINS`, `APP_BASE_URL` e l'eventuale base path frontend;
+4. eseguire `docker compose build` e `docker compose up -d` sul server.
 
 ## CORS e domini
-Poiche il frontend girera su GitHub Pages e l'API su un dominio separato:
+Nel setup attuale tutto gira in locale:
 
-- usa `ALLOWED_ORIGINS=https://oakvxish.github.io` lato API;
+- usa `ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173` lato API;
+- se usi anche il frontend statico buildato, includi `http://localhost:8091` e `http://127.0.0.1:8091`;
 - usa `VITE_API_BASE_URL` lato frontend;
-- in locale puoi lavorare con `http://localhost:5173` -> `http://localhost:4000`;
-- in produzione il sito resta su `https://oakvxish.github.io/synkris` mentre `VITE_API_BASE_URL` punta all'host API reale.
+- in locale lavori con `http://localhost:5173` -> `http://localhost:4000`;
+- se vuoi verificare il proxy puoi usare `http://localhost:8090`.
 
 ## Volumi persistenti
 - PostgreSQL: volume `postgres_data`
@@ -202,7 +247,7 @@ Per ora il recupero password e' pensato per sviluppo locale:
 - database utenti e bot state;
 - auth login/register;
 - recupero password con token persistito nel DB;
-- frontend statico React/Vite/TS con base GitHub Pages `'/synkris/'`;
+- frontend statico React/Vite/TS allineato a localhost;
 - backend API con CORS e route richieste;
 - bot-worker separato;
 - Docker Compose;
@@ -221,9 +266,21 @@ Per ora il recupero password e' pensato per sviluppo locale:
 - persistere i file/session artifact reali nello stesso `BOT_SESSION_DIR`;
 - decidere se l'API debba leggere lo stato solo dal worker o anche da webhook/event bus quando il provider reale sara online.
 
+## Nota futura
+Quando vorrai tornare a GitHub Pages o a un dominio reale, ti bastera' riallineare:
+
+- `FRONTEND_BASE_PATH`
+- `APP_BASE_URL`
+- `ALLOWED_ORIGINS`
+- `VITE_API_BASE_URL`
+- `infrastructure/caddy/Caddyfile`
+
+Per una roadmap sintetica delle espansioni previste, vedi anche `TODO.md`.
+
 ## Troubleshooting
 - Se il frontend non raggiunge l'API: verifica `VITE_API_BASE_URL` e `ALLOWED_ORIGINS`.
 - Se il login funziona ma il bot no: verifica `BOT_WORKER_BASE_URL` e `INTERNAL_SERVICE_TOKEN`.
 - Se Prisma fallisce: controlla `DATABASE_URL` e l'ordine delle migrazioni.
 - Se il reset password non appare: in locale controlla che `NODE_ENV` non sia `production`, altrimenti il preview token non viene restituito.
-- Se Caddy non parte su Windows: verifica che 80/443/8080 non siano gia occupate.
+- Se Docker non riesce ad avviare PostgreSQL: verifica se `5432` e' gia occupata; il profilo locale di questo progetto usa `5433`.
+- Se Caddy non parte su Windows: verifica che `8090` e `8091` non siano gia occupate.

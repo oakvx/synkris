@@ -1,5 +1,6 @@
 import { Router } from "express";
 
+import { getRows, listModels, replaceRows } from "../controllers/botDataController.js";
 import { asyncHandler } from "../lib/http.js";
 import { authenticate } from "../middleware/authenticate.js";
 import {
@@ -18,3 +19,6 @@ botRoutes.post("/connect/init", asyncHandler(initConnection));
 botRoutes.get("/connect/qr", asyncHandler(getQr));
 botRoutes.get("/connect/pairing-code", asyncHandler(getPairingCode));
 botRoutes.post("/disconnect", asyncHandler(disconnect));
+botRoutes.get("/db/models", asyncHandler(listModels));
+botRoutes.get("/db/:model", asyncHandler(getRows));
+botRoutes.put("/db/:model", asyncHandler(replaceRows));

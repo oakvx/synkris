@@ -31,3 +31,9 @@ node18/
 node-18.5.0/
 *.exe
 *.blob
+
+# managed
+**.data.json
+**.node-persist**
+**_IGNORE_**
+# end managed

@@ -5,6 +5,8 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-whatsapp_ai}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
       POSTGRES_DB: ${POSTGRES_DB:-whatsapp_ai}
+    ports:
+      - "127.0.0.1:5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     networks:
@@ -25,17 +27,17 @@ services:
       API_PORT: 4000
       DATABASE_URL: postgresql://${POSTGRES_USER:-whatsapp_ai}:${POSTGRES_PASSWORD:-change-me}@postgres:5432/${POSTGRES_DB:-whatsapp_ai}?schema=public
       JWT_SECRET: ${JWT_SECRET:-change-me-with-a-long-random-secret}
-      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:5173}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173,http://localhost:8091,http://127.0.0.1:8091}
       BOT_WORKER_BASE_URL: http://bot-worker:4001
       INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-change-me-internal-token}
-      APP_BASE_URL: ${APP_BASE_URL:-http://localhost:5173/#/login}
+      APP_BASE_URL: ${APP_BASE_URL:-http://localhost:8091/#/login}
     depends_on:
       postgres:
         condition: service_healthy
       bot-worker:
         condition: service_healthy
-    expose:
-      - "4000"
+    ports:
+      - "127.0.0.1:4000:4000"
     networks:
       - whatsapp_ai_internal
     healthcheck:
@@ -59,8 +61,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    expose:
-      - "4001"
+    ports:
+      - "127.0.0.1:4001:4001"
     volumes:
       - bot_sessions:/var/lib/whatsapp-sessions
     networks:
@@ -78,9 +80,8 @@ services:
       api:
         condition: service_healthy
     ports:
-      - "80:80"
-      - "443:443"
-      - "8080:8080"
+      - "127.0.0.1:8090:8090"
+      - "127.0.0.1:8091:8091"
     volumes:
       - ./infrastructure/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - ./apps/frontend/dist:/srv/frontend:ro
