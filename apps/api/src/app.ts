@@ -8,6 +8,9 @@ import { isHttpError } from "./lib/errors.js";
 import { authRoutes } from "./routes/authRoutes.js";
 import { botRoutes } from "./routes/botRoutes.js";
 import { healthRoutes } from "./routes/healthRoutes.js";
+import { activityRoutes } from "./routes/activityRoutes.js";
+import { operationsRoutes } from "./routes/operationsRoutes.js";
+import { notificationsRoutes } from "./routes/notificationsRoutes.js";
 import { settingsRoutes } from "./routes/settingsRoutes.js";
 
 export function createApp() {
@@ -50,6 +53,9 @@ export function createApp() {
   app.use("/health", healthRoutes);
   app.use("/auth", authRoutes);
   app.use("/bot", botRoutes);
+  app.use("/activity", activityRoutes);
+  app.use("/operations", operationsRoutes);
+  app.use("/notifications", notificationsRoutes);
   app.use("/settings", settingsRoutes);
 
   app.use((error: unknown, _request: express.Request, response: express.Response, _next: express.NextFunction) => {

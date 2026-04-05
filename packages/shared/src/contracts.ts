@@ -131,6 +131,41 @@ export const UserSettingsSchema = z.object({
 });
 export type UserSettings = z.infer<typeof UserSettingsSchema>;
 
+export const PushSubscriptionKeysSchema = z.object({
+  auth: z.string().trim().min(1),
+  p256dh: z.string().trim().min(1),
+});
+export type PushSubscriptionKeys = z.infer<typeof PushSubscriptionKeysSchema>;
+
+export const PushSubscriptionInputSchema = z.object({
+  endpoint: z.string().trim().url(),
+  expirationTime: z.number().nullable().optional(),
+  keys: PushSubscriptionKeysSchema,
+  userAgent: z.string().trim().max(500).nullable().optional(),
+});
+export type PushSubscriptionInput = z.infer<typeof PushSubscriptionInputSchema>;
+
+export const PushSubscriptionDeleteSchema = z.object({
+  endpoint: z.string().trim().url(),
+});
+export type PushSubscriptionDeleteInput = z.infer<typeof PushSubscriptionDeleteSchema>;
+
+export const PushConfigResponseSchema = z.object({
+  enabled: z.boolean(),
+  vapidPublicKey: z.string().nullable(),
+});
+export type PushConfigResponse = z.infer<typeof PushConfigResponseSchema>;
+
+export const PushSubscriptionResponseSchema = z.object({
+  ok: z.boolean(),
+});
+export type PushSubscriptionResponse = z.infer<typeof PushSubscriptionResponseSchema>;
+
+export const PushTestResponseSchema = z.object({
+  delivered: z.number().int().nonnegative(),
+});
+export type PushTestResponse = z.infer<typeof PushTestResponseSchema>;
+
 export const BotStatusResponseSchema = z.object({
   instanceId: z.string(),
   userId: z.string(),

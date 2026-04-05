@@ -30,6 +30,7 @@ export function ConnectWhatsAppPage() {
   const [clientBotDirectory, setClientBotDirectory] = useState("");
   const [pageError, setPageError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [pollingError, setPollingError] = useState<string | null>(null);
   const workerBootstrapRunRef = useRef(0);
   const qrBindingRunRef = useRef(0);
@@ -53,6 +54,20 @@ export function ConnectWhatsAppPage() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!actionMessage) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setActionMessage(null);
+    }, 3000);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [actionMessage]);
+
   function hasVisibleQr(nextStatus: BotStatusResponse | null): boolean {
     return Boolean(nextStatus?.qrCodeAscii || nextStatus?.qrCodeDataUrl);
   }
@@ -63,22 +78,22 @@ export function ConnectWhatsAppPage() {
 
   function buildWorkerReadyMessage(nextStatus: BotStatusResponse): string {
     if (nextStatus.status === "waiting_pairing" && nextStatus.pairingCode) {
-      return "Bot worker raggiungibile. Puoi continuare con il pairing code gia' presente.";
+      return "Il servizio è pronto. Puoi continuare con il codice già visibile.";
     }
 
     if (nextStatus.status === "connected") {
-      return "Bot worker raggiungibile e sessione gia' connessa.";
+      return "Il servizio è pronto e WhatsApp risulta già collegato.";
     }
 
     if (nextStatus.status === "waiting_qr") {
-      return "Bot worker raggiungibile. Il QR reale di WhatsApp e' gia' disponibile nel portale.";
+      return "Il servizio è pronto. Il QR è già disponibile in questa pagina.";
     }
 
     if (nextStatus.status === "connecting") {
-      return "Bot worker raggiungibile. Completa l'avvio dal portale con QR o pairing code.";
+      return "Il servizio è pronto. Completa il collegamento con QR o codice.";
     }
 
-    return "Bot worker raggiungibile. Ora puoi avviare il bot dal portale con QR o pairing code.";
+    return "Il servizio è pronto. Ora puoi iniziare il collegamento da questa pagina.";
   }
 
   async function tryFinalizeWorkerBootstrap(runId: number, options: { background?: boolean } = {}) {
@@ -108,7 +123,7 @@ export function ConnectWhatsAppPage() {
       }
 
       if (!options.background) {
-        const message = getErrorMessage(error, "Sto aspettando il bot worker.");
+        const message = getErrorMessage(error, "Sto aspettando che il servizio sia pronto.");
         setClientBotProgressMessage(`${message} Riprovo automaticamente tra pochi secondi.`);
       }
 
@@ -175,12 +190,13 @@ export function ConnectWhatsAppPage() {
     };
   }, [status?.status, token]);
 
-  async function wrapAction(action: () => Promise<BotStatusResponse>) {
+  async function wrapAction(action: () => Promise<BotStatusResponse>, successMessage?: string) {
     workerBootstrapRunRef.current += 1;
     qrBindingRunRef.current += 1;
     setIsBusy(true);
     setPageError(null);
     setActionError(null);
+    setActionMessage(null);
     setPollingError(null);
     setClientBotMessage(null);
     setClientBotProgressMessage(null);
@@ -189,6 +205,9 @@ export function ConnectWhatsAppPage() {
     try {
       const nextStatus = await action();
       setStatus(nextStatus);
+      if (successMessage) {
+        setActionMessage(successMessage);
+      }
       return nextStatus;
     } catch (actionError) {
       setActionError(getErrorMessage(actionError, "Operazione fallita."));
@@ -205,7 +224,7 @@ export function ConnectWhatsAppPage() {
 
     const runId = qrBindingRunRef.current + 1;
     qrBindingRunRef.current = runId;
-    setPollingError("Sto leggendo il QR ASCII dal terminale del bot worker...");
+    setPollingError("Sto cercando il QR...");
 
     for (let attempt = 1; attempt <= QR_BIND_MAX_ATTEMPTS; attempt += 1) {
       if (qrBindingRunRef.current !== runId) {
@@ -235,7 +254,7 @@ export function ConnectWhatsAppPage() {
         }
 
         if (!isRetryableError(error)) {
-          setPollingError(getErrorMessage(error, "Lettura del QR dal worker fallita."));
+          setPollingError(getErrorMessage(error, "Non riesco a leggere il QR in questo momento."));
           return;
         }
       }
@@ -247,14 +266,17 @@ export function ConnectWhatsAppPage() {
       return;
     }
 
-    setPollingError("Il worker e' attivo ma il QR ASCII non e' ancora arrivato dal terminale. Continuo comunque con l'aggiornamento normale.");
+    setPollingError("Il servizio è attivo ma il QR non è ancora visibile. Continuo ad aggiornare la pagina.");
   }
 
   async function handleInit(mode: ConnectionMode) {
     if (!token) {
       return;
     }
-    const nextStatus = await wrapAction(() => apiClient.initBotConnection(token, mode));
+    const nextStatus = await wrapAction(
+      () => apiClient.initBotConnection(token, mode),
+      mode === "pairing" ? "Richiesta codice avviata." : "Richiesta QR avviata.",
+    );
     if (mode === "qr" && nextStatus && !hasVisibleQr(nextStatus) && nextStatus.status !== "connected") {
       void bindQrFromWorker();
     }
@@ -264,7 +286,7 @@ export function ConnectWhatsAppPage() {
     if (!token) {
       return;
     }
-    const nextStatus = await wrapAction(() => apiClient.getQr(token));
+    const nextStatus = await wrapAction(() => apiClient.getQr(token), "QR aggiornato.");
     if (nextStatus && !hasVisibleQr(nextStatus) && nextStatus.status === "waiting_qr") {
       void bindQrFromWorker();
     }
@@ -274,14 +296,14 @@ export function ConnectWhatsAppPage() {
     if (!token) {
       return;
     }
-    await wrapAction(() => apiClient.getPairingCode(token));
+    await wrapAction(() => apiClient.getPairingCode(token), "Codice aggiornato.");
   }
 
   async function handleDisconnect() {
     if (!token) {
       return;
     }
-    await wrapAction(() => apiClient.disconnectBot(token));
+    await wrapAction(() => apiClient.disconnectBot(token), "WhatsApp disconnesso correttamente.");
   }
 
   async function waitForWorkerAfterStart(runId: number) {
@@ -297,7 +319,7 @@ export function ConnectWhatsAppPage() {
       }
 
       setClientBotProgressMessage(
-        `Servizi locali in avvio. Controllo il bot worker (${attempt}/${WORKER_BOOT_MAX_ATTEMPTS}) e ti lascio poi avviare il bot dal portale...`,
+        `Sto avviando il servizio locale (${attempt}/${WORKER_BOOT_MAX_ATTEMPTS}). Appena risponde, potrai collegare WhatsApp da qui.`,
       );
 
       const completed = await tryFinalizeWorkerBootstrap(runId);
@@ -317,7 +339,7 @@ export function ConnectWhatsAppPage() {
     setIsWaitingForWorker(false);
     setClientBotProgressMessage(null);
     setPollingError(
-      "Il bot worker sta impiegando piu' del previsto. Continuo a controllarlo in background. Quando risponde, potrai avviare il bot dal portale.",
+      "L'avvio sta richiedendo più tempo del previsto. Continuo a controllare e ti avviso appena è tutto pronto.",
     );
     void continueWaitingForWorkerInBackground(runId);
   }
@@ -354,7 +376,7 @@ export function ConnectWhatsAppPage() {
         await waitForWorkerAfterStart(runId);
       }
     } catch (actionError) {
-      setActionError(getErrorMessage(actionError, "Avvio del bot cliente non riuscito."));
+      setActionError(getErrorMessage(actionError, "Non sono riuscito ad avviare il servizio locale."));
     } finally {
       setIsStartingClientBot(false);
     }
@@ -364,6 +386,7 @@ export function ConnectWhatsAppPage() {
     <div className="page-stack">
       {pageError ? <p className="error-banner">{pageError}</p> : null}
       {actionError ? <p className="error-banner">{actionError}</p> : null}
+      {actionMessage ? <p className="success-banner">{actionMessage}</p> : null}
       {pollingError ? <p className="warning-banner">{pollingError}</p> : null}
       <BotStatusCard isBusy={isBusy} onDisconnect={handleDisconnect} status={status} />
       <ConnectionCard

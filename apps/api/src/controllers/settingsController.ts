@@ -1,18 +1,12 @@
 import type { Request, Response } from "express";
-import { PortalUserSchema, UserSettingsSchema } from "@whatsapp-ai/shared";
+import { UserSettingsSchema } from "@whatsapp-ai/shared";
 
+import { currentPortalUser } from "../lib/currentPortalUser.js";
+import { AuditService } from "../services/auditService.js";
 import { SettingsService } from "../services/settingsService.js";
 
 const settingsService = new SettingsService();
-
-function currentPortalUser(request: Request) {
-  return PortalUserSchema.parse({
-    id: request.auth!.sub,
-    email: request.auth!.email,
-    displayName: null,
-    role: request.auth!.role,
-  });
-}
+const auditService = new AuditService();
 
 export async function getSettings(request: Request, response: Response) {
   const settings = await settingsService.getSettings(currentPortalUser(request));
@@ -21,6 +15,21 @@ export async function getSettings(request: Request, response: Response) {
 
 export async function updateSettings(request: Request, response: Response) {
   const payload = UserSettingsSchema.parse(request.body);
-  const settings = await settingsService.updateSettings(currentPortalUser(request), payload);
+  const user = currentPortalUser(request);
+  const settings = await settingsService.updateSettings(user, payload);
+  await auditService.safeLog({
+    category: "settings",
+    action: "update_settings",
+    summary: `Aggiornate le impostazioni dell'account ${user.email}.`,
+    targetType: "user_settings",
+    targetId: user.id,
+    metadata: {
+      preferredConnectionMode: settings.preferredConnectionMode,
+      notificationsEnabled: settings.notificationsEnabled,
+      timezone: settings.timezone,
+      locale: settings.locale,
+    },
+    user,
+  });
   response.json(settings);
 }

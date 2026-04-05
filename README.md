@@ -114,6 +114,10 @@ Per ora il frontend punta in locale a `http://localhost:4000` tramite `VITE_API_
 - `POST /bot/disconnect`
 - `GET /settings`
 - `PUT /settings`
+- `GET /notifications/config`
+- `POST /notifications/subscriptions`
+- `DELETE /notifications/subscriptions`
+- `POST /notifications/test`
 
 La logica e' separata in route/controller/service/repository/client. Il recupero password salva i token hashati nel database. In locale la risposta include `previewToken` e `previewUrl` per poter testare subito il flusso senza email.
 
@@ -196,6 +200,23 @@ Caratteristiche incluse:
    - `npm run dev:api`
    - `npm run dev:bot-worker`
    - `npm run dev:frontend`
+
+### Notifiche push web
+Le notifiche push per nuove prenotazioni, modifiche e cancellazioni sono disponibili nel portale React.
+
+Per attivarle:
+
+1. genera le chiavi VAPID con `npx web-push generate-vapid-keys`;
+2. copia `publicKey` e `privateKey` dentro `.env` come `PUSH_VAPID_PUBLIC_KEY` e `PUSH_VAPID_PRIVATE_KEY`;
+3. imposta anche `PUSH_VAPID_SUBJECT`, ad esempio `mailto:admin@example.com`;
+4. applica la migrazione Prisma piu recente con `npm run db:migrate`;
+5. apri il portale, vai in `Impostazioni` e attiva le notifiche push per il device.
+
+Note pratiche:
+
+- in sviluppo funzionano su `localhost`;
+- fuori da `localhost` servono HTTPS e service worker attivo;
+- su iPhone/iPad le push web richiedono Safari e app salvata in Home Screen.
 
 Oppure usa Docker Compose per la parte server:
 

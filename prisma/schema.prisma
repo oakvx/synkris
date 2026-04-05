@@ -30,6 +30,7 @@ model User {
   botInstances        BotInstance[]
   auditEvents         AuditEvent[]
   botEvents           BotEvent[]
+  pushSubscriptions   DevicePushSubscription[]
   passwordResetTokens PasswordResetToken[]
 
   @@map("users")
@@ -49,6 +50,21 @@ model UserSettings {
   user                    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("user_settings")
+}
+
+model DevicePushSubscription {
+  id           String   @id @default(cuid())
+  userId       String   @map("user_id")
+  endpoint     String   @unique
+  subscription Json
+  userAgent    String?  @map("user_agent")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+  lastSeenAt   DateTime @default(now()) @map("last_seen_at")
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId], map: "ix_device_push_subscriptions_user_id")
+  @@map("device_push_subscriptions")
 }
 
 model BotInstance {
@@ -323,8 +339,18 @@ model ChatSession {
   lastReviewPromptProfessional    Professional? @relation("ChatSessionLastProfessional", fields: [lastReviewPromptProfessionalId], references: [professionalId], onDelete: SetNull)
   messages                        ChatMessage[]
   holds                           AppointmentHold[]
+  runtimeState                    ChatSessionRuntimeState?
 
   @@map("chat_sessions")
+}
+
+model ChatSessionRuntimeState {
+  chatId    String      @id @map("chat_id")
+  memoryJson Json?      @map("memory_json")
+  updatedAt DateTime    @default(now()) @map("updated_at")
+  session   ChatSession @relation(fields: [chatId], references: [chatId], onDelete: Cascade)
+
+  @@map("chat_session_runtime_state")
 }
 
 model ChatMessage {

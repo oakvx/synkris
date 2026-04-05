@@ -1,38 +1,101 @@
 :root {
-  --font-sans: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
-  --color-bg: #f3f6fb;
-  --color-bg-strong: #e8eef6;
-  --color-surface: rgba(255, 255, 255, 0.94);
-  --color-surface-strong: #ffffff;
-  --color-surface-muted: #f8fafc;
-  --color-sidebar: #0f172a;
-  --color-sidebar-soft: #1e293b;
-  --color-text: #0f172a;
-  --color-text-soft: #475569;
-  --color-text-muted: #64748b;
-  --color-border: rgba(15, 23, 42, 0.1);
-  --color-border-strong: rgba(15, 23, 42, 0.16);
-  --color-accent: #0f766e;
-  --color-accent-strong: #115e59;
-  --color-accent-soft: rgba(20, 184, 166, 0.14);
-  --color-warning: #b45309;
-  --color-warning-soft: rgba(245, 158, 11, 0.16);
-  --color-danger: #b42318;
-  --color-danger-soft: rgba(217, 45, 32, 0.12);
-  --color-success: #0f766e;
-  --color-success-soft: rgba(16, 185, 129, 0.14);
-  --shadow-soft: 0 20px 50px rgba(15, 23, 42, 0.08);
-  --shadow-card: 0 12px 32px rgba(15, 23, 42, 0.08);
-  --radius-2xl: 28px;
-  --radius-xl: 22px;
-  --radius-lg: 18px;
-  --radius-md: 14px;
-  --radius-sm: 10px;
-  --space-xs: 0.4rem;
-  --space-sm: 0.7rem;
-  --space-md: 1rem;
-  --space-lg: 1.4rem;
-  --space-xl: 1.8rem;
-  --space-2xl: 2.4rem;
+  --font-heading: "Fraunces", Georgia, serif;
+  --font-sans: "Manrope", "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+
+  --color-cream-000: #fffdf9;
+  --color-cream-050: #faf4ea;
+  --color-cream-100: #f4ecdf;
+  --color-cream-150: #ede1d0;
+  --color-cream-200: #dfcfba;
+  --color-cream-300: #c8b59c;
+
+  --color-plum-950: #201226;
+  --color-plum-900: #291735;
+  --color-plum-850: #362045;
+  --color-plum-800: #452857;
+  --color-plum-700: #5f3878;
+  --color-plum-600: #764995;
+  --color-plum-500: #8c60b1;
+  --color-lilac-100: #efe7f8;
+  --color-lilac-200: #e1d4f2;
+
+  --color-ink-950: #1f1724;
+  --color-ink-900: #2a1f31;
+  --color-ink-800: #3b2f45;
+  --color-ink-700: #504457;
+  --color-ink-600: #6a5d72;
+  --color-ink-500: #877a90;
+
+  --color-line: #decfbd;
+  --color-line-strong: #ccb8a0;
+  --color-line-soft: rgba(95, 56, 120, 0.14);
+
+  --color-bg: var(--color-cream-050);
+  --color-bg-muted: #f1e7d8;
+  --color-surface: var(--color-cream-000);
+  --color-surface-muted: var(--color-cream-100);
+  --color-surface-strong: #fffaf2;
+  --color-surface-soft: #f7efe4;
+  --color-surface-ink: var(--color-plum-900);
+  --color-surface-ink-soft: #332040;
+
+  --color-text-strong: var(--color-ink-950);
+  --color-text: var(--color-ink-800);
+  --color-text-muted: var(--color-ink-600);
+  --color-text-soft: var(--color-ink-500);
+  --color-text-on-dark: #f7f0e6;
+  --color-text-on-dark-muted: rgba(247, 240, 230, 0.72);
+
+  --color-accent: var(--color-plum-700);
+  --color-accent-strong: var(--color-plum-800);
+  --color-accent-soft: rgba(118, 73, 149, 0.12);
+  --color-accent-softer: rgba(118, 73, 149, 0.08);
+  --color-accent-contrast: #fffcff;
+
+  --color-success: #2f6b53;
+  --color-success-soft: rgba(47, 107, 83, 0.12);
+  --color-warning: #99632f;
+  --color-warning-soft: rgba(153, 99, 47, 0.14);
+  --color-danger: #a24751;
+  --color-danger-soft: rgba(162, 71, 81, 0.12);
+
+  --shadow-shell: 0 42px 92px -56px rgba(53, 31, 71, 0.34);
+  --shadow-card: 0 28px 60px -42px rgba(59, 36, 77, 0.22);
+  --shadow-card-hover: 0 34px 68px -40px rgba(59, 36, 77, 0.28);
+  --shadow-button: 0 18px 32px -22px rgba(60, 35, 84, 0.42);
+  --shadow-soft: 0 16px 30px -24px rgba(60, 35, 84, 0.16);
+  --shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.68);
+
+  --radius-xs: 10px;
+  --radius-sm: 14px;
+  --radius-md: 20px;
+  --radius-lg: 28px;
+  --radius-xl: 36px;
+  --radius-full: 999px;
+
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-7: 2rem;
+  --space-8: 2.5rem;
+  --space-9: 3rem;
+  --space-10: 4rem;
+  --space-11: 5rem;
+
+  --container-max: 1380px;
+  --sidebar-width: 318px;
+
+  --ease-standard: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-soft: cubic-bezier(0.16, 1, 0.3, 1);
+  --duration-fast: 160ms;
+  --duration-medium: 320ms;
+  --duration-slow: 640ms;
+  --duration-reveal: 840ms;
+  --reveal-distance: 24px;
+
   color-scheme: light;
 }

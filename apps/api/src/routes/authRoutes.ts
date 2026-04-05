@@ -1,7 +1,7 @@
 import { type Request, Router } from "express";
 
 import { asyncHandler } from "../lib/http.js";
-import { authenticate } from "../middleware/authenticate.js";
+import { authenticate, authenticateOptional } from "../middleware/authenticate.js";
 import { createRateLimit } from "../middleware/rateLimit.js";
 import {
   forgotPassword,
@@ -67,4 +67,4 @@ authRoutes.post("/login", loginLimiter, asyncHandler(login));
 authRoutes.post("/forgot-password", forgotPasswordLimiter, asyncHandler(forgotPassword));
 authRoutes.post("/reset-password", resetPasswordLimiter, asyncHandler(resetPassword));
 authRoutes.get("/me", authenticate, asyncHandler(me));
-authRoutes.post("/logout", asyncHandler(logout));
+authRoutes.post("/logout", authenticateOptional, asyncHandler(logout));

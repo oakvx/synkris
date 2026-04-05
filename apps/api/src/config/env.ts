@@ -66,6 +66,9 @@ export const env = {
   authCookieName: parseOptionalString(process.env.AUTH_COOKIE_NAME) ?? "whatsapp_ai_session",
   authSessionTtlSeconds: parsePort(process.env.AUTH_SESSION_TTL_SECONDS, 60 * 60 * 8),
   cookieSecure: parseBoolean(process.env.AUTH_COOKIE_SECURE, isProductionLike),
+  pushVapidPublicKey: parseOptionalString(process.env.PUSH_VAPID_PUBLIC_KEY),
+  pushVapidPrivateKey: parseOptionalString(process.env.PUSH_VAPID_PRIVATE_KEY),
+  pushVapidSubject: parseOptionalString(process.env.PUSH_VAPID_SUBJECT) ?? "mailto:dev@example.com",
 };
 
 const envProblems: string[] = [];
@@ -93,6 +96,15 @@ if (isPlaceholderSecret(env.internalServiceToken) || env.internalServiceToken.tr
 
 if (isProductionLike && env.allowedOrigins.length === 0) {
   envProblems.push("ALLOWED_ORIGINS deve essere valorizzato in produzione.");
+}
+
+if (Boolean(env.pushVapidPublicKey) !== Boolean(env.pushVapidPrivateKey)) {
+  const message = "Configurazione push incompleta: servono sia PUSH_VAPID_PUBLIC_KEY che PUSH_VAPID_PRIVATE_KEY.";
+  if (isProductionLike) {
+    envProblems.push(message);
+  } else {
+    console.warn(`[api] ${message}`);
+  }
 }
 
 if (envProblems.length > 0) {

@@ -5,6 +5,7 @@ import { useAuth } from "../auth/useAuth";
 import { apiClient, getErrorMessage } from "../lib/api";
 
 export function LoginPage() {
+  const showDevResetPreview = import.meta.env.DEV;
   const navigate = useNavigate();
   const { isLoading, login, register, token } = useAuth();
   const [searchParams] = useSearchParams();
@@ -17,13 +18,13 @@ export function LoginPage() {
   const [resetToken, setResetToken] = useState(initialResetToken);
   const [newPassword, setNewPassword] = useState("");
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-  const [previewToken, setPreviewToken] = useState<string | null>(initialResetToken || null);
+  const [previewToken, setPreviewToken] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   if (isLoading) {
-    return <div className="empty-state">Sto verificando la tua sessione...</div>;
+    return <div className="empty-state">Sto controllando la sessione...</div>;
   }
 
   if (token) {
@@ -61,9 +62,11 @@ export function LoginPage() {
     try {
       const result = await apiClient.forgotPassword(resetEmail);
       setMessage(result.message);
-      setPreviewUrl(result.previewUrl ?? null);
-      setPreviewToken(result.previewToken ?? null);
-      if (result.previewToken) {
+      if (showDevResetPreview) {
+        setPreviewUrl(result.previewUrl ?? null);
+        setPreviewToken(result.previewToken ?? null);
+      }
+      if (showDevResetPreview && result.previewToken) {
         setResetToken(result.previewToken);
       }
     } catch (submissionError) {
@@ -86,7 +89,7 @@ export function LoginPage() {
       setPassword("");
       setNewPassword("");
     } catch (submissionError) {
-      setError(getErrorMessage(submissionError, "Reset password non riuscito."));
+      setError(getErrorMessage(submissionError, "Non sono riuscito a cambiare la password."));
     } finally {
       setIsSubmitting(false);
     }
@@ -95,11 +98,11 @@ export function LoginPage() {
   return (
     <div className="auth-layout">
       <section className="auth-panel">
-        <p className="eyebrow">Portale statico + API server-side</p>
-        <h1>Accedi alla tua dashboard WhatsApp</h1>
+        <p className="eyebrow">Accesso</p>
+        <h1>Entra nel portale</h1>
         <p className="muted">
-          Per ora tutto gira in locale su localhost. Tutta la logica, il database e la sessione WhatsApp rimangono
-          lato server, mentre il browser mostra solo dashboard e stato connessione.
+          Da qui puoi accedere, creare un account o recuperare la password. Tutto quello che conta resta salvato nel
+          sistema, mentre nel browser vedi solo le pagine del portale.
         </p>
 
         <div className="toggle-group">
@@ -108,28 +111,28 @@ export function LoginPage() {
             onClick={() => setMode("login")}
             type="button"
           >
-            Login
+            Accedi
           </button>
           <button
             className={mode === "register" ? "active" : ""}
             onClick={() => setMode("register")}
             type="button"
           >
-            Registrazione
+            Crea account
           </button>
           <button
             className={mode === "recover" ? "active" : ""}
             onClick={() => setMode("recover")}
             type="button"
           >
-            Recupero password
+            Password dimenticata
           </button>
         </div>
 
         {mode === "recover" ? (
           <form className="auth-form" onSubmit={handleForgotPassword}>
             <label>
-              Email account
+              Email
               <input
                 autoComplete="email"
                 type="email"
@@ -140,14 +143,14 @@ export function LoginPage() {
             </label>
 
             <button disabled={isSubmitting} type="submit">
-              {isSubmitting ? "Invio richiesta..." : "Genera link di reset"}
+              {isSubmitting ? "Invio..." : "Invia istruzioni"}
             </button>
           </form>
         ) : (
           <form className="auth-form" onSubmit={handleAuthSubmit}>
             {mode === "register" ? (
               <label>
-                Nome visualizzato
+                Nome
                 <input value={displayName} onChange={(event) => setDisplayName(event.target.value)} required />
               </label>
             ) : null}
@@ -176,7 +179,7 @@ export function LoginPage() {
             </label>
 
             <button disabled={isSubmitting} type="submit">
-              {isSubmitting ? "Invio in corso..." : mode === "login" ? "Entra nel portale" : "Crea account"}
+              {isSubmitting ? "Attendi..." : mode === "login" ? "Entra" : "Crea account"}
             </button>
           </form>
         )}
@@ -184,7 +187,7 @@ export function LoginPage() {
         <form className="auth-form reset-form" onSubmit={handleResetPassword}>
           <h3>Imposta una nuova password</h3>
           <label>
-            Reset token
+            Codice di reset
             <input value={resetToken} onChange={(event) => setResetToken(event.target.value)} required />
           </label>
           <label>
@@ -198,20 +201,20 @@ export function LoginPage() {
             />
           </label>
           <button disabled={isSubmitting} type="submit">
-            {isSubmitting ? "Aggiornamento..." : "Aggiorna password"}
+            {isSubmitting ? "Aggiorno..." : "Salva nuova password"}
           </button>
         </form>
 
         {message ? <p className="success-banner">{message}</p> : null}
         {error ? <p className="error-banner">{error}</p> : null}
 
-        {previewToken || previewUrl ? (
+        {showDevResetPreview && (previewToken || previewUrl) ? (
           <div className="preview-box">
-            <strong>Preview locale reset</strong>
+            <strong>Anteprima locale</strong>
             {previewToken ? <code>{previewToken}</code> : null}
             {previewUrl ? (
               <a href={previewUrl} rel="noreferrer" target="_blank">
-                Apri link di reset su localhost
+                Apri la pagina di reset
               </a>
             ) : null}
           </div>

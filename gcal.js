@@ -43,6 +43,15 @@ async function __pgQuery(text, params = []) {
     return res?.rows || [];
 }
 
+async function __pgQueryOptional(text, params = []) {
+    try {
+        return await __pgQuery(text, params);
+    } catch (error) {
+        if (error?.code === '42P01' || error?.code === '42703') return [];
+        throw error;
+    }
+}
+
 function __timeToHHMM(v) {
     if (v === null || typeof v === "undefined") return null;
     const s = String(v);
@@ -74,11 +83,11 @@ let __runtimeConfig = null;
 async function __loadConfigFromDb() {
     // servizi
     const svcRows = await __pgQuery(`
-    SELECT service_id, service_name, default_duration_min, price, materials_cost
+    SELECT service_id, service_name, default_duration_min, base_price, materials_cost
     FROM public.services
   `);
-    const synRows = await __pgQuery(`SELECT service_id, synonym FROM public.service_synonyms`);
-    const allRows = await __pgQuery(`SELECT service_id, allergen FROM public.service_allergens`);
+    const synRows = await __pgQueryOptional(`SELECT service_id, synonym FROM public.service_synonyms`);
+    const allRows = await __pgQueryOptional(`SELECT service_id, allergen FROM public.service_allergens`);
 
     // professionals + email "primaria"
     const proRows = await __pgQuery(`
@@ -91,12 +100,12 @@ async function __loadConfigFromDb() {
   `);
 
     const proSvcRows = await __pgQuery(`SELECT professional_id, service_id FROM public.professional_services`);
-    const proDurRows = await __pgQuery(`SELECT professional_id, service_id, duration_min FROM public.professional_service_durations`);
+    const proDurRows = await __pgQueryOptional(`SELECT professional_id, service_id, duration_min FROM public.professional_service_durations`);
 
     // orari
     const bhRows = await __pgQuery(`SELECT weekday, open_time, close_time, is_closed FROM public.salon_business_hours`);
     const lunchRows = await __pgQuery(`SELECT weekday, start_time, end_time FROM public.salon_lunch_breaks ORDER BY weekday, start_time`);
-    const closedDateRows = await __pgQuery(`SELECT day FROM public.salon_closed_dates`);
+    const closedDateRows = await __pgQueryOptional(`SELECT day FROM public.salon_closed_dates`);
     const unavWRows = await __pgQuery(`SELECT professional_id, weekday FROM public.professional_unavailable_weekdays`);
 
     // maps
@@ -122,7 +131,7 @@ async function __loadConfigFromDb() {
         if (!name) continue;
         svcCfg[name] = {
             duration: Number(r.default_duration_min || 0) || 0,
-            price: (r.price === null || typeof r.price === "undefined") ? null : Number(r.price),
+            price: (r.base_price === null || typeof r.base_price === "undefined") ? null : Number(r.base_price),
             materialsCost: (r.materials_cost === null || typeof r.materials_cost === "undefined") ? null : Number(r.materials_cost),
             synonyms: [],
             allergens: [],
@@ -257,14 +266,13 @@ async function __loadConfigFromFileFallback() {
 
 export async function ensureRuntimeConfig(force = false) {
     if (__runtimeConfig && !force) return __runtimeConfig;
-    try {
-        if (__pgPool) {
-            const cfg = await __loadConfigFromDb();
-            __runtimeConfig = cfg;
-        } else {
-            __runtimeConfig = await __loadConfigFromFileFallback();
+    if (__pgPool) {
+        try {
+            __runtimeConfig = await __loadConfigFromDb();
+        } catch (error) {
+            throw new Error(`Runtime config PostgreSQL load failed: ${error?.message || error}`);
         }
-    } catch {
+    } else {
         __runtimeConfig = await __loadConfigFromFileFallback();
     }
 

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 
+import { Prisma } from "@prisma/client";
 import type { BotStatusResponse, ConnectionMode } from "@whatsapp-ai/shared";
 
 import { env } from "../config/env.js";
@@ -14,6 +15,38 @@ function nowIso() {
 
 function toErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function describeStatus(status: SessionRecord["status"]) {
+  switch (status) {
+    case "connected":
+      return "connesso";
+    case "connecting":
+      return "in connessione";
+    case "waiting_qr":
+      return "in attesa QR";
+    case "waiting_pairing":
+      return "in attesa pairing";
+    case "error":
+      return "in errore";
+    default:
+      return "disconnesso";
+  }
+}
+
+function levelForStatus(status: SessionRecord["status"]) {
+  switch (status) {
+    case "connected":
+      return "success";
+    case "error":
+      return "error";
+    case "connecting":
+    case "waiting_qr":
+    case "waiting_pairing":
+      return "warning";
+    default:
+      return "info";
+  }
 }
 
 export class SessionManager {
@@ -50,6 +83,87 @@ export class SessionManager {
     await this.store.write(userId, nextRecord);
     await this.store.remove(userId);
     return this.syncDatabase(nextRecord);
+  }
+
+  private async recordBotEvent(input: {
+    code: string;
+    details?: unknown;
+    instanceId: string | null;
+    level: "info" | "success" | "warning" | "error";
+    message: string;
+    provider: string;
+    status: SessionRecord["status"] | null;
+    userId: string;
+  }) {
+    await prisma.botEvent.create({
+      data: {
+        userId: input.userId,
+        instanceId: input.instanceId,
+        level: input.level,
+        code: input.code,
+        status: input.status,
+        provider: input.provider,
+        message: input.message,
+        details:
+          input.details === undefined || input.details === null
+            ? undefined
+            : (input.details as Prisma.InputJsonValue),
+      },
+    });
+  }
+
+  private async syncBotEventLog(
+    record: SessionRecord,
+    instanceId: string,
+    previous: { id: string; lastError: string | null; status: SessionRecord["status"] } | null,
+  ) {
+    if (!previous) {
+      await this.recordBotEvent({
+        userId: record.userId,
+        instanceId,
+        provider: record.provider,
+        code: "instance_registered",
+        level: levelForStatus(record.status),
+        status: record.status,
+        message: `Istanza bot registrata con stato ${describeStatus(record.status)}.`,
+        details: {
+          connectionMode: record.connectionMode,
+          sessionPersisted: record.sessionPersisted,
+        },
+      });
+    } else if (previous.status !== record.status) {
+      await this.recordBotEvent({
+        userId: record.userId,
+        instanceId,
+        provider: record.provider,
+        code: `status_${record.status}`,
+        level: levelForStatus(record.status),
+        status: record.status,
+        message: `Stato bot passato da ${describeStatus(previous.status)} a ${describeStatus(record.status)}.`,
+        details: {
+          from: previous.status,
+          to: record.status,
+          connectionMode: record.connectionMode,
+          sessionPersisted: record.sessionPersisted,
+        },
+      });
+    }
+
+    if (record.lastError && record.lastError !== previous?.lastError) {
+      await this.recordBotEvent({
+        userId: record.userId,
+        instanceId,
+        provider: record.provider,
+        code: "provider_error",
+        level: "error",
+        status: record.status,
+        message: record.lastError,
+        details: {
+          connectionMode: record.connectionMode,
+          sessionPersisted: record.sessionPersisted,
+        },
+      });
+    }
   }
 
   private async loadOrCreateRecord(userId: string): Promise<SessionRecord> {
@@ -110,6 +224,20 @@ export class SessionManager {
 
   private async syncDatabase(record: SessionRecord): Promise<BotStatusResponse> {
     try {
+      const previousInstance = await prisma.botInstance.findUnique({
+        where: {
+          userId_name: {
+            userId: record.userId,
+            name: "default",
+          },
+        },
+        select: {
+          id: true,
+          status: true,
+          lastError: true,
+        },
+      });
+
       const instance = await prisma.botInstance.upsert({
         where: {
           userId_name: {
@@ -166,6 +294,16 @@ export class SessionManager {
           },
         },
       });
+
+      try {
+        await this.syncBotEventLog(record, instance.id, previousInstance);
+      } catch (error) {
+        if (!isMissingTableError(error)) {
+          throw error;
+        }
+
+        warn("Tabella bot_events non disponibile nel bot-worker: salto il logging eventi.", toErrorMessage(error));
+      }
 
       return {
         instanceId: instance.id,

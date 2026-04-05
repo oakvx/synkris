@@ -114,6 +114,11 @@ let terminalQrCapturedLines: string[] = [];
 let terminalQrStdoutBuffer = "";
 let terminalQrStderrBuffer = "";
 
+function isUnsupportedLegacyChatId(chatId: string | null | undefined): boolean {
+  const value = String(chatId ?? "").trim().toLowerCase();
+  return value.endsWith("@newsletter") || value === "status@broadcast" || value.endsWith("@broadcast");
+}
+
 function nowIso(): string {
   return new Date().toISOString();
 }
@@ -1080,10 +1085,17 @@ async function attachLegacyAutomation(runtime: RuntimeSession) {
         return;
       }
 
-      const chatId = message.from;
+      const chatId = String(message.from ?? "").trim();
+      if (!chatId || isUnsupportedLegacyChatId(chatId)) {
+        if (chatId) {
+          log("[open-wa] ignoring unsupported chat", { chatId });
+        }
+        return;
+      }
+
       const text = String(message.body ?? message.caption ?? "").trim();
 
-      if (!chatId || !text) {
+      if (!text) {
         return;
       }
 

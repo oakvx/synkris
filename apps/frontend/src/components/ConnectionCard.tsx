@@ -7,8 +7,8 @@ function formatAsciiQr(input: string): { block: string; sessionLabel: string | n
     return { block: "", sessionLabel: null };
   }
 
-  const topBorderIndex = lines.findIndex((line) => line.trimStart().startsWith("┌"));
-  const bottomBorderReverseIndex = [...lines].reverse().findIndex((line) => line.trimStart().startsWith("└"));
+  const topBorderIndex = lines.findIndex((line) => line.trimStart().startsWith("â”Œ"));
+  const bottomBorderReverseIndex = [...lines].reverse().findIndex((line) => line.trimStart().startsWith("â””"));
   const bottomBorderIndex =
     bottomBorderReverseIndex === -1 ? -1 : lines.length - 1 - bottomBorderReverseIndex;
 
@@ -24,12 +24,12 @@ function formatAsciiQr(input: string): { block: string; sessionLabel: string | n
 
   const contentLines = framedLines
     .slice(
-      framedLines[0]?.trimStart().startsWith("┌") ? 1 : 0,
-      framedLines[framedLines.length - 1]?.trimStart().startsWith("└") ? -1 : undefined,
+      framedLines[0]?.trimStart().startsWith("â”Œ") ? 1 : 0,
+      framedLines[framedLines.length - 1]?.trimStart().startsWith("â””") ? -1 : undefined,
     )
     .map((line) => {
       const glyphs = [...line];
-      if (glyphs.length >= 2 && glyphs[0] === "│" && glyphs[glyphs.length - 1] === "│") {
+      if (glyphs.length >= 2 && glyphs[0] === "â”‚" && glyphs[glyphs.length - 1] === "â”‚") {
         return glyphs.slice(1, -1).join("");
       }
 
@@ -79,43 +79,35 @@ export function ConnectionCard({
   isBusy,
 }: ConnectionCardProps) {
   const isManualLaunch = clientBotDirectory.trim().length > 0;
-  const launchButtonLabel = isManualLaunch ? "Avvia cartella selezionata" : "Avvia worker locale";
+  const launchButtonLabel = isManualLaunch ? "Avvia la cartella scelta" : "Avvia il servizio locale";
   const asciiQr = status?.qrCodeAscii ? formatAsciiQr(status.qrCodeAscii) : null;
 
   return (
     <section className="card connect-card">
       <div className="card-heading">
         <div>
-          <p className="eyebrow">Connessione lato server</p>
-          <h2>Collega il tuo account WhatsApp</h2>
+          <p className="eyebrow">Collegamento WhatsApp</p>
+          <h2>Collega il telefono in pochi passaggi</h2>
         </div>
         <div className="action-row">
           <button disabled={isBusy} onClick={() => void onInit("qr")} type="button">
-            Avvia con QR
+            Usa il QR
           </button>
           <button className="ghost-button" disabled={isBusy} onClick={() => void onInit("pairing")} type="button">
-            Avvia con codice
+            Usa il codice
           </button>
         </div>
       </div>
 
       <p className="muted">
-        Il portale mostra QR e pairing code reali ricevuti dal bot-worker. Se la sessione manca, il QR arriva dalla
-        pagina WhatsApp aperta dal worker e, se il worker gira headless o server-side, viene ricostruito anche dal QR
-        stampato nel terminale come fallback.
-      </p>
-
-      <p className="muted">
-        Se lasci vuoto, il pulsante sotto avvia solo il <code>bot-worker</code> locale necessario per QR, pairing e
-        connessione reale WhatsApp. Il bot vero parte solo quando scegli <strong>Avvia con QR</strong> o{" "}
-        <strong>Avvia con codice</strong> dal portale. Se invece inserisci una cartella specifica, viene eseguito{" "}
-        <code>npm start</code> solo in quella directory.
+        Qui vedi il QR o il codice reale da usare per collegare WhatsApp. In pratica, è la pagina da aprire quando devi
+        fare o rifare l'accesso del telefono.
       </p>
 
       <div className="connection-grid">
         <article className="connection-panel">
           <div className="panel-header">
-            <h3>QR code</h3>
+            <h3>QR da scansionare</h3>
             <button className="link-button" disabled={isBusy} onClick={() => void onRefreshQr()} type="button">
               Aggiorna
             </button>
@@ -128,31 +120,31 @@ export function ConnectionCard({
               <div className="qr-ascii-caption">
                 <p className="muted">
                   {portalUserLabel
-                    ? `QR ASCII di accesso per ${portalUserLabel}.`
-                    : "QR ASCII di accesso della sessione corrente del portale."}
+                    ? `QR pronto per ${portalUserLabel}.`
+                    : "QR pronto per il collegamento attuale."}
                 </p>
-                {asciiQr.sessionLabel ? <p className="muted">Sessione worker: {asciiQr.sessionLabel}</p> : null}
+                {asciiQr.sessionLabel ? <p className="muted">Riferimento interno: {asciiQr.sessionLabel}</p> : null}
               </div>
             </div>
           ) : status?.qrCodeDataUrl ? (
             <p className="muted">
-              QR immagine ricevuto dal worker, ma il portale e&apos; impostato per mostrare solo la versione ASCII.
-              Premi <strong>Aggiorna</strong> se vuoi forzare il codice testuale.
+              Il QR è disponibile, ma qui viene mostrata la versione testuale. Premi <strong>Aggiorna</strong> se vuoi
+              riprovare a vederlo.
             </p>
           ) : (
-            <p className="muted">Nessun QR attivo al momento.</p>
+            <p className="muted">In questo momento non c'è nessun QR da mostrare.</p>
           )}
         </article>
 
         <article className="connection-panel">
           <div className="panel-header">
-            <h3>Pairing code</h3>
+            <h3>Codice di accesso</h3>
             <button className="link-button" disabled={isBusy} onClick={() => void onRefreshPairing()} type="button">
               Aggiorna
             </button>
           </div>
           <div className="pairing-box">{status?.pairingCode ?? "---- ----"}</div>
-          <p className="muted">Utile quando preferisci collegare il dispositivo via codice al posto del QR.</p>
+          <p className="muted">Puoi usare questo codice se preferisci non scansionare il QR.</p>
         </article>
 
         {canStartLocalBot ? (
@@ -165,14 +157,14 @@ export function ConnectionCard({
               Percorso facoltativo
               <input
                 onChange={(event) => onChangeClientBotDirectory(event.target.value)}
-                placeholder="Solo locale o assistenza. Sul server puoi lasciare vuoto."
+                placeholder="Puoi lasciarlo vuoto"
                 value={clientBotDirectory}
               />
             </label>
 
             <p className="muted">
-              Lascia vuoto per avviare solo il worker locale del progetto. Il login WhatsApp parte poi dai pulsanti del
-              portale. Inserisci un percorso solo quando vuoi lanciare manualmente un altro bot con <code>npm start</code>.
+              Se lasci vuoto, il portale avvia solo il servizio necessario per mostrare QR e codice. Compila il campo
+              solo se devi far partire manualmente una cartella specifica.
             </p>
 
             {clientBotMessage ? <p className="success-banner">{clientBotMessage}</p> : null}
@@ -184,7 +176,7 @@ export function ConnectionCard({
                 onClick={() => void onStartClientBot()}
                 type="button"
               >
-                {isStartingClientBot ? "Avvio..." : isWaitingForWorker ? "Attendo worker..." : launchButtonLabel}
+                {isStartingClientBot ? "Avvio..." : isWaitingForWorker ? "Sto aspettando..." : launchButtonLabel}
               </button>
             </div>
           </article>

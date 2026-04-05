@@ -1,16 +1,29 @@
 import {
+  AuditEventsResponseSchema,
   AuthResponseSchema,
+  BotDiagnosticsResponseSchema,
+  BotEventsResponseSchema,
   BotDataModelsResponseSchema,
   BotDataRowsResponseSchema,
   BotStatusResponseSchema,
   ExecuteBotSqlResponseSchema,
   ErrorResponseSchema,
+  OperationsAppointmentsResponseSchema,
+  OperationsClientsResponseSchema,
+  OperationsSummarySchema,
   ForgotPasswordResponseSchema,
   PortalUserSchema,
+  PushConfigResponseSchema,
+  PushSubscriptionDeleteSchema,
+  PushSubscriptionResponseSchema,
+  PushTestResponseSchema,
   StartClientBotResponseSchema,
   type ApiErrorPayload,
+  type AuditEventsResponse,
   type ApiErrorSource,
   type AuthResponse,
+  type BotDiagnosticsResponse,
+  type BotEventsResponse,
   type BotDataModelsResponse,
   type BotDataRow,
   type BotDataRowsResponse,
@@ -18,7 +31,15 @@ import {
   type ConnectionMode,
   type ExecuteBotSqlResponse,
   type ForgotPasswordResponse,
+  type OperationsAppointmentsResponse,
+  type OperationsClientsResponse,
+  type OperationsSummary,
   type PortalUser,
+  type PushConfigResponse,
+  type PushSubscriptionDeleteInput,
+  type PushSubscriptionInput,
+  type PushSubscriptionResponse,
+  type PushTestResponse,
   type StartClientBotResponse,
   type UserSettings,
   UserSettingsSchema,
@@ -116,6 +137,20 @@ export function getErrorMessage(error: unknown, fallback = "Operazione non riusc
 
 export function isRetryableError(error: unknown): boolean {
   return error instanceof ApiClientError ? error.retryable : false;
+}
+
+function buildQueryString(input: Record<string, string | number | null | undefined>) {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(input)) {
+    if (value === null || value === undefined || value === "") {
+      continue;
+    }
+
+    params.set(key, String(value));
+  }
+
+  const serialized = params.toString();
+  return serialized ? `?${serialized}` : "";
 }
 
 function isBearerToken(token: string | null | undefined) {
@@ -232,6 +267,27 @@ export const apiClient = {
   disconnectBot(token: string | null | undefined): Promise<BotStatusResponse> {
     return request("/bot/disconnect", { method: "POST", token }, (value) => BotStatusResponseSchema.parse(value));
   },
+  getBotEvents(token: string | null | undefined, limit = 60): Promise<BotEventsResponse> {
+    return request(
+      `/activity/bot${buildQueryString({ limit })}`,
+      { token },
+      (value) => BotEventsResponseSchema.parse(value),
+    );
+  },
+  getBotDiagnostics(token: string | null | undefined, limit = 60): Promise<BotDiagnosticsResponse> {
+    return request(
+      `/activity/bot/diagnostics${buildQueryString({ limit })}`,
+      { token },
+      (value) => BotDiagnosticsResponseSchema.parse(value),
+    );
+  },
+  getAuditEvents(token: string | null | undefined, limit = 80): Promise<AuditEventsResponse> {
+    return request(
+      `/activity/audit${buildQueryString({ limit })}`,
+      { token },
+      (value) => AuditEventsResponseSchema.parse(value),
+    );
+  },
   startClientBot(token: string | null | undefined, directory?: string): Promise<StartClientBotResponse> {
     return request(
       "/bot/client/start",
@@ -263,6 +319,29 @@ export const apiClient = {
       (value) => ExecuteBotSqlResponseSchema.parse(value),
     );
   },
+  getOperationsSummary(token: string | null | undefined): Promise<OperationsSummary> {
+    return request("/operations/summary", { token }, (value) => OperationsSummarySchema.parse(value));
+  },
+  getOperationsAppointments(
+    token: string | null | undefined,
+    filters: { from?: string | null; limit?: number; search?: string | null; status?: string | null; to?: string | null } = {},
+  ): Promise<OperationsAppointmentsResponse> {
+    return request(
+      `/operations/appointments${buildQueryString(filters)}`,
+      { token },
+      (value) => OperationsAppointmentsResponseSchema.parse(value),
+    );
+  },
+  getOperationsClients(
+    token: string | null | undefined,
+    filters: { limit?: number; search?: string | null } = {},
+  ): Promise<OperationsClientsResponse> {
+    return request(
+      `/operations/clients${buildQueryString(filters)}`,
+      { token },
+      (value) => OperationsClientsResponseSchema.parse(value),
+    );
+  },
   getSettings(token: string | null | undefined): Promise<UserSettings> {
     return request("/settings", { token }, (value) => UserSettingsSchema.parse(value));
   },
@@ -272,5 +351,35 @@ export const apiClient = {
       { method: "PUT", token, body: settings },
       (value) => UserSettingsSchema.parse(value),
     );
+  },
+  getPushConfig(token: string | null | undefined): Promise<PushConfigResponse> {
+    return request("/notifications/config", { token }, (value) => PushConfigResponseSchema.parse(value));
+  },
+  savePushSubscription(
+    token: string | null | undefined,
+    subscription: PushSubscriptionInput,
+  ): Promise<PushSubscriptionResponse> {
+    return request(
+      "/notifications/subscriptions",
+      { method: "POST", token, body: subscription },
+      (value) => PushSubscriptionResponseSchema.parse(value),
+    );
+  },
+  deletePushSubscription(
+    token: string | null | undefined,
+    subscription: PushSubscriptionDeleteInput,
+  ): Promise<PushSubscriptionResponse> {
+    return request(
+      "/notifications/subscriptions",
+      {
+        method: "DELETE",
+        token,
+        body: PushSubscriptionDeleteSchema.parse(subscription),
+      },
+      (value) => PushSubscriptionResponseSchema.parse(value),
+    );
+  },
+  sendPushTest(token: string | null | undefined): Promise<PushTestResponse> {
+    return request("/notifications/test", { method: "POST", token }, (value) => PushTestResponseSchema.parse(value));
   },
 };

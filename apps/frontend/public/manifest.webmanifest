@@ -1,0 +1,16 @@
+{
+  "name": "Synkris Control Room",
+  "short_name": "Synkris",
+  "start_url": "./#/settings",
+  "display": "standalone",
+  "background_color": "#16111b",
+  "theme_color": "#8b5cf6",
+  "icons": [
+    {
+      "src": "./pwa-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

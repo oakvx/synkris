@@ -1,7 +1,10 @@
 import os from "node:os";
 import * as fsSync from "fs";
 import path from "path";
-import { DATA_DIR, debugDataDir, readJSON, writeJSON, initJSON, ensureFile } from "./fs-json.js";
+import dotenv from "dotenv";
+import pgPkg from "pg";
+dotenv.config();
+import { DATA_DIR, debugDataDir } from "./fs-json.js";
 import {
   getFreeSlotsForDay as _getFreeSlotsForDay,
   createCalendarEvent as _createCalendarEvent,
@@ -97,13 +100,6 @@ function __toHHMM(h, m) {
   return `${__pad2(h)}:${__pad2(m)}`;
 }
 
-function __sleepSync(ms) {
-  const t = Math.max(0, Number(ms) || 0);
-  if (!t) return;
-  const sab = new SharedArrayBuffer(4);
-  Atomics.wait(new Int32Array(sab), 0, 0, t);
-}
-
 function __writeJsonAtomic(targetPath, data, { ensureDir = true, label = "json" } = {}) {
   const dir = path.dirname(targetPath);
   if (ensureDir && !fsSync.existsSync(dir)) fsSync.mkdirSync(dir, { recursive: true });
@@ -148,70 +144,808 @@ function shouldDropIncoming(chatId, text) {
   }
 }
 
-// Crea i JSON solo se mancanti (e ripara JSON invalido senza cancellare silenziosamente)
-function ensureJsonFile(fileName, defaultValue) {
-  try {
-    if (!fsSync.existsSync(DATA_DIR)) fsSync.mkdirSync(DATA_DIR, { recursive: true });
+// ================= PostgreSQL runtime state =================
+const { Pool } = pgPkg || {};
+const __PG_URL = String(process.env.DATABASE_URL || "").trim();
+const __pgNeedsSSL =
+  process.env.PG_SSL === "1" ||
+  process.env.PGSSLMODE === "require" ||
+  __PG_URL.includes("sslmode=require");
 
-    const p = path.join(DATA_DIR, fileName);
-
-    // Se manca: crealo
-    if (!fsSync.existsSync(p)) {
-      fsSync.writeFileSync(p, JSON.stringify(defaultValue, null, 2), "utf8");
-      return true;
-    }
-
-    // Se vuoto: ripristina default
-    const raw = fsSync.readFileSync(p, "utf8");
-    if (!raw.trim()) {
-      fsSync.writeFileSync(p, JSON.stringify(defaultValue, null, 2), "utf8");
-      return true;
-    }
-
-    // Se invalido: fai backup e ripristina default
-    try {
-      JSON.parse(raw);
-    } catch {
-      const bak = `${p}.bak.${Date.now()}`;
-      try { fsSync.copyFileSync(p, bak); } catch (err) {
-        logIgnoredError("ensureJsonFile.copyBackup", err, { fileName, bak });
-      }
-      fsSync.writeFileSync(p, JSON.stringify(defaultValue, null, 2), "utf8");
-      log("warn", "[INIT] JSON invalido riparato:", { fileName, bak });
-      return true;
-    }
-  } catch (e) {
-    log("error", "[INIT] ensureJsonFile failed", { fileName, err: e?.message || e });
-  }
-  return false;
+if (!__PG_URL || !Pool) {
+  throw new Error(
+    "DATABASE_URL is required: util.js no longer supports JSON persistence for runtime state."
+  );
 }
 
-ensureJsonFile("config.json", {});
-ensureJsonFile("bookings.json", []);
-ensureJsonFile("chatdb.json", {});
-// === SOFT-HOLD ===
-ensureJsonFile("holds.json", []);
-const HOLDS_PATH = path.join(DATA_DIR, "holds.json");
+const __pgPool = new Pool({
+  connectionString: __PG_URL,
+  ssl: __pgNeedsSSL ? { rejectUnauthorized: false } : undefined,
+  max: Number(process.env.PG_POOL_MAX || 10),
+  connectionTimeoutMillis: Number(process.env.PG_CONNECT_TIMEOUT_MS || 3000),
+  idleTimeoutMillis: Number(process.env.PG_IDLE_TIMEOUT_MS || 30000),
+});
+
+async function __pgExec(text, params = []) {
+  return await __pgPool.query(text, params);
+}
+
+async function __pgQuery(text, params = []) {
+  const res = await __pgExec(text, params);
+  return res?.rows || [];
+}
+
+function __tsMs(v) {
+  if (!v) return 0;
+  const d = v instanceof Date ? v : new Date(v);
+  const t = d.getTime();
+  return Number.isFinite(t) ? t : 0;
+}
+
+function __toIsoFromMs(ms) {
+  const n = Number(ms);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  const d = new Date(n);
+  return Number.isFinite(d.getTime()) ? d.toISOString() : null;
+}
+
+let config = {};
 const HOLD_MINUTES = Number(process.env.SOFT_HOLD_MIN || 5);
 
-const config = readJSON("config.json");
-log("info", "[DATA_DIR]", debugDataDir());
+let __svcNameToId = new Map();
+let __proEmailToId = new Map();
+let __proNameToId = new Map();
+let __loadIdMapsInFlight = null;
 
-// Verifica file critici
-const _cfg = readJSON("config.json", null);
-if (!_cfg)
-  log("error", "ATTENZIONE: config.json non trovato o invalido in", DATA_DIR);
-const _bk = readJSON("bookings.json", null);
-if (!_bk)
-  log("error",
-    "ATTENZIONE: bookings.json non trovato o invalido in",
-    DATA_DIR
-  );
+async function __loadIdMaps() {
+  if (__loadIdMapsInFlight) return __loadIdMapsInFlight;
 
-// ================= PATH & ChatDB =================
-const CHATDB_PATH = path.join(DATA_DIR, "chatdb.json");
+  __loadIdMapsInFlight = (async () => {
+    const svcs = await __pgQuery(`SELECT service_id, service_name FROM public.services`);
+    const nextSvcMap = new Map();
+    for (const row of svcs) {
+      const name = String(row.service_name || "").trim();
+      if (!name) continue;
+      nextSvcMap.set(name, Number(row.service_id));
+    }
 
-const BOOKINGS_PATH = path.join(DATA_DIR, "bookings.json");
+    const pros = await __pgQuery(`
+      SELECT p.professional_id, p.full_name,
+             (SELECT (pe.email)::text
+              FROM public.professional_emails pe
+              WHERE pe.professional_id = p.professional_id
+              ORDER BY (pe.email)::text ASC
+              LIMIT 1) AS email
+      FROM public.professionals p
+      WHERE p.is_active = true
+    `);
+
+    const nextEmailMap = new Map();
+    const nextNameMap = new Map();
+    for (const row of pros) {
+      const id = Number(row.professional_id);
+      const email = String(row.email || "").trim().toLowerCase();
+      const name = String(row.full_name || "").trim();
+      if (email) nextEmailMap.set(email, id);
+      if (Number.isFinite(id)) nextEmailMap.set(`pro:${id}`, id);
+      if (name) nextNameMap.set(name.toLowerCase(), id);
+    }
+
+    __svcNameToId = nextSvcMap;
+    __proEmailToId = nextEmailMap;
+    __proNameToId = nextNameMap;
+
+    log("debug", "[pg] loadIdMaps OK", {
+      services: __svcNameToId.size,
+      professionals: __proEmailToId.size,
+    });
+  })()
+    .catch((error) => {
+      log("error", "[pg] loadIdMaps failed", { error: String(error?.message || error) });
+      throw error;
+    })
+    .finally(() => {
+      __loadIdMapsInFlight = null;
+    });
+
+  return __loadIdMapsInFlight;
+}
+
+const __ID_MAPS_REFRESH_MS = Number(process.env.ID_MAPS_REFRESH_MS || 5 * 60 * 1000);
+const __idMapsRefreshTimer = setInterval(() => {
+  void __loadIdMaps().catch((error) => {
+    log("warn", "[pg] loadIdMaps periodic refresh failed", {
+      error: String(error?.message || error),
+    });
+  });
+}, __ID_MAPS_REFRESH_MS);
+if (__idMapsRefreshTimer?.unref) __idMapsRefreshTimer.unref();
+
+let __servicesListCache = [];
+let __servicesItemCache = new Map();
+let __servicesSynCache = new Map();
+let __servicesProsCache = new Map();
+let __servicesDBOk = false;
+let __servicesDBInitErr = null;
+const __svcKey = (s) =>
+  String(s || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
+let __svcKeyToName = new Map();
+
+function __fmtEurMaybe(v) {
+  if (v === null || typeof v === "undefined") return "";
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "";
+  const fixed = (Math.round(n * 100) / 100).toFixed(2);
+  return `${fixed.replace(/\.00$/, "").replace(/(\.[0-9])0$/, "$1")}€`;
+}
+
+async function __initServicesCacheFromPg() {
+  try {
+    await __loadIdMaps();
+
+    const rows = await __pgQuery(`
+      SELECT
+        s.service_id,
+        s.service_name,
+        s.default_duration_min,
+        s.base_price,
+        COALESCE(c.category_name, NULLIF(btrim(s.category), ''), 'Altro') AS category_name,
+        c.category_id,
+        c.display_order AS category_display_order,
+        s.emoji,
+        s.display_order
+      FROM public.services s
+      LEFT JOIN public.service_categories c ON c.category_id = s.category_id
+      WHERE s.is_active = true
+        AND (c.is_active IS DISTINCT FROM false)
+      ORDER BY
+        COALESCE(c.display_order, 9999) ASC,
+        COALESCE(c.category_name, 'Altro') ASC,
+        COALESCE(s.display_order, 1000) ASC,
+        s.service_name ASC
+    `);
+
+    const nextList = [];
+    const nextItems = new Map();
+    const nextSvcKeyToName = new Map();
+    for (const row of rows || []) {
+      const name = String(row.service_name || "").trim();
+      if (!name) continue;
+      nextList.push(name);
+      nextSvcKeyToName.set(__svcKey(name), name);
+      nextItems.set(name, {
+        name,
+        label: name,
+        category: String(row.category_name || "").trim() || null,
+        categoryId:
+          row.category_id === null || typeof row.category_id === "undefined"
+            ? null
+            : Number(row.category_id),
+        categoryOrder: Number(row.category_display_order ?? 9999) || 9999,
+        emoji: String(row.emoji || "").trim() || null,
+        displayOrder: Number(row.display_order ?? 1000) || 1000,
+        durationMin: Number(row.default_duration_min || 0) || 30,
+        price:
+          row.base_price === null || typeof row.base_price === "undefined"
+            ? null
+            : Number(row.base_price),
+        professionals: [],
+        professionalsDetailed: [],
+      });
+    }
+
+    const synRows = await __pgQuery(`
+      SELECT s.service_name, ss.synonym
+      FROM public.service_synonyms ss
+      JOIN public.services s ON s.service_id = ss.service_id
+    `);
+    const nextSyn = new Map();
+    for (const row of synRows || []) {
+      const svcName = String(row.service_name || "").trim();
+      const syn = String(row.synonym || "").trim();
+      if (!svcName || !syn) continue;
+      const canon = nextSvcKeyToName.get(__svcKey(svcName)) || svcName;
+      const arr = nextSyn.get(canon) || [];
+      arr.push(syn);
+      nextSyn.set(canon, arr);
+    }
+
+    const proRows = await __pgQuery(`
+      SELECT s.service_name,
+             p.professional_id,
+             p.full_name,
+             (SELECT (pe.email)::text
+              FROM public.professional_emails pe
+              WHERE pe.professional_id = p.professional_id
+              ORDER BY (pe.email)::text ASC
+              LIMIT 1) AS email
+      FROM public.professional_services ps
+      JOIN public.services s ON s.service_id = ps.service_id
+      JOIN public.professionals p ON p.professional_id = ps.professional_id
+      WHERE p.is_active = true
+    `);
+    const nextPros = new Map();
+    for (const row of proRows || []) {
+      const svcName = String(row.service_name || "").trim();
+      if (!svcName) continue;
+      const rawEmail = String(row.email || "").trim().toLowerCase();
+      const proIdNum = Number(row.professional_id);
+      const email = rawEmail || (Number.isFinite(proIdNum) ? `pro:${proIdNum}` : null);
+      if (!email) continue;
+      const canon = nextSvcKeyToName.get(__svcKey(svcName)) || svcName;
+      const list = nextPros.get(canon) || [];
+      list.push({
+        name: String(row.full_name || email).trim() || email,
+        email,
+        professional_id: Number.isFinite(proIdNum) ? proIdNum : null,
+        hasRealEmail: !!rawEmail,
+      });
+      nextPros.set(canon, list);
+    }
+
+    for (const name of nextList) {
+      const item = nextItems.get(name);
+      if (!item) continue;
+      const pros = nextPros.get(name) || [];
+      item.professionalsDetailed = pros.slice();
+      item.professionals = pros.map((p) => p.email).filter(Boolean);
+    }
+
+    __servicesListCache = nextList;
+    __servicesItemCache = nextItems;
+    __servicesSynCache = nextSyn;
+    __servicesProsCache = nextPros;
+    __svcKeyToName = nextSvcKeyToName;
+    __servicesDBOk = true;
+    __servicesDBInitErr = null;
+    log("info", "[services] PostgreSQL cache loaded", {
+      count: __servicesListCache.length,
+    });
+  } catch (error) {
+    __servicesDBOk = false;
+    __servicesDBInitErr = error;
+    log("error", "[services] PostgreSQL init/load failed", {
+      error: String(error?.message || error),
+    });
+    throw error;
+  }
+}
+
+function __dbAllPros() {
+  const out = [];
+  const seen = new Set();
+
+  for (const list of __servicesProsCache.values()) {
+    for (const p of list || []) {
+      const email = String(p?.email || "").toLowerCase();
+      if (!email || seen.has(email)) continue;
+      seen.add(email);
+      out.push({
+        name: String(p?.name || email),
+        email,
+        professional_id:
+          p?.professional_id === null || typeof p?.professional_id === "undefined"
+            ? null
+            : Number(p.professional_id),
+        hasRealEmail: !!p?.hasRealEmail,
+      });
+    }
+  }
+
+  if (!out.length) {
+    for (const [name, id] of __proNameToId.entries()) {
+      const email = `pro:${id}`;
+      if (seen.has(email)) continue;
+      seen.add(email);
+      out.push({ name, email, professional_id: id, hasRealEmail: false });
+    }
+  }
+
+  return out;
+}
+
+async function __ensureRuntimeStateTables() {
+  await __pgExec(`
+    CREATE TABLE IF NOT EXISTS public.chat_session_runtime_state (
+      chat_id TEXT PRIMARY KEY REFERENCES public.chat_sessions(chat_id) ON DELETE CASCADE,
+      memory_json JSONB,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  `);
+}
+
+let __chatCache = {};
+let __chatDBOk = false;
+let __chatDBInitErr = null;
+let __chatFlushTimer = null;
+let __chatFlushInFlight = false;
+const __CHAT_FLUSH_MS = Number(process.env.CHAT_FLUSH_MS || 750);
+const __CHAT_MAX_ENTRIES = Number(process.env.CHAT_MAX_ENTRIES || 2000);
+const __CHAT_TTL_MS = Number(process.env.CHAT_TTL_DAYS || 30) * 86_400_000;
+const __CHAT_CLEANUP_MS = Number(process.env.CHAT_CLEANUP_MS || 3_600_000);
+const __chatAccessTime = new Map();
+let __chatCleanupTimer = null;
+
+function __touchChat(chatId) {
+  if (chatId) __chatAccessTime.set(String(chatId), Date.now());
+}
+
+function __evictChatCache() {
+  const now = Date.now();
+  for (const [id, ts] of __chatAccessTime.entries()) {
+    if (now - ts > __CHAT_TTL_MS) {
+      delete __chatCache[id];
+      __chatAccessTime.delete(id);
+    }
+  }
+
+  const ids = Object.keys(__chatCache || {});
+  if (ids.length <= __CHAT_MAX_ENTRIES) return;
+  ids.sort((a, b) => (__chatAccessTime.get(a) || 0) - (__chatAccessTime.get(b) || 0));
+  const toRemove = ids.length - __CHAT_MAX_ENTRIES;
+  for (let i = 0; i < toRemove; i++) {
+    delete __chatCache[ids[i]];
+    __chatAccessTime.delete(ids[i]);
+  }
+}
+
+function __startChatCleanup() {
+  if (__chatCleanupTimer) return;
+  __chatCleanupTimer = setInterval(() => {
+    try {
+      __evictChatCache();
+    } catch (error) {
+      logIgnoredError("chat.cleanup", error);
+    }
+  }, __CHAT_CLEANUP_MS);
+  if (__chatCleanupTimer?.unref) __chatCleanupTimer.unref();
+}
+
+async function __initChatCacheFromPg() {
+  try {
+    await __ensureRuntimeStateTables();
+    await __loadIdMaps();
+
+    const rows = await __pgQuery(`
+      SELECT cs.*,
+             crs.memory_json,
+             s.service_name AS last_service_name,
+             p.full_name AS last_pro_name
+      FROM public.chat_sessions cs
+      LEFT JOIN public.chat_session_runtime_state crs ON crs.chat_id = cs.chat_id
+      LEFT JOIN public.services s ON s.service_id = cs.last_review_prompt_service_id
+      LEFT JOIN public.professionals p ON p.professional_id = cs.last_review_prompt_professional_id
+    `);
+
+    const cache = {};
+    for (const row of rows || []) {
+      const chatId = String(row.chat_id || "");
+      if (!chatId) continue;
+      cache[chatId] = {
+        msgs: [],
+        phone: row.phone_e164 || chatIdToE164(chatId) || chatId,
+        lang: row.lang || "it",
+        firstSeenAt: __tsMs(row.first_seen_at) || 0,
+        lastActive: __tsMs(row.last_active_at) || 0,
+        lastGreet: __tsMs(row.last_greet_at) || 0,
+        memory: row.memory_json && typeof row.memory_json === "object" ? row.memory_json : undefined,
+        privacy:
+          row.privacy_sent_at || row.privacy_version
+            ? {
+              sentAt: __tsMs(row.privacy_sent_at),
+              version: Number(row.privacy_version || 1),
+            }
+            : undefined,
+        lastReviewPromptAt: __tsMs(row.last_review_prompt_at) || 0,
+        lastReviewPromptEventId: row.last_review_prompt_event_id || null,
+        lastReviewPromptService: row.last_service_name || null,
+        lastReviewPromptPro: row.last_pro_name || null,
+        lastReviewReplyAt: __tsMs(row.last_review_reply_at) || 0,
+        reminderChoice:
+          row.reminder_choice === null || typeof row.reminder_choice === "undefined"
+            ? null
+            : Number(row.reminder_choice),
+      };
+    }
+
+    const maxN = Math.max(1, Number(process.env.MAX_HISTORY || 5));
+    const msgs = await __pgQuery(
+      `
+        SELECT chat_id, body
+        FROM (
+          SELECT chat_id, body,
+                 row_number() OVER (PARTITION BY chat_id ORDER BY created_at DESC) AS rn
+          FROM public.chat_messages
+          WHERE direction = 'in'
+        ) t
+        WHERE rn <= $1
+        ORDER BY chat_id, rn DESC
+      `,
+      [maxN]
+    );
+
+    for (const row of msgs || []) {
+      const chatId = String(row.chat_id || "");
+      if (!chatId) continue;
+      cache[chatId] = cache[chatId] || { msgs: [] };
+      cache[chatId].msgs = cache[chatId].msgs || [];
+      cache[chatId].msgs.push(String(row.body || "").slice(0, 800));
+      if (cache[chatId].msgs.length > maxN) {
+        cache[chatId].msgs = cache[chatId].msgs.slice(-maxN);
+      }
+    }
+
+    __chatCache = cache;
+    __chatDBOk = true;
+    __chatDBInitErr = null;
+
+    const loadedNow = Date.now();
+    for (const [id, entry] of Object.entries(cache)) {
+      __chatAccessTime.set(id, entry.lastActive || loadedNow);
+    }
+    __startChatCleanup();
+
+    log("info", "[chat] PostgreSQL cache loaded", {
+      count: Object.keys(__chatCache).length,
+    });
+  } catch (error) {
+    __chatDBOk = false;
+    __chatDBInitErr = error;
+    __chatCache = {};
+    log("error", "[chat] PostgreSQL init/load failed", {
+      error: String(error?.message || error),
+    });
+    throw error;
+  }
+}
+
+function __scheduleChatFlush() {
+  if (__chatFlushTimer) return;
+  __chatFlushTimer = setTimeout(() => {
+    __chatFlushTimer = null;
+    void __flushChatToPg();
+  }, __CHAT_FLUSH_MS);
+}
+
+async function __flushChatToPg() {
+  if (__chatFlushInFlight) return;
+  __chatFlushInFlight = true;
+  try {
+    const db = (__chatCache && typeof __chatCache === "object") ? __chatCache : {};
+    const chatIds = Object.keys(db);
+    if (!chatIds.length) return;
+
+    for (const chatId of chatIds) {
+      const entry = db[chatId] || {};
+      const phone = entry.phone || chatIdToE164(chatId) || chatId;
+      const lang = entry.lang || "it";
+      const firstSeenAt = __toIsoFromMs(entry.firstSeenAt) || null;
+      const lastActiveAt = __toIsoFromMs(entry.lastActive) || null;
+      const lastGreetAt = __toIsoFromMs(entry.lastGreet) || null;
+      const privacyVer = Number(entry?.privacy?.version || 0) || null;
+      const privacySent = __toIsoFromMs(entry?.privacy?.sentAt || 0) || null;
+      const lastReviewPromptAt = __toIsoFromMs(entry.lastReviewPromptAt || 0) || null;
+      const lastReviewPromptEventId = entry.lastReviewPromptEventId
+        ? String(entry.lastReviewPromptEventId)
+        : null;
+      const svcId = entry.lastReviewPromptService
+        ? __svcNameToId.get(String(entry.lastReviewPromptService)) || null
+        : null;
+      const proId = entry.lastReviewPromptPro
+        ? __proNameToId.get(String(entry.lastReviewPromptPro).toLowerCase()) || null
+        : null;
+      const lastReviewReplyAt = __toIsoFromMs(entry.lastReviewReplyAt || 0) || null;
+      const reminderChoice =
+        entry.reminderChoice === null || typeof entry.reminderChoice === "undefined"
+          ? null
+          : Number(entry.reminderChoice);
+
+      await __pgExec(
+        `
+          INSERT INTO public.chat_sessions (
+            chat_id, phone_e164, lang,
+            first_seen_at, last_active_at, last_greet_at,
+            privacy_version, privacy_sent_at,
+            last_review_prompt_at, last_review_prompt_event_id,
+            last_review_prompt_service_id, last_review_prompt_professional_id,
+            last_review_reply_at, reminder_choice
+          )
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+          ON CONFLICT (chat_id) DO UPDATE SET
+            phone_e164 = EXCLUDED.phone_e164,
+            lang = EXCLUDED.lang,
+            first_seen_at = COALESCE(public.chat_sessions.first_seen_at, EXCLUDED.first_seen_at),
+            last_active_at = GREATEST(COALESCE(public.chat_sessions.last_active_at, EXCLUDED.last_active_at), EXCLUDED.last_active_at),
+            last_greet_at = GREATEST(COALESCE(public.chat_sessions.last_greet_at, EXCLUDED.last_greet_at), EXCLUDED.last_greet_at),
+            privacy_version = COALESCE(EXCLUDED.privacy_version, public.chat_sessions.privacy_version),
+            privacy_sent_at = COALESCE(EXCLUDED.privacy_sent_at, public.chat_sessions.privacy_sent_at),
+            last_review_prompt_at = COALESCE(EXCLUDED.last_review_prompt_at, public.chat_sessions.last_review_prompt_at),
+            last_review_prompt_event_id = COALESCE(EXCLUDED.last_review_prompt_event_id, public.chat_sessions.last_review_prompt_event_id),
+            last_review_prompt_service_id = COALESCE(EXCLUDED.last_review_prompt_service_id, public.chat_sessions.last_review_prompt_service_id),
+            last_review_prompt_professional_id = COALESCE(EXCLUDED.last_review_prompt_professional_id, public.chat_sessions.last_review_prompt_professional_id),
+            last_review_reply_at = COALESCE(EXCLUDED.last_review_reply_at, public.chat_sessions.last_review_reply_at),
+            reminder_choice = COALESCE(EXCLUDED.reminder_choice, public.chat_sessions.reminder_choice)
+        `,
+        [
+          chatId,
+          phone,
+          lang,
+          firstSeenAt,
+          lastActiveAt,
+          lastGreetAt,
+          privacyVer,
+          privacySent,
+          lastReviewPromptAt,
+          lastReviewPromptEventId,
+          svcId,
+          proId,
+          lastReviewReplyAt,
+          reminderChoice,
+        ]
+      );
+
+      await __pgExec(
+        `
+          INSERT INTO public.chat_session_runtime_state (chat_id, memory_json, updated_at)
+          VALUES ($1, $2::jsonb, now())
+          ON CONFLICT (chat_id) DO UPDATE SET
+            memory_json = EXCLUDED.memory_json,
+            updated_at = now()
+        `,
+        [chatId, JSON.stringify(entry?.memory || null)]
+      );
+    }
+
+    __chatDBOk = true;
+    __chatDBInitErr = null;
+  } catch (error) {
+    __chatDBOk = false;
+    __chatDBInitErr = error;
+    log("error", "[chat] flush failed", {
+      error: String(error?.message || error),
+    });
+  } finally {
+    __chatFlushInFlight = false;
+  }
+}
+
+async function __deleteChatSessionFromPg(chatId) {
+  const cid = String(chatId || "").trim();
+  if (!cid) return false;
+  await __pgExec(`DELETE FROM public.chat_sessions WHERE chat_id = $1`, [cid]);
+  return true;
+}
+
+async function __dbInsertChatMessage(chatId, direction, body) {
+  try {
+    const cid = String(chatId || "").trim();
+    if (!cid) return;
+    const dir = direction === "out" ? "out" : "in";
+    const txt = String(body ?? "").slice(0, 4000);
+    if (!txt.trim()) return;
+    await __pgExec(
+      `INSERT INTO public.chat_sessions (chat_id, lang) VALUES ($1, 'it') ON CONFLICT (chat_id) DO NOTHING`,
+      [cid]
+    );
+    await __pgExec(
+      `INSERT INTO public.chat_messages (chat_id, direction, body) VALUES ($1, $2, $3)`,
+      [cid, dir, txt]
+    );
+  } catch (error) {
+    logIgnoredError("chat.insertMessage", error, { chatId, direction });
+  }
+}
+
+let __holdsCache = [];
+let __holdsDBOk = false;
+let __holdsDBInitErr = null;
+let __holdsFlushTimer = null;
+let __holdsFlushInFlight = false;
+const __HOLDS_FLUSH_MS = Number(process.env.HOLDS_FLUSH_MS || 750);
+
+async function __initHoldsCacheFromPg() {
+  try {
+    await __loadIdMaps();
+    await __pgExec(`
+      UPDATE public.appointment_holds
+      SET status = 'expired'
+      WHERE status = 'active' AND expires_at <= now()
+    `);
+
+    const rows = await __pgQuery(`
+      SELECT h.hold_id,
+             h.chat_id,
+             (SELECT (pe.email)::text
+              FROM public.professional_emails pe
+              WHERE pe.professional_id = h.professional_id
+              ORDER BY (pe.email)::text ASC
+              LIMIT 1) AS professional_email,
+             p.full_name AS professional_name,
+             s.service_name,
+             EXTRACT(EPOCH FROM h.start_time) * 1000 AS start_ms,
+             EXTRACT(EPOCH FROM h.end_time) * 1000 AS end_ms,
+             EXTRACT(EPOCH FROM h.expires_at) * 1000 AS expires_ms
+      FROM public.appointment_holds h
+      JOIN public.professionals p ON p.professional_id = h.professional_id
+      LEFT JOIN public.services s ON s.service_id = h.service_id
+      WHERE h.status = 'active'
+      ORDER BY h.start_time ASC
+    `);
+
+    __holdsCache = (rows || []).map((row) => ({
+      holdId: Number(row.hold_id),
+      chatId: String(row.chat_id || ""),
+      professionalEmail: String(row.professional_email || "").trim().toLowerCase(),
+      professionalName: String(row.professional_name || "").trim() || null,
+      service: String(row.service_name || "").trim() || null,
+      startMs: Number(row.start_ms || 0),
+      endMs: Number(row.end_ms || 0),
+      expiresAt: Number(row.expires_ms || 0),
+    }));
+
+    __holdsDBOk = true;
+    __holdsDBInitErr = null;
+    log("info", "[holds] PostgreSQL cache loaded", { count: __holdsCache.length });
+  } catch (error) {
+    __holdsCache = [];
+    __holdsDBOk = false;
+    __holdsDBInitErr = error;
+    log("error", "[holds] PostgreSQL init/load failed", {
+      error: String(error?.message || error),
+    });
+    throw error;
+  }
+}
+
+function __scheduleHoldsFlush() {
+  if (__holdsFlushTimer) return;
+  __holdsFlushTimer = setTimeout(() => {
+    __holdsFlushTimer = null;
+    void __flushHoldsToPg();
+  }, __HOLDS_FLUSH_MS);
+}
+
+async function __flushHoldsToPg() {
+  if (__holdsFlushInFlight) return;
+  __holdsFlushInFlight = true;
+  try {
+    await __loadIdMaps();
+
+    await __pgExec(`
+      UPDATE public.appointment_holds
+      SET status = 'released'
+      WHERE status = 'active'
+    `);
+
+    const arr = (__holdsCache || []).filter((h) => Number(h?.expiresAt) > Date.now());
+    if (!arr.length) {
+      __holdsDBOk = true;
+      __holdsDBInitErr = null;
+      return;
+    }
+
+    const uniqChats = Array.from(new Set(arr.map((h) => String(h.chatId || "")).filter(Boolean)));
+    for (const cid of uniqChats) {
+      await __pgExec(
+        `INSERT INTO public.chat_sessions (chat_id, lang) VALUES ($1, 'it') ON CONFLICT (chat_id) DO NOTHING`,
+        [cid]
+      );
+    }
+
+    for (const hold of arr) {
+      const email = String(hold.professionalEmail || "").trim().toLowerCase();
+      let proId = __proEmailToId.get(email) || null;
+      if (!proId && hold.professionalName) {
+        proId = __proNameToId.get(String(hold.professionalName || "").toLowerCase()) || null;
+      }
+      if (!proId) {
+        const fallbackRows = await __pgQuery(
+          `SELECT professional_id FROM public.professionals WHERE is_active = true ORDER BY professional_id ASC LIMIT 1`
+        );
+        proId = fallbackRows?.[0] ? Number(fallbackRows[0].professional_id) || null : null;
+      }
+      if (!proId) {
+        log("warn", "[holds] flush skipped: professional not found", {
+          chatId: hold.chatId || null,
+          professionalEmail: email || null,
+          professionalName: hold.professionalName || null,
+        });
+        continue;
+      }
+
+      const svcId = hold.service ? __svcNameToId.get(String(hold.service)) || null : null;
+      const startIso = new Date(Number(hold.startMs)).toISOString();
+      const endIso = new Date(Number(hold.endMs)).toISOString();
+      const expiresIso = new Date(Number(hold.expiresAt)).toISOString();
+
+      await __pgExec(
+        `
+          INSERT INTO public.appointment_holds
+            (chat_id, professional_id, service_id, start_time, end_time, expires_at, status)
+          VALUES ($1, $2, $3, $4, $5, $6, 'active')
+        `,
+        [String(hold.chatId), proId, svcId, startIso, endIso, expiresIso]
+      );
+    }
+
+    __holdsDBOk = true;
+    __holdsDBInitErr = null;
+  } catch (error) {
+    __holdsDBOk = false;
+    __holdsDBInitErr = error;
+    log("error", "[holds] flush failed", {
+      error: String(error?.message || error),
+    });
+  } finally {
+    __holdsFlushInFlight = false;
+  }
+}
+
+let __bookingsCache = [];
+let __bookingsStoreReady = false;
+let __bookingsStoreError = null;
+let __bookingsInitPromise = null;
+let __bookingsPgModPromise = null;
+
+async function __getBookingsPgMod() {
+  if (!__bookingsPgModPromise) {
+    __bookingsPgModPromise = import("./bookings-norm-pg.js");
+  }
+  return await __bookingsPgModPromise;
+}
+
+async function __initBookingsStore() {
+  if (__bookingsStoreReady) return true;
+  if (__bookingsInitPromise) return __bookingsInitPromise;
+
+  __bookingsInitPromise = (async () => {
+    try {
+      const { initBookingsNormDbPg, listBookingsNormPg } = await __getBookingsPgMod();
+      await initBookingsNormDbPg();
+      const rows = await listBookingsNormPg();
+      __bookingsCache = Array.isArray(rows) ? rows.filter((x) => x && typeof x === "object") : [];
+      __bookingsStoreReady = true;
+      __bookingsStoreError = null;
+      log("info", "[bookings] PostgreSQL cache loaded", { count: __bookingsCache.length });
+      return true;
+    } catch (error) {
+      __bookingsStoreReady = false;
+      __bookingsStoreError = error;
+      log("error", "[bookings] PostgreSQL init/load failed", {
+        error: String(error?.message || error),
+      });
+      return false;
+    } finally {
+      __bookingsInitPromise = null;
+    }
+  })();
+
+  return __bookingsInitPromise;
+}
+
+async function __initUtilRuntime() {
+  log("info", "[DATA_DIR]", debugDataDir());
+  await __ensureRuntimeStateTables();
+  await __loadIdMaps();
+  await __initServicesCacheFromPg();
+  config = await GCAL.getRuntimeConfig();
+  if (!config || typeof config !== "object" || !config.services) {
+    throw new Error("Runtime config could not be loaded from PostgreSQL.");
+  }
+  await __initChatCacheFromPg();
+  await __initHoldsCacheFromPg();
+  const bookingsOk = await __initBookingsStore();
+
+  if (!__servicesDBOk || !__chatDBOk || !__holdsDBOk || !bookingsOk) {
+    throw new Error("PostgreSQL runtime initialization failed.");
+  }
+}
+
+await __initUtilRuntime();
 
 const CANCEL_POLICY_HOURS = 3;
 
@@ -229,6 +963,7 @@ function __updateChatDB(chatId, updater) {
   next.phone = next.phone || chatIdToE164(key) || key;
 
   db[key] = next;
+  __touchChat(key);
   saveChatDB(db);
   return next;
 }
@@ -733,7 +1468,14 @@ function getLang(chatId) {
 }
 function setLang(chatId, lang) {
   const db = loadChatDB();
-  db[chatId] = db[chatId] || { msgs: [] };
+  const current = db[chatId];
+  const entry =
+    current && typeof current === "object" && !Array.isArray(current)
+      ? current
+      : {};
+
+  if (!Array.isArray(entry.msgs)) entry.msgs = [];
+  db[chatId] = entry;
   db[chatId].lang = lang === "en" ? "en" : "it";
   saveChatDB(db);
 }
@@ -766,195 +1508,44 @@ const toISODate = (d) => {
 const __dateParsingLocks = new Set();
 
 
-// ================= Bookings.json helpers =================
-function _asBookingsArray(data) {
-  if (Array.isArray(data)) return data;
-  if (Array.isArray(data?.bookings)) return data.bookings;
-  if (Array.isArray(data?.rows)) return data.rows;
-  if (Array.isArray(data?.items)) return data.items;
-
-  // Supporta formato "mappa" (es. {id: booking, ...} o {phone: [booking,...], ...})
-  if (data && typeof data === "object") {
-    const vals = Object.values(data);
-    const flat = [];
-    for (const v of vals) {
-      if (!v) continue;
-      if (Array.isArray(v)) flat.push(...v);
-      else if (typeof v === "object") flat.push(v);
-    }
-
-    const isBookingLike = (o) =>
-      o &&
-      typeof o === "object" &&
-      (o.eventId || o.startTime || o.start || o.datetime || o.date) &&
-      (o.service || o.serviceName || o.professionalEmail || o.professionalName);
-
-    const out = flat.filter(isBookingLike);
-    if (out.length) return out;
-  }
-
-  return [];
-}
+// ================= Bookings store =================
 
 function loadBookings() {
-  try {
-    // garantisce esistenza senza resettare
-    if (typeof ensureJsonFile === "function") ensureJsonFile("bookings.json", []);
-
-    if (!fsSync.existsSync(BOOKINGS_PATH)) return [];
-    const raw = fsSync.readFileSync(BOOKINGS_PATH, "utf8");
-    if (!raw.trim()) return [];
-
-    let data;
-    try {
-      data = JSON.parse(raw);
-    } catch {
-      // JSON rotto: prova a usare un backup se esiste
-      const bak = `${BOOKINGS_PATH}.bak`;
-      try {
-        if (fsSync.existsSync(bak)) {
-          const rawBak = fsSync.readFileSync(bak, "utf8");
-          const dataBak = JSON.parse(rawBak);
-          return _asBookingsArray(dataBak).filter((x) => x && typeof x === "object");
-        }
-      } catch (err) {
-        log("warn", "[CATCH] Errore ignorato", { error: String(err) }); // ✅ FIX Bug #17
-      }
-      return [];
-    }
-
-    return _asBookingsArray(data).filter((x) => x && typeof x === "object");
-  } catch {
-    return [];
-  }
+  if (!Array.isArray(__bookingsCache)) __bookingsCache = [];
+  return __bookingsCache;
 }
 
-function saveBookings(arr) {
+async function saveBookings(arr) {
   if (!Array.isArray(arr)) {
-    log('error', '[bookings] saveBookings expected an array', { type: typeof arr });
+    log("error", "[bookings] saveBookings expected an array", { type: typeof arr });
     return false;
   }
 
-  // normalizza
   const clean = arr.filter((x) => x && typeof x === "object");
-  const json = JSON.stringify(clean, null, 2);
 
-  // ✅ FIX Bug #4: Valida JSON prima di write
-  try {
-    JSON.parse(json); // verifica che sia parsabile
-  } catch (err) {
-    log('error', '[bookings] JSON non valido, impossibile salvare', { error: String(err) });
+  const ready = await __initBookingsStore();
+  if (!ready) {
+    log("error", "[bookings] PostgreSQL non disponibile: impossibile salvare", {
+      error: String(__bookingsStoreError?.message || __bookingsStoreError || "unknown"),
+    });
     return false;
   }
 
-  // assicura directory
   try {
-    if (!fsSync.existsSync(DATA_DIR)) fsSync.mkdirSync(DATA_DIR, { recursive: true });
-  } catch (err) {
-    log('error', '[bookings] Impossibile creare directory', { error: String(err) });
+    const { bulkUpsertBookingsNormPg } = await __getBookingsPgMod();
+    await bulkUpsertBookingsNormPg(clean);
+    __bookingsCache = clean;
+    __bookingsStoreReady = true;
+    __bookingsStoreError = null;
+    return true;
+  } catch (error) {
+    __bookingsStoreReady = false;
+    __bookingsStoreError = error;
+    log("error", "[bookings] PostgreSQL write failed", {
+      error: String(error?.message || error),
+    });
+    return false;
   }
-
-  // backup "ultimo buono"
-  try {
-    if (fsSync.existsSync(BOOKINGS_PATH)) {
-      const existingRaw = fsSync.readFileSync(BOOKINGS_PATH, "utf8");
-      // ✅ FIX: Valida backup prima di copiare
-      if (existingRaw && existingRaw.trim()) {
-        try {
-          JSON.parse(existingRaw);
-          fsSync.copyFileSync(BOOKINGS_PATH, `${BOOKINGS_PATH}.bak`);
-        } catch {
-          log('warn', '[bookings] File esistente non valido, skip backup');
-        }
-      }
-    }
-  } catch (err) {
-    log('warn', '[bookings] Backup fallito', { error: String(err) });
-  }
-
-  const MAX_TRIES = 5;
-  const BASE_DELAY = 60;
-  let lastErr = null;
-
-  for (let i = 0; i < MAX_TRIES; i++) {
-    const tmpPath = `${BOOKINGS_PATH}.tmp.${process.pid}.${Date.now()}.${i}`;
-
-    try {
-      fsSync.writeFileSync(tmpPath, json, "utf8");
-
-      // ✅ FIX Bug #4: Verifica che il file tmp sia valido prima di rename
-      try {
-        const tmpContent = fsSync.readFileSync(tmpPath, "utf8");
-        JSON.parse(tmpContent);
-      } catch (verifyErr) {
-        log('error', '[bookings] File tmp corrotto', { attempt: i + 1, error: String(verifyErr) });
-        try { fsSync.unlinkSync(tmpPath); } catch (err) {
-          log("warn", "[CATCH] Errore ignorato", { error: String(err) }); // ✅ FIX Bug #17
-        }
-        lastErr = verifyErr;
-        __sleepSync(BASE_DELAY * (i + 1));
-        continue;
-      }
-    } catch (e) {
-      log('warn', '[bookings] Write tmp fallito', { attempt: i + 1, error: String(e) });
-      lastErr = e;
-      __sleepSync(BASE_DELAY * (i + 1));
-      continue;
-    }
-
-    try {
-      fsSync.renameSync(tmpPath, BOOKINGS_PATH);
-      log('debug', '[bookings] Salvato con successo', { attempt: i + 1 });
-      return true;
-    } catch (e) {
-      lastErr = e;
-      // Windows (EPERM) / file lock: fallback a write diretto MA con validazione
-      try {
-        // ✅ FIX Bug #4: Valida PRIMA di write diretto
-        const currentContent = fsSync.existsSync(BOOKINGS_PATH)
-          ? fsSync.readFileSync(BOOKINGS_PATH, "utf8")
-          : null;
-
-        // Backup extra prima di sovrascrivere
-        if (currentContent && currentContent.trim()) {
-          try {
-            JSON.parse(currentContent);
-            const emergencyBackup = `${BOOKINGS_PATH}.emergency.${Date.now()}`;
-            fsSync.writeFileSync(emergencyBackup, currentContent, "utf8");
-            log('info', '[bookings] Emergency backup creato', { path: emergencyBackup });
-          } catch {
-            log('warn', '[bookings] File corrente non valido, procedo comunque');
-          }
-        }
-
-        fsSync.writeFileSync(BOOKINGS_PATH, json, "utf8");
-
-        // Verifica post-write
-        const written = fsSync.readFileSync(BOOKINGS_PATH, "utf8");
-        JSON.parse(written);
-
-        try { fsSync.unlinkSync(tmpPath); } catch (err) {
-          log("warn", "[CATCH] Errore ignorato", { error: String(err) }); // ✅ FIX Bug #17
-        }
-        log('info', '[bookings] Salvato con write diretto (Windows fallback)', { attempt: i + 1 });
-        return true;
-      } catch (e2) {
-        log('error', '[bookings] Anche write diretto fallito', { attempt: i + 1, error: String(e2) });
-        lastErr = e2;
-        try { fsSync.unlinkSync(tmpPath); } catch (err) {
-          log("warn", "[CATCH] Errore ignorato", { error: String(err) }); // ✅ FIX Bug #17
-        }
-        __sleepSync(BASE_DELAY * (i + 1));
-        continue;
-      }
-    }
-  }
-
-  log('error', '[bookings] Salvataggio fallito definitivamente', {
-    attempts: MAX_TRIES,
-    error: String(lastErr?.message || lastErr)
-  });
-  return false;
 }
 
 function _bkDigits(v) {
@@ -1015,7 +1606,7 @@ function _bkEnsureTimes(b) {
   return b;
 }
 
-function persistBooking(rec) {
+async function persistBooking(rec) {
   try {
     if (!rec || typeof rec !== "object") return false;
 
@@ -1038,7 +1629,7 @@ function persistBooking(rec) {
       incoming.day
     );
 
-    const mergeAt = (idx) => {
+    const mergeAt = async (idx) => {
       if (idx < 0) return false;
       arr[idx] = _bkEnsureTimes({
         ...arr[idx],
@@ -1046,7 +1637,7 @@ function persistBooking(rec) {
         createdAt: arr[idx]?.createdAt || incoming.createdAt || nowIso,
         updatedAt: nowIso,
       });
-      return !!saveBookings(arr);
+      return !!(await saveBookings(arr));
     };
 
     // 1) Dedup: eventId vince
@@ -1068,13 +1659,13 @@ function persistBooking(rec) {
     }
 
     arr.push(incoming);
-    return !!saveBookings(arr);
+    return !!(await saveBookings(arr));
   } catch {
     return false;
   }
 }
 
-function updateBookingByEventId(eventId, patch) {
+async function updateBookingByEventId(eventId, patch) {
   try {
     if (!eventId) return false;
     const arr = loadBookings();
@@ -1091,13 +1682,13 @@ function updateBookingByEventId(eventId, patch) {
       }
     }
     if (!changed) return false;
-    return !!saveBookings(arr);
+    return !!(await saveBookings(arr));
   } catch {
     return false;
   }
 }
 
-function updateBookingByComposite(match, patch) {
+async function updateBookingByComposite(match, patch) {
   try {
     if (!match) return false;
     const arr = loadBookings();
@@ -1124,7 +1715,7 @@ function updateBookingByComposite(match, patch) {
       }
     }
     if (!changed) return false;
-    return !!saveBookings(arr);
+    return !!(await saveBookings(arr));
   } catch {
     return false;
   }
@@ -1235,8 +1826,8 @@ function getUserActiveBookingsAll(phoneOrChatId) {
   }
 }
 
-function markBookingCancelled(eventId) {
-  const ok = updateBookingByEventId(eventId, {
+async function markBookingCancelled(eventId) {
+  const ok = await updateBookingByEventId(eventId, {
     status: "cancelled",
     cancelledAt: new Date().toISOString(),
   });
@@ -1251,23 +1842,13 @@ function markBookingCancelled(eventId) {
 
 // ================= Soft-Hold helpers =================
 function loadHolds() {
-  try {
-    if (!fsSync.existsSync(HOLDS_PATH)) return [];
-    const raw = fsSync.readFileSync(HOLDS_PATH, "utf8");
-    const arr = raw.trim() ? JSON.parse(raw) : [];
-    return Array.isArray(arr) ? arr : [];
-  } catch {
-    return [];
-  }
+  return Array.isArray(__holdsCache) ? __holdsCache : [];
 }
 
 
 function saveHolds(arr) {
-  try {
-    __writeJsonAtomic(HOLDS_PATH, arr, { label: "holds" });
-  } catch (e) {
-    log("warn", "[holds] save error:", e?.message || e);
-  }
+  __holdsCache = Array.isArray(arr) ? arr : [];
+  __scheduleHoldsFlush();
 }
 function cleanupHolds() {
   const now = Date.now();
@@ -1655,7 +2236,7 @@ export async function reviewFollowupsTick(sendFn, opts = {}) {
       try {
         await sendFn(toId, buildReviewMessage(b));
         try { __rememberReviewPrompt(toId, b); } catch (e) { }
-        updateBookingByEventId(b.eventId, {
+        await updateBookingByEventId(b.eventId, {
           reviewAsked: true,
           reviewAskedAt: new Date().toISOString(),
         });
@@ -1718,7 +2299,7 @@ export async function confirmAppointmentsTick(sendFn, opts = {}) {
     if (startMs >= now && startMs <= to && !b.confirmAsked) {
       try {
         await sendFn(b.clientPhone, buildConfirmMessage(b));
-        updateBookingByEventId(b.eventId, {
+        await updateBookingByEventId(b.eventId, {
           confirmAsked: true,
           confirmAskedAt: new Date().toISOString(),
         });
@@ -2077,12 +2658,9 @@ function pickBookingMatchFromFreeText(raw, list) {
 
 // Ritorna l'elenco dei pro validi per il servizio (se configurati), altrimenti tutti
 function proCatalog(service) {
-  const all = Object.entries(config.professionals || {}).map(([email, p]) => ({
-    email,
-    name: p.name,
-  }));
-  const allowed = config.services?.[service]?.professionals || [];
-  return allowed.length ? all.filter((p) => allowed.includes(p.email)) : all;
+  const dbPros = cfgServiceProfessionals(service);
+  if (dbPros.length) return dbPros;
+  return __dbAllPros();
 }
 
 // Prompt numerato (0 = nessuna preferenza)
@@ -2148,20 +2726,20 @@ function askProfessional(service) {
 
 // ================= ChatDB helpers =================
 function loadChatDB() {
-  try {
-    if (!fsSync.existsSync(CHATDB_PATH)) return {};
-    const raw = fsSync.readFileSync(CHATDB_PATH, "utf8");
-    return raw.trim() ? JSON.parse(raw) : {};
-  } catch {
-    return {};
-  }
+  return (__chatCache && typeof __chatCache === "object") ? __chatCache : {};
 }
 function saveChatDB(db) {
-  try {
-    __writeJsonAtomic(CHATDB_PATH, db, { label: "chatdb" });
-  } catch (e) {
-    log("warn", "[chatdb] save error:", e?.message || e);
+  if (db && typeof db === "object") {
+    const now = Date.now();
+    for (const id of Object.keys(db)) {
+      if (!__chatAccessTime.has(id)) __chatAccessTime.set(id, now);
+    }
+    __chatCache = db;
+  } else {
+    __chatCache = {};
   }
+  __evictChatCache();
+  __scheduleChatFlush();
 }
 
 // ======================= PRIVACY (onboarding) =======================
@@ -2183,7 +2761,7 @@ function privacyNoticeTextIT() {
   return (
     "🔒 *Informativa Privacy (WhatsApp)*\n\n" +
     "Usiamo il tuo numero *solo* per gestire prenotazioni e comunicazioni legate agli appuntamenti.\n" +
-    "I dati vengono salvati localmente (sul nostro PC) e non vengono condivisi con terzi.\n\n" +
+    "I dati vengono salvati nel nostro sistema e non vengono condivisi con terzi.\n\n" +
     "✅ Puoi chiedere in qualsiasi momento: *\"privacy\"* per rileggere, oppure *\"cancella dati\"* per eliminare la cronologia chat.\n\n" +
     "Continuando la chat accetti questo utilizzo."
   );
@@ -2193,7 +2771,7 @@ function privacyNoticeTextEN() {
   return (
     "🔒 *Privacy notice (WhatsApp)*\n\n" +
     "We use your phone number *only* to manage bookings and appointment-related messages.\n" +
-    "Data is stored locally (on our PC) and not shared with third parties.\n\n" +
+    "Data is stored in our system and not shared with third parties.\n\n" +
     "✅ At any time you can write: *\"privacy\"* to read this again, or *\"delete my data\"* to remove chat history.\n\n" +
     "By continuing you agree to this use."
   );
@@ -2208,11 +2786,31 @@ function isGroupChatId(chatId) {
   return String(chatId || "").endsWith("@g.us");
 }
 
+function isNewsletterChatId(chatId) {
+  return /@newsletter$/i.test(String(chatId || "").trim());
+}
+
+function isBroadcastChatId(chatId) {
+  const value = String(chatId || "").trim().toLowerCase();
+  return value === "status@broadcast" || value.endsWith("@broadcast");
+}
+
+function isUnsupportedAutomationChatId(chatId) {
+  return isNewsletterChatId(chatId) || isBroadcastChatId(chatId);
+}
+
 function chatdbDeleteEntry(chatId) {
   const db = loadChatDB();
   if (db && db[chatId]) {
     delete db[chatId];
+    __chatAccessTime.delete(String(chatId || ""));
     saveChatDB(db);
+    void __deleteChatSessionFromPg(chatId).catch((error) => {
+      log("error", "[chat] delete failed", {
+        chatId,
+        error: String(error?.message || error),
+      });
+    });
     return true;
   }
   return false;
@@ -2232,7 +2830,7 @@ function markPrivacySent(chatId) {
 async function maybeSendPrivacyNotice(client, chatId) {
   try {
     if (!client) return false;
-    if (!chatId || isGroupChatId(chatId)) return false;
+    if (!chatId || isGroupChatId(chatId) || isUnsupportedAutomationChatId(chatId)) return false;
 
     const db = loadChatDB();
     const entry = db[chatId] || null;
@@ -2277,27 +2875,38 @@ function privacyCommandKind(txt = "") {
 // ===================== END PRIVACY =====================
 
 function appendUserMessage(chatId, text) {
+  if (!chatId || isUnsupportedAutomationChatId(chatId)) return;
+
   const db = loadChatDB();
   const now = Date.now();
 
-  db[chatId] = db[chatId] || { msgs: [] };
+  const current = db[chatId];
+  const entry =
+    current && typeof current === "object" && !Array.isArray(current)
+      ? current
+      : {};
+
+  if (!Array.isArray(entry.msgs)) entry.msgs = [];
+  db[chatId] = entry;
 
   // Identità minima (utile anche per privacy check)
-  db[chatId].firstSeenAt = db[chatId].firstSeenAt || now;
-  db[chatId].phone = db[chatId].phone || chatIdToE164(chatId) || String(chatId || "");
+  entry.firstSeenAt = entry.firstSeenAt || now;
+  entry.phone = entry.phone || chatIdToE164(chatId) || String(chatId || "");
 
-  db[chatId].msgs.push(String(text || "").slice(0, 800));
-  if (db[chatId].msgs.length > 5) {
-    db[chatId].msgs = db[chatId].msgs.slice(-5);
+  entry.msgs.push(String(text || "").slice(0, 800));
+  if (entry.msgs.length > 5) {
+    entry.msgs = entry.msgs.slice(-5);
   }
 
   // Aggiorna il timestamp di ultima attività dell'utente
-  db[chatId].lastActive = now;
+  entry.lastActive = now;
+  __touchChat(chatId);
   saveChatDB(db);
+  void __dbInsertChatMessage(chatId, "in", text);
 }
 function getRecentMessages(chatId) {
   const db = loadChatDB();
-  return db?.[chatId]?.msgs || [];
+  return Array.isArray(db?.[chatId]?.msgs) ? db[chatId].msgs : [];
 }
 function getLastService(chatId) {
   const memoryService = __getChatMemory(chatId)?.lastService || null;
@@ -2360,6 +2969,14 @@ export async function safeSend(client, chatId, text, opts = {}) {
     return "";
   }
 
+  if (isUnsupportedAutomationChatId(chatId)) {
+    log("info", "safeSend: skipping unsupported chatId", {
+      chatId,
+      kind: isNewsletterChatId(chatId) ? "newsletter" : "broadcast",
+    });
+    return "";
+  }
+
   // Dedup: se inviamo lo stesso testo a distanza ravvicinata, salta
   const __win = Math.max(0, Number(opts?.dedupWindowMs) || 2000);
   if (!__dedupAllow(chatId, t, __win)) return "";
@@ -2409,6 +3026,8 @@ export async function safeSend(client, chatId, text, opts = {}) {
     if (opts?.throwOnError) throw sendError;
     return "";
   }
+
+  void __dbInsertChatMessage(chatId, "out", t);
 
   // Footer automatico (solo dopo invio riuscito)
   try {
@@ -4078,10 +4697,13 @@ function norm(text) {
 
 // ============== Riconoscimento servizio ==============
 function cfgServices() {
-  return Object.keys(config.services || {});
+  return Array.isArray(__servicesListCache) ? __servicesListCache.slice() : [];
 }
 function cfgServiceItem(name) {
-  return config.services?.[name] || null;
+  const raw = String(name || "").trim();
+  if (!raw) return null;
+  const canon = __svcKeyToName.get(__svcKey(raw)) || raw;
+  return __servicesItemCache.get(canon) || null;
 }
 function cfgServiceSynonyms(service) {
   const it = cfgServiceItem(service) || {};
@@ -4133,61 +4755,16 @@ function cfgServiceDuration(name) {
 }
 function cfgServiceProfessionals(service) {
   const it = cfgServiceItem(service) || {};
-  const list = Array.isArray(it.professionals) ? it.professionals : [];
-
-  const deriveNameFromEmail = (email) => {
-    const s = String(email || "");
-    const local = s.includes("@") ? s.split("@")[0] : s;
-    const cleaned = local.replace(/[._-]+/g, " ").trim();
-    if (!cleaned) return s;
-    return cleaned
-      .split(/\s+/)
-      .map((w) => (w ? w[0].toUpperCase() + w.slice(1).toLowerCase() : w))
-      .join(" ");
-  };
-
-  const sanitizeMaybeDomain = (raw) => {
-    const s = String(raw || "").trim();
-    if (!s) return s;
-    // Caso tipico di configurazione errata tipo "Evelin.com" (senza @)
-    if (!s.includes("@") && /^[a-z0-9._-]+\.[a-z]{2,}$/i.test(s)) {
-      const base = s.split(".")[0];
-      return base ? base : s;
-    }
-    return s;
-  };
-
-  return list
-    .map((v) => {
-      const raw =
-        typeof v === "string" ? v.trim() : (v && (v.email || v.name)) || "";
-      if (!raw) return null;
-
-      if (raw.includes("@")) {
-        const email = raw;
-        const name =
-          (config &&
-            config.professionals &&
-            config.professionals[email] &&
-            config.professionals[email].name) ||
-          (typeof proNameByEmail === "function" ? proNameByEmail(email) : null) ||
-          deriveNameFromEmail(email);
-        return { name, email };
-      }
-
-      const name = sanitizeMaybeDomain(raw);
-      const email =
-        typeof proEmailByName === "function" ? proEmailByName(name) || null : null;
-      return { name, email };
-    })
-    .filter((x) => x && x.name);
+  const canon = (it && (it.name || it.label)) ? (it.name || it.label) : String(service || "").trim();
+  const list = __servicesProsCache.get(canon) || [];
+  return Array.isArray(list) ? list.slice() : [];
 }
 
 function cfgServicePriceText(name) {
   const it = cfgServiceItem(name) || {};
-  return typeof it.price === "number"
-    ? `${it.price}€`
-    : it.price || "prezzo su richiesta";
+  const p = (typeof it.price === "number" || typeof it.price === "string") ? it.price : null;
+  const eur = __fmtEurMaybe(p);
+  return eur || "prezzo su richiesta";
 }
 
 // ============================================================================
@@ -4198,6 +4775,15 @@ function cfgServicePriceText(name) {
 function proNameByEmailSafe(email) {
   try {
     const key = String(email || "").toLowerCase();
+    if (key.startsWith("pro:")) {
+      const id = Number(key.slice(4));
+      for (const [name, pid] of __proNameToId.entries()) {
+        if (pid === id) return name;
+      }
+    }
+    for (const p of __dbAllPros()) {
+      if (String(p.email || "").toLowerCase() === key && p.name) return p.name;
+    }
     return (
       (config?.professionals?.[email]?.name) ||
       (config?.professionals?.[key]?.name) ||
@@ -6865,7 +7451,7 @@ function _editComputeNewNotes(oldNotes, newName) {
 }
 
 /*
- * Applica un aggiornamento all'evento (Calendar) e al bookings.json.
+ * Applica un aggiornamento all'evento (Calendar) e allo store prenotazioni PostgreSQL.
  * - newStartISO: ISO string nuova data/ora (se null -> non cambia)
  * - newProEmail: email nuovo professionista (se null -> non cambia)
  * - newName: nuovo nome cliente (se null -> non cambia)
@@ -6977,15 +7563,15 @@ async function _editApplyUpdate({
     }
 
     const saved =
-      updateBookingByEventId(booking.eventId, patch) ||
-      updateBookingByComposite(
+      await updateBookingByEventId(booking.eventId, patch) ||
+      await updateBookingByComposite(
         { clientPhone: booking.clientPhone, startTime: prev.startTime },
         patch
       );
 
     if (!saved) {
       try {
-        log("warn", "[EDIT] bookings.json non aggiornato (recreate)", {
+        log("warn", "[EDIT] booking store non aggiornato (recreate)", {
           oldEventId: booking.eventId,
           newEventId,
         });
@@ -7044,15 +7630,15 @@ async function _editApplyUpdate({
   }
 
   const saved =
-    updateBookingByEventId(booking.eventId, patch) ||
-    updateBookingByComposite(
+    await updateBookingByEventId(booking.eventId, patch) ||
+    await updateBookingByComposite(
       { clientPhone: booking.clientPhone, startTime: prev.startTime },
       patch
     );
 
   if (!saved) {
     try {
-      log("warn", "[EDIT] bookings.json non aggiornato", { eventId: booking.eventId });
+      log("warn", "[EDIT] booking store non aggiornato", { eventId: booking.eventId });
     } catch (err) {
       log("warn", "[CATCH] Errore ignorato", { error: String(err) }); // ✅ FIX Bug #17
     }
@@ -7691,7 +8277,7 @@ function intentByHybrid(t) {
 }
 function hasFutureBookingsForPhone(phone) {
   try {
-    const all = readJSON("bookings.json", []);
+    const all = loadBookings();
     const now = Date.now();
     return all.some((b) => {
       const p = (b.phone || b.clientPhone || b.client_phone || "").replace(
@@ -8279,6 +8865,21 @@ function __buildDayMonthConfirmFromText(input, baseDate = new Date()) {
  */
 export async function handleMessage(client, chatId, textRaw, tools = {}) {
   const __isReenter = !!tools?.__reenter;
+  const normalizedChatId = String(chatId || "").trim();
+
+  if (!normalizedChatId) {
+    log("warn", "handleMessage called without chatId", {
+      preview: String(textRaw ?? "").slice(0, 120),
+    });
+    return "";
+  }
+
+  if (isUnsupportedAutomationChatId(normalizedChatId)) {
+    log("info", "[IGNORE] Unsupported automation chat", { chatId: normalizedChatId });
+    return "";
+  }
+
+  chatId = normalizedChatId;
 
   // Inizializzazione stato
   let state = getState(chatId);
@@ -12590,9 +13191,9 @@ Prova così: domani • lunedì • 15 dicembre`);
       };
 
       // Implementare saveBooking se necessario
-      const okSaved = persistBooking(bookingRecord);
+      const okSaved = await persistBooking(bookingRecord);
       if (!okSaved) {
-        throw new Error("Salvataggio su bookings.json fallito");
+        throw new Error("Salvataggio su database fallito");
       }
 
     } catch (bookingErr) {
@@ -14258,9 +14859,9 @@ Scrivi il numero (1-${list.length}).`
       };
       let updated = false;
       if (booking.eventId) {
-        updated = updateBookingByEventId(booking.eventId, patched);
+        updated = await updateBookingByEventId(booking.eventId, patched);
       } else {
-        updated = updateBookingByComposite(
+        updated = await updateBookingByComposite(
           { clientPhone: booking.clientPhone, startTime: booking.startTime },
           patched
         );
@@ -15541,7 +16142,7 @@ export async function remind24hTick(sendFn, opts = {}) {
       await sendFn(toId, msg);
 
       if (typeof updateBookingByEventId === "function" && b.eventId) {
-        updateBookingByEventId(b.eventId, {
+        await updateBookingByEventId(b.eventId, {
           reminder24hSent: true,
           reminder24hSentAt: new Date().toISOString(),
           reminder24hSlotKey: sk,

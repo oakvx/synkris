@@ -221,7 +221,7 @@ function parseBooleanValue(field: BotDataField, value: DraftValue, isNew: boolea
     return null;
   }
 
-  throw new Error(`"${humanizeFieldName(field.name)}" richiede una scelta: Si o No.`);
+  throw new Error(`"${humanizeFieldName(field.name)}" richiede una scelta: Sì o No.`);
 }
 
 function parseFieldValue(field: BotDataField, value: DraftValue, isNew: boolean): unknown {
@@ -242,7 +242,7 @@ function parseFieldValue(field: BotDataField, value: DraftValue, isNew: boolean)
       return null;
     }
 
-    throw new Error(`"${humanizeFieldName(field.name)}" e' obbligatorio.`);
+    throw new Error(`"${humanizeFieldName(field.name)}" è obbligatorio.`);
   }
 
   const raw = String(value).trim();
@@ -387,7 +387,7 @@ function helperTextForField(field: BotDataField, model: BotDataModel) {
       messages.push("Scegli data e ora complete.");
       break;
     case "json":
-      messages.push("Inserisci JSON valido. Se e' una lista, usa le parentesi quadre.");
+      messages.push("Inserisci JSON valido. Se è una lista, usa le parentesi quadre.");
       break;
     case "time":
       messages.push("Inserisci un orario nel formato HH:MM.");
@@ -437,7 +437,7 @@ function stringifyPreviewValue(value: unknown) {
   }
 
   if (typeof value === "boolean") {
-    return value ? "Si" : "No";
+    return value ? "Sì" : "No";
   }
 
   if (typeof value === "object") {
@@ -500,7 +500,7 @@ function redactPreviewValue(key: string, value: unknown): string {
   }
 
   if (typeof value === "boolean") {
-    return value ? "Si" : "No";
+    return value ? "Sì" : "No";
   }
 
   if (typeof value === "string") {
@@ -562,11 +562,11 @@ function statusLabel(status: BotStatusResponse | null) {
 
 function connectionModeLabel(status: BotStatusResponse | null) {
   if (status?.connectionMode === "pairing") {
-    return "Codice di pairing";
+    return "Codice";
   }
 
   if (status?.connectionMode === "qr") {
-    return "QR code";
+    return "QR";
   }
 
   return "Da scegliere";
@@ -759,8 +759,8 @@ export function BotDatabasePage() {
       setSqlResult(result);
       const summary =
         result.mode === "write"
-          ? `Comando SQL eseguito. Righe toccate: ${result.affectedRows ?? 0}.`
-          : `Query SQL completata. Righe restituite: ${result.rowCount}.`;
+          ? `Comando eseguito. Righe toccate: ${result.affectedRows ?? 0}.`
+          : `Ricerca completata. Righe trovate: ${result.rowCount}.`;
       setMessage(summary);
 
       if (selectedModel) {
@@ -768,7 +768,7 @@ export function BotDatabasePage() {
       }
       await loadStatus();
     } catch (runError) {
-      setSqlError(getErrorMessage(runError, "Query SQL non riuscita."));
+      setSqlError(getErrorMessage(runError, "Comando non riuscito."));
       setSqlResult(null);
     } finally {
       setIsRunningSql(false);
@@ -807,7 +807,7 @@ export function BotDatabasePage() {
     try {
       const nextStatus = await apiClient.disconnectBot(token);
       setStatus(nextStatus);
-      setMessage("Bot disconnesso dalla console database.");
+      setMessage("WhatsApp scollegato da questa area.");
     } catch (disconnectError) {
       setError(getErrorMessage(disconnectError, "Disconnessione non riuscita."));
     } finally {
@@ -821,14 +821,14 @@ export function BotDatabasePage() {
         <p className="eyebrow">Database bot</p>
         <h2>Accesso limitato</h2>
         <p className="muted">
-          L&apos;editor del database e la console SQL sono disponibili solo per il system admin.
+          Questa sezione è disponibile solo per l&apos;amministratore del sistema.
         </p>
       </section>
     );
   }
 
   if (isLoadingModels) {
-    return <div className="empty-state">Sto preparando l'editor del database...</div>;
+    return <div className="empty-state">Sto preparando l'area dati...</div>;
   }
 
   if (!selectedModel) {
@@ -836,7 +836,7 @@ export function BotDatabasePage() {
       <section className="card">
         <p className="eyebrow">Database bot</p>
         <h2>Nessuna tabella disponibile</h2>
-        <p className="muted">Al momento non ci sono modelli esposti dal backend.</p>
+        <p className="muted">Al momento non ci sono dati disponibili da aprire qui.</p>
       </section>
     );
   }
@@ -845,27 +845,27 @@ export function BotDatabasePage() {
     <div className="page-stack">
       <section className="hero-card">
         <p className="eyebrow">Database bot</p>
-        <h2>Console tabelle stile phpMyAdmin</h2>
+        <h2>Dati interni del sistema</h2>
         <p className="muted">
-          Sfoglia i record in vista tabellare, filtra le righe, poi apri solo quelle che vuoi modificare.
-          Sotto trovi anche una console SQL per i casi piu' avanzati, con dati sensibili gia' occultati nei risultati.
+          Qui puoi cercare i dati, aprire solo le righe che ti servono e modificarle con più controllo.
+          In fondo trovi anche un&apos;area avanzata per le ricerche manuali, con i dati sensibili nascosti nei risultati.
         </p>
 
         <div className="hero-metrics">
           <article className="metric-card">
             <span className="metric-label">Stato bot</span>
             <strong>{statusLabel(status)}</strong>
-            <p>{status?.isStale ? "Sto leggendo uno snapshot salvato." : "Stato live disponibile dal worker."}</p>
+            <p>{status?.isStale ? "Sto mostrando l'ultimo aggiornamento salvato." : "Le informazioni sono aggiornate in tempo reale."}</p>
           </article>
           <article className="metric-card">
-            <span className="metric-label">Modalita attiva</span>
+            <span className="metric-label">Modalità attiva</span>
             <strong>{connectionModeLabel(status)}</strong>
-            <p>Ti aiuta a capire se il bot sta lavorando via QR, pairing o sessione gia' pronta.</p>
+            <p>Ti aiuta a capire se il collegamento sta usando QR, codice o accesso già salvato.</p>
           </article>
           <article className="metric-card">
             <span className="metric-label">Ultimo aggiornamento</span>
             <strong>{dashboardLastUpdateLabel}</strong>
-            <p>Utile mentre confronti record, query SQL e stato del worker nella stessa vista.</p>
+            <p>Ti dice quanto sono recenti le informazioni che stai guardando.</p>
           </article>
         </div>
 
@@ -937,7 +937,7 @@ export function BotDatabasePage() {
       {message ? <p className="success-banner">{message}</p> : null}
       {!isSystemAdmin && redactedColumns.length > 0 ? (
         <p className="warning-banner">
-          Alcuni campi sensibili di questa tabella sono occultati. Solo il system admin puo' visualizzarli o
+          Alcuni campi sensibili di questa tabella sono nascosti. Solo l&apos;amministratore può vederli o
           modificarli direttamente.
         </p>
       ) : null}
@@ -953,7 +953,7 @@ export function BotDatabasePage() {
           <p className="muted">
             {rowQuery.trim()
               ? `Filtro attivo: ${filteredRows.length} righe corrispondenti`
-              : "Anteprima stile phpMyAdmin delle righe attualmente caricate"}
+              : "Anteprima veloce delle righe caricate"}
           </p>
         </div>
 
@@ -1076,13 +1076,13 @@ export function BotDatabasePage() {
                           {field.isUnique ? <span className="field-badge">Unico</span> : null}
                           {field.hasDefaultValue ? <span className="field-badge">Default</span> : null}
                           {field.isGenerated ? <span className="field-badge">Generato</span> : null}
-                          {fieldIsRestricted ? <span className="field-badge">Solo system admin</span> : null}
+                          {fieldIsRestricted ? <span className="field-badge">Solo amministratore</span> : null}
                         </div>
 
                         {fieldIsRestricted ? (
                           <div className="db-field-lock">
                             <strong>Campo sensibile</strong>
-                            <p>Solo l&apos;admin del sistema puo&apos; visualizzare o modificare questo valore.</p>
+                            <p>Solo l&apos;admin del sistema può visualizzare o modificare questo valore.</p>
                           </div>
                         ) : kind === "boolean" ? (
                           <select
@@ -1098,7 +1098,7 @@ export function BotDatabasePage() {
                             <option value="">
                               {field.hasDefaultValue && row.isNew ? "Usa valore predefinito" : "Seleziona"}
                             </option>
-                            <option value="true">Si</option>
+                            <option value="true">Sì</option>
                             <option value="false">No</option>
                           </select>
                         ) : kind === "json" || kind === "textarea" ? (
@@ -1130,7 +1130,7 @@ export function BotDatabasePage() {
                         )}
 
                         <span className="field-meta">
-                          Nome tecnico: {field.name}
+                          Nome interno: {field.name}
                           {field.dbName ? ` - Colonna DB: ${field.dbName}` : ""}
                         </span>
                         <span className="field-help">
@@ -1151,33 +1151,33 @@ export function BotDatabasePage() {
       <section className="card">
         <div className="card-heading">
           <div>
-            <p className="eyebrow">SQL</p>
-            <h3>Console SQL</h3>
+            <p className="eyebrow">Ricerca avanzata</p>
+            <h3>Area comandi</h3>
           </div>
           <div className="action-row db-actions">
             <button
               className="ghost-button"
-              onClick={() => void copySqlText(sqlCommand, "Comando SQL copiato negli appunti.")}
+              onClick={() => void copySqlText(sqlCommand, "Testo copiato negli appunti.")}
               type="button"
             >
               Copia comando
             </button>
             <button disabled={isRunningSql || !sqlCommand.trim()} onClick={() => void executeSql()} type="button">
-              {isRunningSql ? "Eseguo..." : "Esegui SQL"}
+              {isRunningSql ? "Eseguo..." : "Esegui"}
             </button>
           </div>
         </div>
 
         <p className="warning-banner">
-          Solo utenti esperti: i risultati vengono redatti automaticamente per nascondere email, telefoni, token,
-          password, percorsi locali e altri valori sensibili.
+          Questa area è avanzata: i risultati nascondono automaticamente email, telefoni, password, token e altri
+          valori delicati.
         </p>
         <p className="muted">
-          Una query per volta. Le query di scrittura richiedono l&apos;attivazione esplicita della modalita avanzata.
+          Puoi lanciare un comando alla volta. I comandi che cambiano i dati richiedono un consenso esplicito.
         </p>
 
         <label className="editor-label">
-          Comando SQL
+          Comando
           <textarea
             className="db-editor"
             onChange={(event) => setSqlCommand(event.target.value)}
@@ -1194,12 +1194,12 @@ export function BotDatabasePage() {
               onChange={(event) => setSqlAllowWrite(event.target.checked)}
               type="checkbox"
             />
-            <span>Consenti query di scrittura SQL su questa sessione</span>
+            <span>Permetti anche i comandi che modificano i dati in questa sessione</span>
           </label>
         ) : (
           <p className="warning-banner">
-            La modalita SQL di scrittura e&apos; riservata al system admin. Qui puoi usare solo query di lettura con
-            risultati gia&apos; redatti.
+            I comandi che modificano i dati sono riservati all&apos;amministratore. Qui puoi usare solo comandi di
+            lettura, con risultati già nascosti nelle parti sensibili.
           </p>
         )}
 
@@ -1256,14 +1256,14 @@ export function BotDatabasePage() {
             ) : (
               <div className="db-empty">
                 {sqlResult.mode === "write"
-                  ? "Il comando e' stato eseguito. Questa istruzione non restituisce righe da mostrare."
+                  ? "Il comando è stato eseguito. Questa istruzione non restituisce righe da mostrare."
                   : "La query non ha restituito righe."}
               </div>
             )}
           </div>
         ) : (
           <div className="db-empty">
-            Esegui una query SQL e qui vedrai il risultato tabellare con i dati sensibili gia' occultati.
+            Quando esegui un comando, qui vedrai il risultato in tabella con le parti sensibili già nascoste.
           </div>
         )}
       </section>
