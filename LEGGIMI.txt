@@ -1,0 +1,76 @@
+SYNK 1.2 RC5  |  RELEASE CANDIDATA AL COLLAUDO
+================================================
+
+USO QUOTIDIANO - SALONE
+  1) Accendi il PC e accedi a Windows. Il tecnico deve aver attivato
+     l'avvio automatico di Docker Desktop (non parte prima del login).
+  2) Apri APRI_SYNK.bat, effettua il login alla dashboard.
+  3) Crea, modifica e annulla le prenotazioni SOLO nella sezione
+     Gestione appuntamenti, collegata a PostgreSQL e al controllo Calendar.
+     Le vecchie viste Calendario/Prenotazioni sono consultive.
+     Se necessario puoi registrare una nuova cliente nello stesso editor.
+     Le modifiche ai dati avvengono dalla dashboard, non dai file JSON.
+  4) In Centro operativo verifica gli avvisi. Se Calendar non risponde,
+     synk rifiuta i salvataggi che richiedono una verifica del calendario.
+  5) Se compare 'PRENOTAZIONI SOSPESE' dopo un ripristino, chiama il
+     tecnico: NON tentare di forzare prenotazioni o job Calendar.
+
+PER IL TECNICO (PRIMA INSTALLAZIONE)
+  - Windows + Docker Desktop con WSL2; installa Docker e abilita l'avvio
+    quando l'utente accede a Windows. Non esporre porte su LAN/Internet.
+  - Popola setup/config.json dai dati reali del salone.
+  - Inserisci SOLO sul PC del salone in secrets/:
+      license.txt, license-public.pem, google-service-account.json
+    Condividi ogni calendario operativo con il service account e
+    verifica che il calendario dell'operatrice sia accessibile.
+  - Avvia INSTALLA_UNA_VOLTA.bat, conserva la password della dashboard.
+  - Configura CALENDAR_ID e verifica creazione, spostamento, annullamento
+    e sincronizzazione entrante. Un errore Google deve bloccare la conferma.
+  - Associa la sessione WhatsApp col QR, verifica riavvio e riconnessione.
+  - Abilita MULTI_BOOKING_WHATSAPP_ENABLED=1 soltanto dopo il collaudo.
+    Il bot riconosce /multi e richieste naturali esplicite per 2 servizi;
+    chiede sempre consenso e conferma prima di inserire una richiesta.
+  - AI locale Ollama opzionale con ATTIVA_AI_LOCALE.bat.
+  - Crittografia del PC (BitLocker) consigliata; imposta una password Windows.
+
+MANUTENZIONE (SOLO TECNICO)
+  - AGGIORNA_SYNK_TECNICO.bat accetta lo ZIP ufficiale piatto e conserva
+    .env, setup/config.json, runtime/, secrets/ e volumi Docker.
+    Crea prima un backup DB. Il rollback del CODICE non annulla migrazioni DB.
+  - RIPRISTINA_BACKUP.bat effettua un backup di sicurezza e sospende
+    sincronizzazione e prenotazioni per la riconciliazione Calendar.
+    Dopo confronto manuale con Google, RIATTIVA_CALENDAR_TECNICO.bat
+    permette il ritorno al servizio. Non confermare senza verifica reale.
+  - ESPORTA_BACKUP_CIFRATO_TECNICO.bat copia l'ultimo backup su USB
+    protetta con BitLocker; confronta SHA256 prima di dichiarare riuscita.
+    Non copia se la cifratura del supporto non e' verificabile.
+  - I backup DB automatici sono locali, una volta ogni circa 24 ore,
+    conservati per 14 giorni. Non comprendono QR, chat WhatsApp remota,
+    segreti, credenziali Google o licenze.
+  - Le email anomalia sono DISATTIVATE finche' il tecnico configura
+    ALERT_EMAIL_ENABLED=1 e credenziali SMTP del salone. Nessun dato
+    cliente viene inviato in tali notifiche. Non funzionano a PC spento.
+  - I messaggi in chat locale sono mantenuti per CHAT_RETENTION_DAYS
+    (default 90, range 7-730); dati appuntamenti e obblighi fiscali sono
+    gestiti separatamente.
+  - Le richieste di cancellazione vengono registrate nel Centro operativo:
+    una persona deve esaminare eventuali dati su Google/WhatsApp e i tempi
+    di conservazione previsti dalla normativa, PRIMA di chiuderle.
+
+ARCHITETTURA E RISCHI
+  - Le vecchie prenotazioni eventualmente conservate soltanto nella
+    memoria del browser NON sono importate automaticamente ne eliminate:
+    vanno confrontate con PostgreSQL prima di utilizzare RC5.
+  - PostgreSQL locale nel volume Docker, dashboard PHP, bot Node/OpenWA,
+    Google Calendar per le agende; Ollama facoltativo e locale.
+  - Google Calendar e WhatsApp necessitano di Internet. OpenWA e' un client
+    non ufficiale e puo' disconnettersi dopo aggiornamenti WhatsApp.
+  - Google Calendar non offre una transazione atomica con PostgreSQL:
+    i controlli riducono il rischio di conflitti ma non possono azzerarlo.
+  - synk non puo' inviare notifiche quando il PC e' SPENTO senza un
+    servizio esterno: in questa architettura privata non e' configurato.
+  - Nessun dato cliente, QR o segreto viene fornito nello ZIP.
+
+PRIMA DI USARLO CON CLIENTI REALI: esegui l'intero COLLAUDO.md.
+Il codice e i test automatici NON sostituiscono un collaudo Windows/Docker,
+OpenWA reale, Google Calendar, SMTP e restore/recovery su una macchina di prova.

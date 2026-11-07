@@ -1,9 +1,0 @@
-2026/04/05-12:36:44.961 8558 Reusing MANIFEST q:\whatsapp-ai - Copy\session.json\_IGNORE_whatsapp-ai\Default\IndexedDB\https_web.whatsapp.com_0.indexeddb.leveldb/MANIFEST-015067
-2026/04/05-12:36:44.962 8558 Recovering log #16059
-2026/04/05-12:36:44.966 8558 Reusing old log q:\whatsapp-ai - Copy\session.json\_IGNORE_whatsapp-ai\Default\IndexedDB\https_web.whatsapp.com_0.indexeddb.leveldb/016059.log 
-2026/04/05-12:36:46.343 8558 Compacting 1@1 + 1@2 files
-2026/04/05-12:36:46.403 8558 Generated table #16074@1: 21952 keys, 1138797 bytes
-2026/04/05-12:36:46.403 8558 Compacted 1@1 + 1@2 files => 1138797 bytes
-2026/04/05-12:36:46.404 8558 compacted to: files[ 0 0 17 0 0 0 0 ]
-2026/04/05-12:36:46.405 8558 Delete type=2 #16057
-2026/04/05-12:36:46.406 8558 Delete type=2 #16062

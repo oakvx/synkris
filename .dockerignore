@@ -1,0 +1,22 @@
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+secrets
+runtime
+node_modules
+*.log
+*.zip
+tests
+test
+stubs
+_IGNORE_session
+config.json
+bookings.json
+chatdb.json
+session.data.json
+keys
+licenses
+configs & dashboard
+**/dashboard_dump.json

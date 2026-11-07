@@ -1,0 +1,129 @@
+name: synk
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: synk
+      POSTGRES_USER: synk
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Configura POSTGRES_PASSWORD in .env}
+      TZ: Europe/Rome
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U synk -d synk"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+  bootstrap:
+    build: { context: ., dockerfile: Dockerfile }
+    restart: 'no'
+    user: '0:0'
+    env_file: .env
+    environment: &runtime_env
+      NODE_ENV: production
+      DATABASE_URL: postgresql://synk:${POSTGRES_PASSWORD:?Configura POSTGRES_PASSWORD in .env}@postgres:5432/synk
+      APP_DATA_DIR: /app/runtime/config
+      SESSION_PATH: /app/runtime/session
+      ADMIN_HOST: 0.0.0.0
+      ADMIN_ALLOWED_ORIGINS: http://127.0.0.1:8080,http://localhost:8080
+      LICENSE_FILE: /run/secrets/license.txt
+      LICENSE_PUBLIC_KEY_FILE: /run/secrets/license-public.pem
+      GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/google-service-account.json
+      PUPPETEER_EXECUTABLE_PATH: /usr/bin/chromium
+      CHROME_HEADLESS: '1'
+      TZ: Europe/Rome
+    volumes: &runtime_volumes
+      - ./runtime:/app/runtime
+      - ./setup/config.json:/app/bootstrap/config.json:ro
+      - ./secrets:/run/secrets:ro
+    depends_on:
+      postgres: { condition: service_healthy }
+    # Il bootstrap aggiorna schema/configurazione; la sessione deve restare scrivibile dal bot non-root.
+    command: ["sh", "-c", "mkdir -p /app/runtime/config /app/runtime/session; node scripts/deploy/bootstrap.mjs; result=$$?; chown -R node:node /app/runtime/config /app/runtime/session; exit $$result"]
+  bot:
+    build: { context: ., dockerfile: Dockerfile }
+    restart: unless-stopped
+    init: true
+    env_file: .env
+    environment:
+      <<: *runtime_env
+      CALENDAR_OUTBOX_ENABLED: '1'
+      CALENDAR_INBOUND_SYNC: '1'
+    volumes: *runtime_volumes
+    depends_on:
+      bootstrap: { condition: service_completed_successfully }
+    ports:
+      - '127.0.0.1:3000:3000'
+    shm_size: '1gb'
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3000/health', r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 120s
+  dashboard:
+    build: { context: ., dockerfile: Dockerfile.dashboard }
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://synk:${POSTGRES_PASSWORD:?Configura POSTGRES_PASSWORD in .env}@postgres:5432/synk
+      LICENSE_FILE: /run/secrets/license.txt
+      LICENSE_PUBLIC_KEY_FILE: /run/secrets/license-public.pem
+      TZ: Europe/Rome
+      APP_ENV: production
+      BOT_API_INTERNAL: http://bot:3000
+      CALENDAR_OUTBOX_ENABLED: '1'
+    volumes:
+      - ./secrets:/run/secrets:ro
+      - ./runtime/config:/app/runtime/config:ro
+    depends_on:
+      bootstrap: { condition: service_completed_successfully }
+      bot: { condition: service_started }
+    ports:
+      - '127.0.0.1:8080:80'
+  backup:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      PGHOST: postgres
+      PGUSER: synk
+      PGPASSWORD: ${POSTGRES_PASSWORD:?Configura POSTGRES_PASSWORD in .env}
+      PGDATABASE: synk
+      TZ: Europe/Rome
+    volumes:
+      - ./runtime/backups:/backups
+    depends_on:
+      bootstrap: { condition: service_completed_successfully }
+    command:
+      - sh
+      - -c
+      - |
+        umask 077
+        mkdir -p /backups
+        chgrp 1000 /backups
+        chmod 0750 /backups
+        while true; do
+          file="/backups/synk-$$(date +%Y%m%d-%H%M%S).dump"
+          if pg_dump -Fc --file="$$file"; then
+            chgrp 1000 "$$file"
+            chmod 0640 "$$file"
+            echo 'Backup locale PostgreSQL riuscito'
+            find /backups -name 'synk-*.dump' -type f -mtime +14 -delete
+          else
+            echo 'ERRORE: backup database fallito' >&2
+            rm -f "$$file"
+          fi
+          sleep 86400
+        done
+  ollama:
+    image: ollama/ollama:0.12.8
+    profiles: ["ai"]
+    restart: unless-stopped
+    volumes:
+      - ollama_models:/root/.ollama
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+volumes:
+  postgres_data:
+  ollama_models:
