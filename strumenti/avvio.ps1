@@ -1,7 +1,7 @@
 # Library: common.ps1 and preflight.ps1 must already be loaded.
 function Start-SynkServices {
     param([switch]$NoBrowser, [ValidateRange(1,600)][int]$HealthSeconds = 240)
-    foreach ($file in @('.env','setup/config.json','secrets/license.txt','secrets/license-public.pem','secrets/google-service-account.json')) {
+    foreach ($file in @('.env','setup/config.json','secrets/google-service-account.json')) {
         if (-not (Test-Path -LiteralPath (Join-Path $script:SynkRoot $file) -PathType Leaf)) { throw 'Prima configurazione incompleta: apri INSTALLA_UNA_VOLTA. Non avvio servizi con file mancanti.' }
     }
     Wait-SynkDocker -StartDesktop

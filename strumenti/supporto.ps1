@@ -1,5 +1,5 @@
 # Library: common.ps1, preflight.ps1 and avvio-automatico.ps1 are required.
-# No raw logs, environment dumps, client records, QR, license payloads or paths
+# No raw logs, environment dumps, client records, QR, credential payloads or paths
 # are copied into the report. No upload or external notification is performed.
 function Get-SynkRuntimeSummary {
     $result = Invoke-DockerProbe -Arguments @('compose','exec','-T','bot','node','scripts/deploy/runtime-summary.mjs') -TimeoutMilliseconds 12000
@@ -21,7 +21,7 @@ function Get-SynkSupportReport {
         if ($owned) {
             try {
                 $doctor = Get-SynkOfflineDoctor
-                $ids = @('environment','postgres_password','admin_token','dashboard_password','calendar_id','hwid','activation_policy','license_key','license','google_credentials','salon_config','live_acceptance')
+                $ids = @('environment','postgres_password','admin_token','dashboard_password','calendar_id','google_credentials','salon_config','live_acceptance')
                 $checks = @($doctor.checks | Where-Object { $_.id -in $ids -and $_.status -in @('pass','warn','fail') } | ForEach-Object { [pscustomobject]@{id=$_.id;status=$_.status} })
             } catch { }
             try {
@@ -32,8 +32,7 @@ function Get-SynkSupportReport {
                         $property = $data.PSObject.Properties[$key]
                         $runtime[$key] = if ($null -ne $property -and $property.Value -is [bool]) { $property.Value } else { $null }
                     }
-                    $license = $data.PSObject.Properties['licenseStatus']; $calendar = $data.PSObject.Properties['calendarStatus']
-                    $runtime['licenseStatus'] = if ($null -ne $license -and $license.Value -in @('valid','invalid','unverified','temporary_read_failure')) { $license.Value } else { 'unknown' }
+                    $calendar = $data.PSObject.Properties['calendarStatus']
                     $runtime['calendarStatus'] = if ($null -ne $calendar -and $calendar.Value -in @('ok','error','partial','disabled','suspended_for_reconciliation')) { $calendar.Value } else { 'unknown' }
                 }
             } catch { $runtime = $null }

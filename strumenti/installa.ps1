@@ -18,10 +18,7 @@ try {
             'doctor' { & (Join-Path $PSScriptRoot 'diagnostica.ps1'); exit $LASTEXITCODE }
             'access' { Show-SynkAccess; exit 0 }
             'credentials' {
-                Write-Host '1) File licenza firmata  2) Chiave PUBBLICA del titolare  3) JSON service account Google'
-                $kind = Read-SynkText 'Quale file iniziale vuoi correggere?' '1' '^[1-3]$'
-                $name = @{'1'='license.txt';'2'='license-public.pem';'3'='google-service-account.json'}[$kind]
-                Repair-SynkInitialCredential -Name $name
+                Repair-SynkInitialCredential -Name 'google-service-account.json'
                 exit 0
             }
             'support' { Export-SynkSupportReport | Out-Null; exit 0 }
@@ -48,7 +45,7 @@ try {
     $databaseExists = Test-SynkDatabaseVolume
     Write-Host '[2/6] Team, trattamenti e orari (nessuna modifica manuale del JSON)...'
     Initialize-SynkSalonConfiguration -Reconfigure:$Reconfigure
-    Write-Host '[3/6] Importazione dei file privati...'
+    Write-Host '[3/6] Importazione credenziali Google...'
     Initialize-SynkCredentials
     Write-Host '[4/6] Credenziali locali e calendario...'
     $environment = Initialize-SynkEnvironment -DatabaseExists:$databaseExists

@@ -13,7 +13,7 @@ New-Item -ItemType Directory -Path $temp | Out-Null
 $oldRoot=$script:SynkRoot;$script:SynkRoot=$temp
 try {
     Copy-Item -LiteralPath (Join-Path $root '.env.example') -Destination (Join-Path $temp '.env.example')
-    $script:answers.Enqueue('calendar@group.calendar.google.com');$script:answers.Enqueue('HW-synthetic-installation')
+    $script:answers.Enqueue('calendar@group.calendar.google.com')
     $first=Initialize-SynkEnvironment
     Check $first.Created 'Initial environment not created'
     Check $first.DashboardPasswordGenerated 'Password not generated'
@@ -22,9 +22,12 @@ try {
     Check ($dbPassword -match '^[a-f0-9]{64}$') 'DB password must be URL-safe random'
     Check ($admin -match '^[a-f0-9]{64}$' -and $admin -ne $dbPassword) 'Independent admin token'
     Check ((Get-EnvValue 'CALENDAR_ID') -eq 'calendar@group.calendar.google.com') 'Calendar ID missing'
-    Check ((Get-EnvValue 'APP_HWID') -eq 'HW-synthetic-installation') 'HWID missing'
+    Check ([string]::IsNullOrEmpty((Get-EnvValue 'APP_HWID'))) 'New setup must not request or generate a hardware activation ID'
+    Check ($script:answers.Count -eq 0) 'Unexpected setup prompts'
+    Set-EnvValue 'APP_HWID' 'legacy-unused-setting'
     $next=Initialize-SynkEnvironment -DatabaseExists
     Check (-not $next.Created -and -not $next.DashboardPasswordGenerated) 'Rerun changed creation state'
+    Check ((Get-EnvValue 'APP_HWID') -ceq 'legacy-unused-setting') 'Rerun must not erase existing private settings'
     Check ((Get-EnvValue 'DASHBOARD_PASSWORD') -ceq $password) 'Dashboard password rotated on rerun'
     Check ((Get-EnvValue 'POSTGRES_PASSWORD') -ceq $dbPassword) 'DB password rotated on rerun'
     Check ((Get-EnvValue 'ADMIN_TOKEN') -ceq $admin) 'Admin token rotated on rerun'
@@ -36,6 +39,6 @@ try {
     $blocked=$false;try{Initialize-SynkEnvironment -DatabaseExists | Out-Null}catch{$blocked=$true}
     Check $blocked 'Missing environment with existing DB must fail closed'
     Check (-not (Test-Path -LiteralPath (Join-Path $temp '.env'))) 'Failed recovery created a replacement .env'
-    Check (-not (Test-Path -LiteralPath (Join-Path $temp 'secrets/license.txt'))) 'Environment helper must not issue licenses'
+    Check (-not (Test-Path -LiteralPath (Join-Path $temp 'secrets/license.txt'))) 'Environment helper must not create obsolete activation files'
 } finally { $script:SynkRoot=$oldRoot;Remove-Item -LiteralPath $temp -Recurse -Force }
 Write-Host ('PASS: ' + $count + ' resumable private environment checks')

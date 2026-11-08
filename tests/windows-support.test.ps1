@@ -8,7 +8,7 @@ function Check([bool]$Condition,[string]$Message) { if (-not $Condition) { throw
 function Get-SynkDockerState { return 'ready' }
 function Assert-SynkProjectOwnership { }
 function Get-SynkAutostartStatus { return 'disabled' }
-function Get-SynkOfflineDoctor { return [pscustomobject]@{checks=@([pscustomobject]@{id='license';status='pass';help='SENSITIVE_MARKER'},[pscustomobject]@{id='SENSITIVE_MARKER';status='pass'})} }
+function Get-SynkOfflineDoctor { return [pscustomobject]@{checks=@([pscustomobject]@{id='google_credentials';status='pass';help='SENSITIVE_MARKER'},[pscustomobject]@{id='SENSITIVE_MARKER';status='pass'})} }
 function Get-SynkRuntimeSummary { return [pscustomobject]@{schema=1;scope='runtime-status';whatsappReady=$true;databaseReady='SENSITIVE_MARKER';licenseStatus='valid';calendarStatus='SENSITIVE_MARKER';lastError='SENSITIVE_MARKER';messages=@('SENSITIVE_MARKER')} }
 $temp=Join-Path ([IO.Path]::GetTempPath()) ('synk-support-' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $temp | Out-Null

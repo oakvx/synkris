@@ -20,7 +20,7 @@ $oldRoot=$script:SynkRoot;$script:SynkRoot=$temp
 try {
     $failed=$false;try{Start-SynkServices -NoBrowser}catch{$failed=$true};Check $failed 'Unconfigured startup must stop'
     Check ($script:calls.Count -eq 0) 'Missing config must not start Docker'
-    foreach($name in @('.env','setup/config.json','secrets/license.txt','secrets/license-public.pem','secrets/google-service-account.json')){
+    foreach($name in @('.env','setup/config.json','secrets/google-service-account.json')){
         $file=Join-Path $temp $name;New-Item -ItemType Directory -Force -Path (Split-Path -Parent $file) | Out-Null;Write-Utf8File $file 'synthetic fixture'
     }
     Start-SynkServices -NoBrowser

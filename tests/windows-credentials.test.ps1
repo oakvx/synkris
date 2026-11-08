@@ -10,31 +10,30 @@ $temp=Join-Path ([IO.Path]::GetTempPath()) ('synk-credentials-' + [Guid]::NewGui
 New-Item -ItemType Directory -Path $temp | Out-Null
 $oldRoot=$script:SynkRoot;$script:SynkRoot=$temp
 try {
-    $original=Join-Path $temp 'original.txt'
-    Write-Utf8File $original "LIC=eyJmaXh0dXJlIjp0cnVlfQ`nSIG=Zml4dHVyZQ`n"
-    Import-SynkCredential -Name 'license.txt' -Source $original
-    $dest=Join-Path $temp 'secrets/license.txt'
+    $original=Join-Path $temp 'original.json'
+    $fixture=@{type='service_account';client_email='synthetic@ci.iam.gserviceaccount.com';private_key=('-----BEGIN ' + 'PRIVATE KEY-----' + "`nsynthetic")}
+    Write-Utf8File $original ($fixture | ConvertTo-Json)
+    Import-SynkCredential -Source $original
+    $dest=Join-Path $temp 'secrets/google-service-account.json'
     $before=[IO.File]::ReadAllText($dest)
-    Check ($before -match '^LIC=') 'Original license imported'
-    Write-Utf8File $original 'must never replace existing license'
-    Import-SynkCredential -Name 'license.txt' -Source $original
-    Check ([IO.File]::ReadAllText($dest) -ceq $before) 'Existing license must be preserved'
+    Check (($before | ConvertFrom-Json).type -eq 'service_account') 'Original Google credentials imported'
+    Write-Utf8File $original 'must never replace existing credentials'
+    Import-SynkCredential -Source $original
+    Check ([IO.File]::ReadAllText($dest) -ceq $before) 'Existing credentials must be preserved'
+    Check (-not (Test-Path -LiteralPath (Join-Path $temp 'secrets/license.txt'))) 'Importer created an obsolete activation file'
     Remove-Item -LiteralPath $dest -Force
-    Rejected {Import-SynkCredential -Name 'license.txt' -Source $original} 'Malformed license accepted'
-    Check (-not (Test-Path -LiteralPath $dest)) 'Rejected license created a file'
-    Write-Utf8File $original "LIC=aaaa`nLIC=bbbb`nSIG=cccc`n"
-    Rejected {Import-SynkCredential -Name 'license.txt' -Source $original} 'Duplicate LIC accepted'
-    Write-Utf8File $original 'not a public key'
-    Rejected {Import-SynkCredential -Name 'license-public.pem' -Source $original} 'Invalid public PEM accepted'
-    Write-Utf8File $original ('-----BEGIN ' + 'PRIVATE KEY-----' + "`nZmFrZQ==`n" + '-----END ' + 'PRIVATE KEY-----')
-    Rejected {Import-SynkCredential -Name 'license-public.pem' -Source $original} 'Private key accepted as public'
+    Rejected {Import-SynkCredential -Source $original} 'Malformed credentials accepted'
+    Check (-not (Test-Path -LiteralPath $dest)) 'Rejected credentials created a file'
     Write-Utf8File $original '{bad json with sensitive-synthetic-marker}'
-    $message='';try{Import-SynkCredential -Name 'google-service-account.json' -Source $original}catch{$message=$_.Exception.Message}
+    $message='';try{Import-SynkCredential -Source $original}catch{$message=$_.Exception.Message}
     Check ($message -notmatch 'sensitive-synthetic-marker' -and $message -match 'JSON') 'Malformed JSON must be redacted'
-    Write-Utf8File $original '{"type":"authorized_user"}'
-    Rejected {Import-SynkCredential -Name 'google-service-account.json' -Source $original} 'Wrong Google credential type accepted'
+    foreach($invalid in @('{"type":"authorized_user"}','null','[]','{"type":"service_account"}')) {
+        Write-Utf8File $original $invalid
+        Rejected {Import-SynkCredential -Source $original} 'Wrong Google credential type accepted'
+    }
     Write-Utf8File $original ('x' * 65537)
-    Rejected {Import-SynkCredential -Name 'license.txt' -Source $original} 'Oversized private file accepted'
-    Rejected {Import-SynkCredential -Name 'license.txt' -Source $temp} 'Directory accepted as credential'
+    Rejected {Import-SynkCredential -Source $original} 'Oversized private file accepted'
+    Rejected {Import-SynkCredential -Source $temp} 'Directory accepted as credential'
+    Rejected {Import-SynkCredential -Name 'license.txt' -Source $original} 'Obsolete activation importer still exposed'
 } finally { $script:SynkRoot=$oldRoot;Remove-Item -LiteralPath $temp -Recurse -Force }
-Write-Host ('PASS: ' + $count + ' private credential import checks')
+Write-Host ('PASS: ' + $count + ' Google-only private credential import checks')

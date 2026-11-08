@@ -28,11 +28,6 @@ function Initialize-SynkEnvironment {
         $calendar = Read-SynkText 'ID calendario Google (non il titolo; Impostazioni > Integra calendario)' '' '^(?!calendario-del-salone@)(?=.{1,254}$)[^\s@]+@[^\s@]+\.[^\s@]+$'
         Set-EnvValue 'CALENDAR_ID' $calendar
     }
-    $hwid = Get-EnvValue 'APP_HWID'
-    if ([string]::IsNullOrWhiteSpace($hwid) -or $hwid -match '^HWID_ASSOCIATO') {
-        $hwid = Read-SynkText 'HWID fornito con la tua licenza (non inventarne uno)' '' '^(?!HWID_ASSOCIATO)[A-Za-z0-9_-]{3,160}$'
-        Set-EnvValue 'APP_HWID' $hwid
-    }
     Write-Host 'Credenziali salvate nel file privato .env. Nessuna password viene stampata.'
     Write-Host 'I valori reali gia presenti sono mantenuti; il rilancio riprende la configurazione.'
     return [pscustomobject]@{Created=$created;DashboardPasswordGenerated=$dashboardGenerated}
