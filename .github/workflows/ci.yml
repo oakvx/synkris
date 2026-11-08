@@ -70,6 +70,7 @@ jobs:
     name: Windows ${{ matrix.shell }}
     runs-on: windows-latest
     strategy:
+      fail-fast: false
       matrix:
         shell: [powershell, pwsh]
     defaults:
@@ -87,7 +88,14 @@ jobs:
           npm run release:package
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Parse scripts and verify ZIP/protected paths
-        run: ./tests/windows-scripts.test.ps1
+        run: |
+          try { ./tests/windows-scripts.test.ps1 }
+          catch {
+            $detail = ($_ | Out-String) + "`n" + $_.ScriptStackTrace
+            $detail = $detail.Replace('%','%25').Replace("`r",'%0D').Replace("`n",'%0A')
+            Write-Output ('::error title=Windows helper tests failed::' + $detail)
+            throw
+          }
   docker:
     name: Docker builds and Apache boundary
     runs-on: ubuntu-latest
