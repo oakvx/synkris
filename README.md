@@ -1,114 +1,192 @@
 <div align="center">
-  <img src="docs/assets/hero.svg" width="1280" alt="synk — Meno incastri. Più tempo per le persone. RC6 di collaudo, licenza proprietaria: uso privato non commerciale gratuito, altri usi su accordo commerciale.">
-  <p><strong>Appuntamenti, team e conversazioni per il tuo salone.</strong><br>Un core locale, una dashboard in italiano e integrazioni che restano sotto supervisione umana.</p>
-  <p>
-    <a href="#anteprima">Anteprima</a> ·
-    <a href="#architettura">Architettura</a> ·
-    <a href="#sviluppo">Sviluppo</a> ·
-    <a href="#licenza-e-open-source">Licenza e open source</a> ·
-    <a href="#documentazione">Documentazione</a>
-  </p>
+
+<img src="docs/assets/synkris-hero.svg" alt="SYNKRIS / synk: sistema di gestione per saloni. Grafica editoriale viola e fucsia." width="100%">
+
+# SYNKRIS · synk
+
+### Agenda, messaggi e disponibilità. In un unico sistema.
+
+**synk** è un sistema di automazione per attività che lavorano su appuntamento. Riunisce gestione dei clienti, organizzazione del team, conversazioni WhatsApp e integrazione con Google Calendar in un'esperienza pensata per chi deve occuparsi delle persone, non rincorrere i messaggi.
+
+**[Richiedi informazioni o una demo](https://github.com/oakvx/synkris/issues/new?template=richiesta-demo.yml)** · **[Guarda l'interfaccia](#uno-sguardo-alla-dashboard)** · **[Scopri come funziona](#come-funziona)**
+
+<sub>Versione attuale: `1.2.0-rc.6` · Release candidate di collaudo · Licenza proprietaria · Italiano</sub>
+
 </div>
 
-<img src="docs/assets/stack.svg" width="1280" alt="Stack: Node.js 22/24, PHP 8.3, PostgreSQL 16, Docker/WSL2 e AI locale facoltativa.">
+---
 
-> [!WARNING]
-> **`1.2.0-rc.6` è una prerelease ricostruita, solo per collaudo.** Il repository è attualmente privato e [la licenza è proprietaria](LICENSE.md): **synk non è open source**. Il diritto d’uso è gratuito solo per uso privato non commerciale; ogni altro uso richiede un accordo commerciale scritto a titolo oneroso. I componenti persi sono stati riscritti, non recuperati dagli originali. Non è garantita la parità con la vecchia interfaccia né l’idoneità all’uso con clienti reali.
+## Un punto di controllo per il lavoro quotidiano
 
-## In breve
+Un cliente scrive mentre sei impegnato. Un altro chiede un appuntamento. Una collega cambia disponibilità. Poi c'è da controllare il calendario, rispondere, registrare e verificare che tutto sia andato a buon fine.
 
-**synk** mette nello stesso spazio l’agenda, il catalogo dei trattamenti, le operatrici e le conversazioni. PostgreSQL conserva i dati applicativi sul PC del salone; Node.js gestisce automazioni e sincronizzazione; la dashboard PHP rende visibili anche le operazioni ancora in coda o da verificare.
+**synk collega richieste, appuntamenti e attività del team.** Automatizza i passaggi previsti dalla configurazione e lascia visibili le operazioni da verificare o affidare a un operatore.
 
-Il punto non è automatizzare tutto: è **sapere che cosa è stato salvato, che cosa è stato sincronizzato e quando deve intervenire una persona**.
+<img src="docs/assets/synkris-benefits.svg" width="100%" alt="Tre funzioni operative: conversazioni, appuntamenti e supervisione del team.">
 
-<img src="docs/assets/features.svg" width="1280" alt="Quattro capacità: agenda con durate e buffer, stati Calendar distinti, controllo umano delle chat e manutenzione esplicita.">
+### Pensato per attività dove ogni appuntamento conta
 
-| Area | Cosa trovi |
-| --- | --- |
-| **Appuntamenti** | Da 1 a 6 trattamenti ordinati, durate per operatrice, buffer, verifica degli orari e conflitti. |
-| **Clienti e team** | Anagrafiche indipendenti dallo storico, note locali, servizi abilitati e durate personalizzate. |
-| **Conversazioni** | Interfaccia WhatsApp tramite whatsapp-web.js, presa in carico manuale e revisione privacy. |
-| **Organizzazione** | Orari settimanali, pause, chiusure, assenze e lista d’attesa con consenso. |
-| **Centro operativo** | Stati dei servizi, operazioni in coda, anomalie Calendar e richieste privacy. |
-| **Primi passi guidati** | Wizard Windows, checklist in dashboard, password locale mascherata, diagnostica e report assistenza selettivo. |
-| **Manutenzione** | ZIP con manifest e SHA256, backup PostgreSQL pubblicati dopo verifica, restore sospeso e riconciliazione tecnica. |
-| **AI locale opzionale** | Integrazione Ollama, disattivata per default. Non sostituisce i controlli applicativi. |
+**Centri estetici e benessere · Nail studio · Parrucchieri e barber shop · Studi di tatuaggio · Altri saloni su appuntamento**
 
-## Anteprima
+Il modello di servizi, durate e disponibilità può essere configurato per processi diversi. La compatibilità con un'attività specifica viene valutata durante la configurazione e il collaudo: non tutti i flussi sono pronti all'uso senza adattamenti.
 
-**Interfaccia effettivamente renderizzata dal frontend ricostruito, con fixture sintetiche.** Nomi, appuntamenti, conteggi e stati mostrati sono dimostrativi. Nessun account reale, database del salone, QR, messaggio cliente o credenziale è stato utilizzato. Le immagini **non attestano** una connessione Google/WhatsApp o un test end-to-end.
+## Cosa offre synk
 
-### Centro operativo
+| Per il salone | Cosa fa il sistema |
+| :--- | :--- |
+| **Prenotazioni organizzate** | Gestisce servizi multipli, durate per operatrice, buffer e controllo delle sovrapposizioni. |
+| **Agenda coordinata** | Integra Google Calendar e rende distinguibili le operazioni registrate, quelle in coda e quelle da verificare. |
+| **Clienti e trattamenti** | Mantiene anagrafiche, catalogo servizi, abilitazioni delle operatrici e configurazioni specifiche. |
+| **Messaggi WhatsApp** | Prevede conversazioni operative e presa in carico manuale da parte del team. |
+| **Gestione del lavoro** | Considera orari settimanali, pause, chiusure, assenze e lista d'attesa con consenso. |
+| **Dashboard di controllo** | Espone stato dei servizi, attività da verificare, manutenzione e richieste privacy. |
+| **Primi passi guidati** | Wizard Windows per configurazione iniziale e checklist a sei controlli nella dashboard; assistenza e diagnostica locale. |
+| **AI locale facoltativa** | Offre un'integrazione opzionale con Ollama; non è necessaria per tutte le funzioni e non sostituisce le verifiche applicative. |
 
-[![Centro operativo di synk: stati dei servizi e operazioni di esempio, con una fascia che identifica tutti i dati come sintetici.](docs/assets/dashboard-overview.webp)](docs/assets/dashboard-overview.webp)
+Queste sono **capacità implementate nel progetto e oggetto di collaudo**, non una dichiarazione che tutte le integrazioni siano operative presso un salone reale. I risultati dipendono anche dalle impostazioni, dalla disponibilità dei provider e dai test dell'installazione.
+
+## Come funziona
+
+<img src="docs/assets/synkris-journey.svg" width="100%" alt="Flusso concettuale di synk: il cliente invia una richiesta, synk verifica il contesto, registra e sincronizza gli stati e il team mantiene il controllo.">
+
+**1. Il cliente contatta il salone.** Una richiesta entra tramite il canale WhatsApp associato, quando il servizio è configurato e connesso.
+
+**2. synk verifica i dettagli.** Trattamenti, durata, operatrici e disponibilità sono controllati in base alle regole del salone.
+
+**3. La prenotazione viene gestita con stati espliciti.** I dati applicativi sono salvati localmente; la sincronizzazione con Google Calendar è monitorata e può richiedere una verifica.
+
+**4. Il team può intervenire.** L'operatore conserva la possibilità di assumere il controllo della conversazione e gestire i casi che richiedono attenzione.
+
+> **Un dettaglio importante:** se Google Calendar non risponde in modo affidabile, synk non presume che uno slot sia disponibile. Un'operazione **in coda** non equivale a una conferma di sincronizzazione.
+
+## Uno sguardo alla dashboard
+
+L'interfaccia è pensata per mostrare le informazioni utili senza nascondere gli stati operativi.
+
+> [!NOTE]
+> **Anteprime documentali, non dati di clienti reali.** Le schermate seguenti sono state renderizzate dal frontend ricostruito con **fixture sintetiche** e dati dimostrativi. La schermata centrale include una checklist Primi passi con dati sintetici. Non certificano un collegamento WhatsApp o Google Calendar effettivamente funzionante.
+
+<p align="center"><a href="docs/assets/dashboard-overview.webp"><img src="docs/assets/dashboard-overview.webp" width="100%" alt="Dashboard synk dimostrativa con dati sintetici e stati operativi."></a></p>
 
 <table>
   <tr>
-    <td width="50%"><strong>Agenda con stati espliciti</strong></td>
-    <td width="50%"><strong>Editor multi-trattamento</strong></td>
+    <td width="50%"><a href="docs/assets/dashboard-agenda.webp"><img src="docs/assets/dashboard-agenda.webp" alt="Agenda dimostrativa con stati distinti e appuntamenti fittizi."></a></td>
+    <td width="50%"><a href="docs/assets/dashboard-editor.webp"><img src="docs/assets/dashboard-editor.webp" alt="Editor dimostrativo di un appuntamento con più trattamenti."></a></td>
   </tr>
   <tr>
-    <td><a href="docs/assets/dashboard-agenda.webp"><img src="docs/assets/dashboard-agenda.webp" alt="Agenda dimostrativa con appuntamenti sintetici, stati in coda, sincronizzato e verifica tecnica."></a></td>
-    <td><a href="docs/assets/dashboard-editor.webp"><img src="docs/assets/dashboard-editor.webp" alt="Editor dimostrativo: una cliente sintetica, un’operatrice e due trattamenti per 100 minuti, buffer inclusi."></a></td>
-  </tr>
-  <tr>
-    <td>Il salvataggio nel database non viene confuso con l’esito su Google.</td>
-    <td>Servizi ordinati, abilitazioni e tempi provengono dal catalogo.</td>
+    <td><strong>Agenda leggibile</strong><br>Appuntamenti e sincronizzazioni non vengono confusi.</td>
+    <td><strong>Trattamenti su misura</strong><br>Durate, ordine dei servizi e operatrici in un unico flusso.</td>
   </tr>
 </table>
 
-*Clicca sulle immagini per la versione completa. [Come rigenerare gli asset](docs/readme/README.md).*
+*Apri le immagini per ingrandirle. [Origine delle anteprime e come rigenerarle](docs/readme/README.md).*
 
-## Architettura
+## Un sistema che lavora vicino alla tua attività
 
-<img src="docs/assets/architecture.svg" width="1280" alt="Architettura: browser, PHP, PostgreSQL, Node/whatsapp-web.js e Ollama sul sistema locale; Google Calendar, WhatsApp e SMTP oltre il confine dei provider esterni.">
+synk è progettato per un'**installazione locale assistita** sul computer del salone, non come una piattaforma cloud già pronta da attivare con un clic.
 
-| Componente | Responsabilità |
+- **Controllo operativo:** dati applicativi in PostgreSQL locale, dashboard web sul PC e processi di manutenzione espliciti.
+- **Collegamenti necessari:** Google Calendar e WhatsApp restano provider esterni; i dati richiesti dalle rispettive integrazioni vengono trasmessi ai loro servizi.
+- **Supervisione umana:** conversazioni sospendibili, stati verificabili e intervento del personale.
+- **AI come opzione:** Ollama può essere abilitato localmente, ma è disattivato per impostazione predefinita.
+
+**Locale non significa offline:** agenda Google, WhatsApp ed eventuali notifiche SMTP richiedono connessione e configurazione. Il backup PostgreSQL non è automaticamente cifrato; vanno applicate le procedure di protezione indicate nella documentazione.
+
+## Vuoi capire se synk è adatto al tuo salone?
+
+Ogni attività ha trattamenti, orari, abitudini e modalità di gestione differenti. Per questo la proposta parte dai **processi da semplificare**, non da un elenco generico di funzioni.
+
+<div align="center">
+
+### Raccontaci come lavori oggi.
+
+**[Richiedi informazioni o una demo di collaudo](https://github.com/oakvx/synkris/issues/new?template=richiesta-demo.yml)**
+
+<sub>La richiesta avviene tramite GitHub e può essere pubblica: non inserire contatti personali, dati di clienti, credenziali o informazioni riservate. Non si tratta di un ordine o di un'attivazione immediata.</sub>
+
+</div>
+
+---
+
+## Tech Stack & GitHub
+
+<div align="center">
+
+**Tecnologie utilizzate nel repository**
+
+<img alt="Node.js 22 e 24" src="https://img.shields.io/badge/Node.js-22%20%2F%2024-7540B8?style=flat-square&labelColor=170C29">
+<img alt="JavaScript ESM" src="https://img.shields.io/badge/JavaScript-ESM-C12CAC?style=flat-square&labelColor=170C29">
+<img alt="PHP 8.3" src="https://img.shields.io/badge/PHP-8.3-7540B8?style=flat-square&labelColor=170C29">
+<img alt="PostgreSQL 16" src="https://img.shields.io/badge/PostgreSQL-16-7540B8?style=flat-square&labelColor=170C29">
+<img alt="Docker Compose" src="https://img.shields.io/badge/Docker-Compose-C12CAC?style=flat-square&labelColor=170C29">
+<img alt="Google Calendar API" src="https://img.shields.io/badge/Google-Calendar%20API-7540B8?style=flat-square&labelColor=170C29">
+<img alt="WhatsApp Web non ufficiale" src="https://img.shields.io/badge/WhatsApp-Web%20non%20ufficiale-C12CAC?style=flat-square&labelColor=170C29">
+<img alt="Ollama opzionale" src="https://img.shields.io/badge/Ollama-opzionale-7540B8?style=flat-square&labelColor=170C29">
+<img alt="PowerShell" src="https://img.shields.io/badge/PowerShell-5.1%20%2F%207-C12CAC?style=flat-square&labelColor=170C29">
+
+**Repository · dati aggiornati da GitHub**
+
+<a href="https://github.com/oakvx/synkris/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/oakvx/synkris?style=flat-square&amp;label=stars&amp;color=C12CAC&amp;labelColor=170C29"></a>
+<a href="https://github.com/oakvx/synkris/forks"><img alt="GitHub forks" src="https://img.shields.io/github/forks/oakvx/synkris?style=flat-square&amp;label=forks&amp;color=7540B8&amp;labelColor=170C29"></a>
+<a href="https://github.com/oakvx/synkris/issues"><img alt="GitHub issues aperte" src="https://img.shields.io/github/issues/oakvx/synkris?style=flat-square&amp;label=issues&amp;color=C12CAC&amp;labelColor=170C29"></a>
+<a href="https://github.com/oakvx/synkris/commits/master/"><img alt="Ultimo commit nel branch master" src="https://img.shields.io/github/last-commit/oakvx/synkris/master?style=flat-square&amp;label=ultimo%20commit&amp;color=7540B8&amp;labelColor=170C29"></a>
+<a href="https://github.com/oakvx/synkris/actions/workflows/ci.yml"><img alt="Stato GitHub Actions CI del branch master" src="https://github.com/oakvx/synkris/actions/workflows/ci.yml/badge.svg?branch=master"></a>
+
+**Accessi al README** · contatore di caricamenti di terze parti
+
+<img alt="Visualizzazioni approssimative del README rilevate dal contatore esterno" src="https://visitor-badge.laobi.icu/badge?page_id=oakvx.synkris&amp;left_text=visite&amp;left_color=%23170C29&amp;right_color=%23C12CAC">
+
+<sub>Stars, forks, issues e CI provengono da GitHub (Shields.io rende le metriche). Il contatore esterno conta richieste alla sua immagine: **non** equivale alle visite ufficiali né a visitatori unici. Le visite reali sono disponibili al proprietario in <a href="https://github.com/oakvx/synkris/graphs/traffic">GitHub Insights → Traffic</a>. I badge non attestano la prontezza della release per la produzione.</sub>
+
+</div>
+
+---
+
+## Per sviluppatori e tecnici
+
+Questa sezione descrive **quello che il repository contiene oggi** e i limiti della release. Per installazione, attivazione commerciale o uso con dati reali è necessario seguire i documenti tecnici e completare il collaudo.
+
+### Architettura
+
+<img src="docs/assets/synkris-architecture.svg" width="100%" alt="Architettura locale di synk: browser, dashboard PHP, PostgreSQL, Node.js e Ollama opzionale, con Google e WhatsApp come servizi esterni.">
+
+<img src="docs/assets/synkris-stack.svg" width="100%" alt="Stack di synk: Node.js 22/24, PHP 8.3, PostgreSQL 16, Docker/WSL2 e AI locale facoltativa.">
+
+| Livello | Tecnologia / funzione |
 | --- | --- |
-| **Dashboard PHP 8.3** | Sessioni, CSRF, verifica licenza, editor PDO e proxy interno con allowlist. |
-| **Node.js / whatsapp-web.js** | Bot, API amministrativa interna, verifica Calendar e worker di sincronizzazione. |
-| **PostgreSQL 16** | Fonte applicativa dei dati, vincolo anti-sovrapposizione, transazioni e outbox. |
-| **Docker Compose** | Servizi locali, bootstrap, volumi persistenti e backup pianificati. |
-| **Ollama** | Modelli locali facoltativi, attivati esplicitamente dal tecnico. |
+| **Frontend amministrativo** | Dashboard PHP 8.3; sessioni, CSRF e proxy interno autorizzato |
+| **Backend applicativo** | Node.js 22/24, Express, automazioni e API amministrativa |
+| **Persistenza** | PostgreSQL 16, transazioni, vincoli anti-conflitto e outbox |
+| **Agenda** | Google Calendar API, verifica disponibilità e sincronizzazione asincrona |
+| **Messaggistica** | `whatsapp-web.js@1.34.7` tramite WhatsApp Web |
+| **AI (opzionale)** | Ollama, abilitazione esplicita |
+| **Ambiente locale** | Docker Compose e, su Windows, Docker Desktop / WSL2 |
 
-**Locale non significa isolato da Internet.** Google Calendar e WhatsApp ricevono i dati necessari alle rispettive integrazioni. SMTP viene contattato soltanto con opt-in e configurazione esplicita. La cancellazione di una chat locale non elimina automaticamente i dati presso quei provider.
+> [!IMPORTANT]
+> **WhatsApp non usa l'API ufficiale WhatsApp Business Cloud.** L'integrazione si basa su `whatsapp-web.js` / WhatsApp Web. Compatibilità, possibili restrizioni e conformità ai termini del provider devono essere valutate prima dell'uso. La migrazione del codice è eseguita; il collaudo WhatsApp reale resta da fare. L'adapter migrato non è stato convalidato su una sessione WhatsApp reale.
 
-L’integrazione WhatsApp usa **whatsapp-web.js / WhatsApp Web**, non la WhatsApp Business Cloud API ufficiale. Compatibilità, termini del provider e rischi per l’account richiedono una valutazione specifica; i test automatici non li certificano.
+### Una prenotazione non è soltanto un «Salva»
 
-## Prenotazioni
+<img src="docs/assets/synkris-booking-flow.svg" width="100%" alt="Schema tecnico di prenotazione: controlli, transazione locale, outbox e sincronizzazione Calendar.">
 
-<img src="docs/assets/booking-flow.svg" width="1280" alt="Flusso: scelta dei trattamenti, verifica di orari e Calendar, transazione PostgreSQL con outbox, sincronizzazione asincrona con Google.">
+Il sistema distingue la **registrazione transazionale nel database** dall'invio asincrono verso Google Calendar. Questo riduce l'ambiguità degli stati, ma **non crea una transazione ACID distribuita** e non esclude tutte le condizioni di gara. Un ripristino sospende i worker fino alla riconciliazione tecnica.
 
-- Se Calendar non è raggiungibile o la sua risposta non è valida, il salvataggio viene bloccato: **non si presume che lo slot sia libero**.
-- Appuntamento, servizi ordinati e operazione outbox vengono registrati nella stessa transazione locale.
-- Un’operazione **in coda** non viene presentata come una sincronizzazione riuscita.
-- Una modifica concorrente richiede di ricaricare i dati prima di riprovare.
-- Dopo un ripristino, il flag di manutenzione sospende prenotazioni e worker finché il tecnico non completa la riconciliazione.
+### Stato del progetto
 
-La verifica preliminare e l’outbox **non creano una transazione ACID distribuita con Google** e non eliminano ogni condizione di gara.
-
-## Stato della release
-
-<img src="docs/assets/readiness.svg" width="1280" alt="Snapshot dell’8 novembre 2026: 239 test Node, milestone plug-and-play con 6 job CI verdi, licenza proprietaria con uso privato gratuito, 11 rilievi elevati e collaudo reale ancora richiesto.">
-
-**Fotografia verificata l’8 novembre 2026**, non un badge live. Il milestone plug-and-play **`9ff8000`** ha completato [tutti i 6 job CI](https://github.com/oakvx/synkris/actions/runs/42527797589). Le modifiche successive richiedono la CI del proprio commit:
-
-| Controllo | Risultato / limite |
+| Aspetto | Stato verificato / limite |
 | --- | --- |
-| **Node.js 22 e 24** | **239/239 test**, senza skip: setup, attivazione, onboarding, API/UI, provider e invii incerti. |
-| **PHP e PostgreSQL 16** | Test nativi e integrazione: proxy autenticato, transazioni, outbox e checklist. **Dump e restore reali su database CI sintetico separato**, non sul PC del salone. |
-| **Windows PowerShell 5.1 e 7** | Parser/ZIP, wizard, file privati, avvio, collisioni progetto e autostart COM in TEMP. **Non è una prova interattiva del desktop/WSL2**. |
-| **Docker** | Build e smoke Apache; doctor reale senza rete/dependencies, senza marker import o volumi dati. |
-| **Backup interrotti** | 7 casi aggiuntivi con strumenti PG sintetici: staging, errori, checksum e conservazione dei precedenti. |
-| **Audit produzione** | **19 rilievi: 8 moderati, 11 elevati, 0 critici.** Rieseguito localmente; non è un via libera di sicurezza. SBOM: 335 componenti. |
-| **Provider e PC destinatario** | Collaudo reale Google, WhatsApp, SMTP se configurato, finestra credenziali, Docker Desktop/WSL2, aggiornamento, restore e USB BitLocker ancora richiesto. |
-| **Licenza** | **Proprietaria/source-available:** solo privato personale non commerciale gratuito; altri usi su accordo commerciale scritto. Firma/HWID restano obbligatori. |
+| **Versione** | `1.2.0-rc.6` — prerelease ricostruita, destinata al collaudo |
+| **Milestone plug-and-play** | Al commit `9ff8000` dell'8 novembre 2026: **239/239 test Node** e **6 job CI** superati; non è un test reale sul PC del salone |
+| **Test aggiuntivi** | Copertura di setup Windows, checklist, diagnosi offline e backup/restore su database sintetico; risultati e limiti in [PLUG_AND_PLAY.md](docs/PLUG_AND_PLAY.md) |
+| **Audit dipendenze** | 19 rilievi noti alla verifica dell'8 novembre 2026: **11 elevati, 8 moderati, 0 critici** |
+| **Test con provider reali** | Ancora necessari su WhatsApp, Google Calendar, SMTP, Windows e procedure di ripristino |
+| **Disponibilità commerciale** | Richiede valutazione, accordo scritto e collaudo assistito; nessun percorso self-service |
 
-[Dettagli e limiti del lavoro plug-and-play](docs/PLUG_AND_PLAY.md). Il [report di ricostruzione](REPORT_RICOSTRUZIONE_RC6.md) conserva la baseline storica; non va confuso con i risultati attuali. **CI verde ≠ software stabile, sicuro o automaticamente open source.**
+**Non considerare questa RC idonea a gestire appuntamenti e dati di clienti reali senza prima completare gli interventi di sicurezza e la [checklist di collaudo](COLLAUDO.md).** Questa fotografia storica è **un riepilogo datato, non un badge live**: i risultati non garantiscono la versione attuale.
 
-## Sviluppo
+### Verifiche locali
 
-Per chi ha accesso e autorizzazione al repository. **Node.js 22 o 24**; `npm ci` utilizza il lockfile. Non sono necessarie credenziali reali per la suite Node.
+Per chi è autorizzato a lavorare sul codice. Prerequisito: **Node.js 22 o 24**.
 
 ```sh
 npm ci --ignore-scripts --no-audit --no-fund
@@ -117,130 +195,85 @@ npm test
 npm run audit:release
 ```
 
-Questi comandi verificano i sorgenti: **non avviano un salone configurato**. L’avvio applicativo richiede configurazione locale, autorizzazione di licenza e credenziali delle integrazioni previste.
-
-<details>
-<summary><strong>PHP, database, Windows e pacchetto</strong></summary>
-
-Per i test PHP servono **PHP 8.3**, `pdo_pgsql`, `curl` e `sodium`:
+Per i controlli PHP servono PHP 8.3 con `pdo_pgsql`, `curl` e `sodium`:
 
 ```sh
 npm run check:php
 npm run test:php
 ```
 
-L’integrazione richiede un PostgreSQL dedicato chiamato `synk_test`. **La suite resetta lo schema `public`: non usare mai dati o credenziali del salone.** Esempio Bash con credenziali esclusivamente sintetiche:
+Il test d'integrazione richiede un PostgreSQL **dedicato e cancellabile** denominato `synk_test`. Lo script può resettare lo schema `public`: **non usarlo mai con il database del salone**.
 
 ```sh
 TEST_DATABASE_URL=postgresql://synk_test:synk_test@127.0.0.1:5432/synk_test \
 SYNK_TEST_DB_ALLOW_RESET=1 npm run test:integration
 ```
 
-Per generare lo ZIP piatto e verificarlo:
+Questi comandi controllano il codice e i componenti disponibili nell'ambiente: **non avviano automaticamente un salone configurato** e non dimostrano la disponibilità dei provider.
 
-```sh
-npm run release:package
-node scripts/release/archive.mjs artifacts/synk-1.2.0-rc.6.zip
-```
+<details>
+<summary><strong>Installazione di collaudo e manutenzione su Windows</strong></summary>
 
-Dopo la build, in PowerShell 5.1 o 7:
+L'attuale percorso è **guidato da un wizard Windows**, ma rimane una installazione di collaudo che richiede assistenza tecnica e Docker Desktop / WSL2. Leggere [Primi passi](deploy/PRIMI_PASSI.md), [LEGGIMI.txt](LEGGIMI.txt), [RELEASE.md](RELEASE.md) e [COLLAUDO.md](COLLAUDO.md). Il wizard chiede team, servizi e orari senza modifiche manuali ai JSON, ma richiede ancora licenza firmata/HWID, credenziali Calendar e collaudo reale.
 
-```powershell
-./tests/windows-scripts.test.ps1
-```
+| Operazione | Entrypoint |
+| --- | --- |
+| Prima installazione / menu strumenti | `INSTALLA_UNA_VOLTA.bat` |
+| Avvio e dashboard | `AVVIA_SYNK.bat` / `APRI_SYNK.bat` |
+| Aggiornamento tecnico | `AGGIORNA_SYNK_TECNICO.bat` |
+| Ripristino sospeso | `RIPRISTINA_BACKUP.bat` |
+| Riconciliazione Calendar | `RIATTIVA_CALENDAR_TECNICO.bat` |
+| Esportazione USB BitLocker | `ESPORTA_BACKUP_CIFRATO_TECNICO.bat` |
+| AI locale opzionale | `ATTIVA_AI_LOCALE.bat` |
 
-Gli output sono in `artifacts/`, esclusi da Git. Un pacchetto con `sourceDirty: true` è soltanto una prova locale: non va pubblicato su un tag che identifica un commit diverso.
+La dashboard mostra i **sei controlli Primi passi**; il menu locale espone diagnosi e assistenza e non avvia automaticamente l'autostart. Prima dell'uso con clienti reali restano obbligatori i collaudi con i provider.
+
+Per la migrazione WhatsApp, fermare l'istanza precedente e seguire la [guida dedicata](docs/WHATSAPP_MIGRATION.md). **Non eseguire `docker compose down -v` con dati del salone.** Il rollback del codice non annulla una migrazione del database.
 
 </details>
 
-## Installazione
+### Privacy e sicurezza
 
-Il percorso attuale è una **installazione Windows di collaudo assistita da un tecnico**, con Docker Desktop/WSL2 in modalità container Linux. Non esiste un percorso senza attivazione: il file firmato è richiesto anche per l’uso privato gratuito, con rilascio manuale. Per un salone o altro uso non privato serve prima l’accordo commerciale.
+- `.env`, `setup/config.json`, `secrets/`, `runtime/`, sessioni, licenze e chiavi private non devono entrare nel repository o nei pacchetti.
+- La dashboard usa controlli di sessione e un proxy server-side per le operazioni amministrative; non esporre direttamente le porte interne.
+- I backup contengono dati personali e richiedono procedure di protezione, conservazione e ripristino concordate.
+- I log e le issue pubbliche **non** devono contenere numeri, conversazioni, QR, credenziali o informazioni sui clienti.
+- I rilievi di sicurezza elevati ancora aperti richiedono valutazione e mitigazione **prima** dell'uso con dati reali.
 
-1. Leggi [LEGGIMI.txt](LEGGIMI.txt) e [RELEASE.md](RELEASE.md).
-2. Estrai **tutto** lo ZIP piatto in una cartella locale di prova: individua insieme i BAT, `compose.yaml` e `strumenti/`. Non avviare i file dall’interno dello ZIP o da una cartella condivisa/cloud.
-3. Avvia `INSTALLA_UNA_VOLTA.bat`, premi Invio: il wizard chiede team, trattamenti e orari, importa i tre file privati e prepara i segreti mancanti, **senza modificare JSON a mano**. Le credenziali esistenti non vengono ruotate automaticamente.
-4. Il tecnico fornisce licenza firmata/HWID e credenziali Google; condivide i calendari dedicati. Il doctor offline e il bootstrap verificano realmente l’autorizzazione, senza bypass produzione.
-5. Accedi con la password della finestra locale mascherata e segui **Primi passi** nel Centro operativo: database, attivazione, catalogo, WhatsApp, Calendar e backup.
-6. Completa la [checklist di collaudo](COLLAUDO.md) con account/dati di prova. Anche sei controlli completati non certificano l’uso in produzione.
+Per i dettagli: [SECURITY.md](SECURITY.md).
 
-**[Guida rapida Windows e menu strumenti →](deploy/PRIMI_PASSI.md)** · Node/PHP non servono sul PC ospite. Il menu include diagnostica, recupero password, report assistenza locale, autostart opt-in e correzione iniziale dei file privati. L’avvio quotidiano non esegue build/pull. L’installazione non attiva automaticamente l’autostart.
+### Licenza e utilizzo commerciale
 
-| Operazione | Entrypoint Windows |
+**synk non è open source.** SYNKRIS distribuisce il prodotto come software proprietario con codice consultabile (source-available).
+
+La [licenza attuale](LICENSE.md) permette gratuitamente solo un **uso strettamente privato e non commerciale da parte di una persona fisica**, con attivazione firmata. Anche per la prova privata il rilascio è gestito manualmente. L'uso in saloni, aziende, per clienti, in servizi ospitati, nella rivendita o nel white-label **richiede prima un accordo commerciale scritto a titolo oneroso**, salvo diversa autorizzazione espressa.
+
+**Non è pubblicato un listino prezzi** e il repository non costituisce un'offerta commerciale vincolante. Le dipendenze di terzi mantengono le rispettive licenze: vedi [THIRD_PARTY_NOTICES.md](deploy/THIRD_PARTY_NOTICES.md).
+
+### Documentazione
+
+| Hai bisogno di… | Consulta |
 | --- | --- |
-| Installazione e strumenti locali | `INSTALLA_UNA_VOLTA.bat` (Invio per installare) |
-| Avvio / apertura dashboard | `AVVIA_SYNK.bat` / `APRI_SYNK.bat` |
-| Aggiornamento controllato | `AGGIORNA_SYNK_TECNICO.bat` |
-| Restore sospeso | `RIPRISTINA_BACKUP.bat` |
-| Fine riconciliazione Calendar | `RIATTIVA_CALENDAR_TECNICO.bat` |
-| Export su USB BitLocker | `ESPORTA_BACKUP_CIFRATO_TECNICO.bat` |
-| AI locale facoltativa | `ATTIVA_AI_LOCALE.bat` |
-
-**Passaggio da OpenWA:** fermare la vecchia istanza, conservare backup e vecchi file, aggiornare dal nuovo lockfile e associare il QR dalla dashboard. Non avviare due bot sullo stesso account. Seguire la [guida di migrazione](docs/WHATSAPP_MIGRATION.md).
-
-**Non eseguire `docker compose down -v` sui dati del salone.** Un rollback del codice non annulla una migrazione del database. Dopo un restore non rimettere indiscriminatamente in coda vecchie operazioni Calendar: segui la riconciliazione descritta nella guida.
-
-## Sicurezza e dati
-
-- `.env`, `setup/config.json`, `runtime/`, sessioni, licenze e credenziali restano **fuori da Git e dagli ZIP**.
-- La chiave privata che firma le licenze va custodita separatamente, non distribuita al salone. La chiave pubblica di verifica è un file diverso.
-- Il token amministrativo non viene inserito nel browser; le chiamate privilegiate passano dal proxy server-side autorizzato.
-- Il backup PostgreSQL contiene dati personali e **non è cifrato automaticamente**. L’export tecnico su USB richiede BitLocker verificato.
-- Il menu crea un report locale di soli stati selezionati in `runtime/support/`: niente log grezzi, chat, QR o credenziali, nessun upload. Rileggilo prima di condividerlo. Non inviare `.env`, sessioni o backup privati. Leggi [SECURITY.md](SECURITY.md).
-- Il controllo dei file correnti non equivale a una scansione dell’intera cronologia. Prima di un’apertura pubblica servono revisione e scansione completa, con revoca di eventuali credenziali esposte.
-
-L’audit blocca i rilievi **critici** e i report mancanti; gli altri rilievi non vengono nascosti. Gli **11 elevati** restano da valutare e correggere prima di un impiego con dati reali. Zero critici non significa assenza di vulnerabilità.
-
-## Licenza e open source
-
-**Il modello scelto è proprietario/source-available, non open source.** [LICENSE.md](LICENSE.md) consente gratuitamente solo l’**uso strettamente privato e non commerciale di una persona fisica**. Ogni altro uso richiede **prima dell’utilizzo un accordo commerciale scritto a titolo oneroso**, salvo diversa autorizzazione scritta del titolare.
-
-| Utilizzo | Regola |
-| --- | --- |
-| Uso personale/domestico e sperimentazione personale non commerciale | Diritto d’uso gratuito, rispettando la licenza e l’attivazione tecnica. |
-| Uso operativo nel proprio salone, azienda o attività professionale | Accordo commerciale richiesto, anche per la sola gestione interna. |
-| Uso per clienti, associazioni, enti, scuole o altre organizzazioni | Non è uso privato: accordo richiesto anche senza utile o incasso immediato. |
-| Rivendita, hosting, SaaS, white-label o integrazione in altri prodotti | Accordo specifico; prezzo, canone o eventuale royalty vanno concordati. |
-
-**Non sono stati fissati prezzi o percentuali sui ricavi.** La licenza non crea una partecipazione automatica a qualsiasi fatturato. Il software non ha ricevuto un sistema di incasso, rendicontazione royalties o classificazione automatica dell’uso.
-
-> [!IMPORTANT]
-> **Gratuito non significa già attivato.** La versione attuale richiede una licenza firmata/HWID anche per l’uso privato. Per tale uso il diritto d’uso e la relativa attivazione sono gratuiti, ma il rilascio è gestito manualmente dal titolare: non esiste ancora un percorso self-service o un bypass. Prima della prova occorre ottenere il file necessario.
-
-Rendere visibili i sorgenti non rende synk open source. AGPL, MIT o Apache permetterebbero anche usi commerciali conformi senza corrispondere automaticamente compensi al titolare: non sono il modello selezionato. Le eventuali violazioni si valutano secondo la legge applicabile, **senza promettere conseguenze penali automatiche**. Il testo personalizzato e gli accordi economici devono essere verificati da un professionista prima della distribuzione commerciale.
-
-### Dipendenze: licenze autonome
-
-Il runtime usa **`whatsapp-web.js@1.34.7` (Apache-2.0)** e **`qrcode@1.5.4` (MIT)**. OpenWA e il suo override `parse-url` sono stati rimossi da manifest e lockfile, senza convertire o cancellare le sessioni precedenti. I [testi originali dei nuovi componenti](deploy/THIRD_PARTY_NOTICES.md) sono distribuiti anche nello ZIP e nelle immagini.
-
-**La migrazione del codice è eseguita, il collaudo WhatsApp reale resta da fare.** Serve una nuova associazione QR; LocalAuth conserva il profilo in una directory separata nel runtime. Il nuovo adapter gestisce eventi, invio, LID, stato e arresto senza logout. Non è la Cloud API ufficiale e non elimina i termini del servizio o i rischi per l’account.
-
-**[Procedura, percorsi e rollback della migrazione →](docs/WHATSAPP_MIGRATION.md)**
-
-**[Decisione di licenza e stato della distribuzione →](docs/OPEN_SOURCE_READINESS.md)**
-
-`private: true` in `package.json` continua a impedire pubblicazioni npm accidentali. I metadati rimandano ai termini personalizzati con `SEE LICENSE IN LICENSE.md`. La visibilità del repository e i controlli tecnici di attivazione non sono stati modificati.
-
-## Documentazione
-
-| Voglio… | Dove andare |
-| --- | --- |
-| Migrare WhatsApp, riassociare la sessione e preparare il rollback | [Guida OpenWA → whatsapp-web.js](docs/WHATSAPP_MIGRATION.md) |
-| Capire licenza, attivazione e vincoli di distribuzione | [Decisione e readiness](docs/OPEN_SOURCE_READINESS.md) |
-| Preparare una RC e la bozza di release | [RELEASE.md](RELEASE.md) |
-| Installare senza modificare JSON e usare il menu | [Primi passi Windows](deploy/PRIMI_PASSI.md) · [LEGGIMI.txt](LEGGIMI.txt) |
-| Distinguere miglioramenti plug-and-play e prove effettive | [Report tecnico](docs/PLUG_AND_PLAY.md) |
-| Eseguire il collaudo sul PC reale | [COLLAUDO.md](COLLAUDO.md) |
-| Conoscere ricostruzione e limiti | [REPORT_RICOSTRUZIONE_RC6.md](REPORT_RICOSTRUZIONE_RC6.md) |
-| Leggere le modifiche | [CHANGELOG.md](CHANGELOG.md) |
-| Gestire sicurezza e dati riservati | [SECURITY.md](SECURITY.md) |
-| Leggere i diritti attualmente concessi | [LICENSE.md](LICENSE.md) · [Avvisi di terzi](deploy/THIRD_PARTY_NOTICES.md) |
-| Rigenerare banner e anteprime | [Guida agli asset](docs/readme/README.md) |
-| Esaminare i controlli automatici | [Workflow CI](.github/workflows/ci.yml) · [Workflow prerelease](.github/workflows/prerelease.yml) |
+| Panoramica della ricostruzione e limiti RC6 | [Report di ricostruzione](REPORT_RICOSTRUZIONE_RC6.md) |
+| Procedura di installazione | [LEGGIMI.txt](LEGGIMI.txt) |
+| Preparazione di una release | [RELEASE.md](RELEASE.md) |
+| Test su PC e provider reali | [COLLAUDO.md](COLLAUDO.md) |
+| Migrazione dell'integrazione WhatsApp | [WHATSAPP_MIGRATION.md](docs/WHATSAPP_MIGRATION.md) |
+| Sicurezza e protezione dei dati | [SECURITY.md](SECURITY.md) |
+| Diritti d'uso e distribuzione | [LICENSE.md](LICENSE.md) · [Readiness](docs/OPEN_SOURCE_READINESS.md) |
+| Cronologia delle modifiche | [CHANGELOG.md](CHANGELOG.md) |
+| Produzione delle immagini del README | [Guida agli asset](docs/readme/README.md) |
+| Controlli automatici | [CI](.github/workflows/ci.yml) · [Prerelease](.github/workflows/prerelease.yml) |
+| Installazione Windows con wizard | [Primi passi](deploy/PRIMI_PASSI.md) · [Implementazione](docs/PLUG_AND_PLAY.md) |
 
 ---
 
 <div align="center">
-  <img src="assets/logo.svg" width="36" height="36" alt="Logo synk">
-  <p><strong>Il tuo salone, in sintonia.</strong><br>Automazioni verificabili. Supervisione umana. Limiti dichiarati.</p>
+
+**SYNKRIS / synk** · Gestione di appuntamenti, conversazioni e operatrici.
+
+**[Richiedi informazioni](https://github.com/oakvx/synkris/issues/new?template=richiesta-demo.yml)** · **[Torna all'inizio](#synkris-synk)**
+
+<sub>Illustrazioni SVG originali; anteprime con dati sintetici. Nessuna statistica commerciale o recensione inventata.</sub>
+
 </div>
