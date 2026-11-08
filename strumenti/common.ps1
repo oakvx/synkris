@@ -6,6 +6,25 @@ $script:CodePaths = @('src','dashboard','deploy','assets','strumenti','scripts',
 function Write-Utf8File([string]$Path, [string]$Text) {
     [System.IO.File]::WriteAllText($Path, $Text, (New-Object System.Text.UTF8Encoding($false)))
 }
+# Create-only writes: never truncate an existing salon file, even on a rerun.
+function Write-SynkPrivateFile([string]$Path, [string]$Text) {
+    $parent = Split-Path -Parent $Path
+    New-Item -ItemType Directory -Force -Path $parent | Out-Null
+    Protect-LocalPath $parent -Directory
+    $stream = $null; $created = $false; $complete = $false
+    try {
+        $stream = [IO.File]::Open($Path,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
+        $created = $true
+        Protect-LocalPath $Path
+        $bytes = (New-Object Text.UTF8Encoding($false)).GetBytes($Text)
+        $stream.Write($bytes,0,$bytes.Length)
+        $stream.Flush()
+        $complete = $true
+    } finally {
+        if ($null -ne $stream) { $stream.Dispose() }
+        if ($created -and -not $complete) { Remove-Item -LiteralPath $Path -Force }
+    }
+}
 function Get-RandomHex([int]$Bytes = 32) {
     $buffer = New-Object byte[] $Bytes
     $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()

@@ -92,7 +92,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Parse scripts and verify ZIP/protected paths
         run: |
-          try { ./tests/windows-scripts.test.ps1 }
+          try {
+            ./tests/windows-scripts.test.ps1
+            ./tests/windows-setup.test.ps1
+          }
           catch {
             $detail = ($_ | Out-String) + "`n" + $_.ScriptStackTrace
             $detail = $detail.Replace('%','%25').Replace("`r",'%0D').Replace("`n",'%0A')
