@@ -103,6 +103,7 @@ jobs:
             ./tests/windows-startup.test.ps1
             ./tests/windows-ownership.test.ps1
             ./tests/windows-autostart.test.ps1
+            ./tests/windows-support.test.ps1
           }
           catch {
             $detail = ($_ | Out-String) + "`n" + $_.ScriptStackTrace
