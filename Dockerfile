@@ -12,7 +12,7 @@ RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund && npm cache clean -
 COPY LICENSE.md deploy/THIRD_PARTY_NOTICES.md ./
 COPY src ./src
 COPY scripts/db ./scripts/db
-COPY scripts/deploy/bootstrap.mjs ./scripts/deploy/bootstrap.mjs
+COPY scripts/deploy ./scripts/deploy
 COPY assets ./assets
 USER node
 CMD ["node", "src/index.js"]
