@@ -16,6 +16,7 @@ services:
       timeout: 3s
       retries: 15
   bootstrap:
+    image: ${COMPOSE_PROJECT_NAME:-synk}-runtime:local
     build: { context: ., dockerfile: Dockerfile }
     restart: 'no'
     user: '0:0'
@@ -42,6 +43,7 @@ services:
     # Il bootstrap aggiorna schema/configurazione; la sessione deve restare scrivibile dal bot non-root.
     command: ["sh", "-c", "mkdir -p /app/runtime/config /app/runtime/session; node scripts/deploy/bootstrap.mjs; result=$$?; chown -R node:node /app/runtime/config /app/runtime/session; exit $$result"]
   bot:
+    image: ${COMPOSE_PROJECT_NAME:-synk}-runtime:local
     build: { context: ., dockerfile: Dockerfile }
     restart: unless-stopped
     init: true
@@ -118,6 +120,24 @@ services:
           fi
           sleep 86400
         done
+  # The installed runtime image is reused: diagnostics never pull/build images,
+  # start dependencies, mutate the DB or contact providers.
+  doctor:
+    image: ${COMPOSE_PROJECT_NAME:-synk}-runtime:local
+    pull_policy: never
+    profiles: ["tools"]
+    network_mode: none
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    env_file: .env
+    environment:
+      <<: *runtime_env
+    volumes:
+      - ./runtime/config:/app/runtime/config:ro
+      - ./setup/config.json:/app/bootstrap/config.json:ro
+      - ./secrets:/run/secrets:ro
+    command: ["node", "scripts/deploy/doctor.mjs", "--container", "--json"]
   ollama:
     image: ollama/ollama:0.12.8
     profiles: ["ai"]
