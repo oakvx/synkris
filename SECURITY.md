@@ -21,3 +21,11 @@ separati dai sorgenti.
 ## Integrità e responsabilità della distribuzione
 
 synk distribuito con sorgente modificabile non offre DRM inviolabile: chi modifica il codice può aggirare controlli locali. Per gestire una licenza commerciale mantenere il repository privato, custodire fuori dal repository la chiave di firma, distribuire immagini versionate e formalizzare il diritto d'uso. Il controllo del rollback dell'orologio è limitato all'esecuzione corrente e non garantisce revoca remota; i file clienti, le sessioni e i backup richiedono protezione e conservazione locale concordate.
+
+## Prerelease ricostruita RC6
+
+La compatibilita del bot richiede ancora OpenWA v4, con dipendenze legacy e
+avvisi di sicurezza elevati. Nodemailer e stato aggiornato e il parser URL
+transitivo e stato fissato a una versione corretta, ma questo NON elimina tutti
+gli avvisi npm. Leggere REPORT_RICOSTRUZIONE_RC6.md e l'audit CI prima di usare
+dati reali. Non promuovere il pacchetto a stabile sulla sola base dei test.

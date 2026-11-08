@@ -1,0 +1,111 @@
+name: CI
+on:
+  push:
+  pull_request:
+  workflow_call:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  node:
+    name: Node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run check
+      - run: npm test
+      - name: Dependency audit (critical blocks; other findings require review)
+        if: matrix.node == 22
+        run: npm run audit:release
+      - uses: actions/upload-artifact@v4
+        if: always() && matrix.node == 22
+        with:
+          name: dependency-audit
+          path: artifacts/dependency-audit.json
+          if-no-files-found: warn
+          retention-days: 14
+  php:
+    name: PHP 8.3 and PostgreSQL 16
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: synk_test
+          POSTGRES_USER: synk_test
+          POSTGRES_PASSWORD: synk_test
+        ports: [5432:5432]
+        options: >-
+          --health-cmd "pg_isready -U synk_test -d synk_test"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: pdo_pgsql, curl, sodium
+          coverage: none
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run check:php
+      - run: npm run test:php
+      - run: npm run test:integration
+        env:
+          TEST_DATABASE_URL: postgresql://synk_test:synk_test@127.0.0.1:5432/synk_test
+          SYNK_TEST_DB_ALLOW_RESET: '1'
+  windows:
+    name: Windows ${{ matrix.shell }}
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        shell: [powershell, pwsh]
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Build test package
+        run: |
+          npm run release:package
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Parse scripts and verify ZIP/protected paths
+        run: ./tests/windows-scripts.test.ps1
+  docker:
+    name: Docker builds and Apache boundary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: docker build -t synk-ci-bot -f Dockerfile .
+      - run: docker build -t synk-ci-dashboard -f Dockerfile.dashboard .
+      - name: Production dependency import contract
+        run: >-
+          docker run --rm --entrypoint node synk-ci-bot --input-type=module -e
+          "import assert from 'node:assert/strict'; const w=await import('@open-wa/wa-automate'); assert.equal(typeof w.create,'function'); assert.equal(typeof w.ev.on,'function');"
+      - name: PHP image prerequisites
+        run: >-
+          docker run --rm synk-ci-dashboard php -r
+          "foreach (['pdo_pgsql','curl','sodium'] as \$e) { if (!extension_loaded(\$e)) exit(1); }"
+      - run: docker run --rm synk-ci-dashboard apache2ctl -t
+      - name: Apache login and private-file smoke checks
+        run: node tests/docker-smoke.mjs

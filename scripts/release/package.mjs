@@ -1,0 +1,21 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import {execFileSync} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
+import {collectReleaseFiles} from './layout.mjs';
+import {createArchive,sha256} from './archive.mjs';
+
+const root=fileURLToPath(new URL('../../',import.meta.url));
+execFileSync(process.execPath,[path.join(root,'scripts/release/check.mjs')],{cwd:root,stdio:'inherit'});
+const pkg=JSON.parse(fs.readFileSync(path.join(root,'package.json'),'utf8'));
+const files=Object.fromEntries(collectReleaseFiles(root).map(name=>[name,fs.readFileSync(path.join(root,name))]));
+const sourceCommit=execFileSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'}).trim();
+const sourceDirty=Boolean(execFileSync('git',['status','--porcelain','--untracked-files=normal'],{cwd:root,encoding:'utf8'}).trim());
+const {archive,manifest}=createArchive(files,{version:pkg.version,sourceCommit,sourceDirty});
+const directory=path.join(root,'artifacts');fs.mkdirSync(directory,{recursive:true});
+const name=`synk-${pkg.version}.zip`;
+fs.writeFileSync(path.join(directory,name),archive);
+fs.writeFileSync(path.join(directory,name+'.sha256'),sha256(archive)+'  '+name+'\n');
+fs.writeFileSync(path.join(directory,'RELEASE-MANIFEST.json'),JSON.stringify(manifest,null,2)+'\n');
+console.log(`Created artifacts/${name} (${archive.length} bytes) and SHA256. No release was published.`);
+if(sourceDirty)console.warn('Working tree contains uncommitted changes: local test package only. Commit/review before publishing a tag.');

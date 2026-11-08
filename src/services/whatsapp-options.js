@@ -20,7 +20,26 @@ export function whatsappOptions(env = process.env) {
     qrTimeout: timeoutSeconds(env.QR_TIMEOUT_MS, 'QR_TIMEOUT_MS'),
     authTimeout: timeoutSeconds(env.AUTH_TIMEOUT_MS, 'AUTH_TIMEOUT_MS'),
     chromiumArgs,
+    // OpenWA v4 merges unsafe historical defaults (including TLS/sandbox bypasses)
+    // into chromiumArgs. Puppeteer's explicit args override that merged list.
+    args: [...chromiumArgs],
+    multiDevice: true,
+    qrLogSkip: true,
+    popup: false,
+    disableSpins: true,
+    logFile: false,
+    logConsoleErrors: false,
+    killProcessOnBrowserClose: false,
+    killProcessOnTimeout: false,
     allowDangerousBrowserArgs: noSandbox,
     logConsole: false,
   };
+}
+
+/** OpenWA v4's healthy state is CONNECTED, not the v5 READY sentinel. */
+export function isWhatsAppConnectedState(state) { return state === 'CONNECTED'; }
+
+export async function stopWhatsAppClient(client) {
+  if (typeof client?.stop === 'function') return await client.stop();
+  if (typeof client?.kill === 'function') return await client.kill('SYNK_SHUTDOWN');
 }

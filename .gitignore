@@ -1,0 +1,31 @@
+# Dependencies and generated release artifacts
+node_modules/
+artifacts/
+coverage/
+.playwright/
+*.zip
+*.sha256
+*.log
+
+# Salon configuration, credentials, sessions and customer data
+.env
+.env.*
+!.env.example
+secrets/*
+!secrets/LEGGIMI.txt
+setup/config.json
+runtime/
+keys/
+licenses/
+config.json
+bookings.json
+chatdb.json
+session.data.json
+*.dump
+*.pem
+*.key
+
+# Local tools and OS files
+.cache/
+.DS_Store
+Thumbs.db

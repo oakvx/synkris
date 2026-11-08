@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf-token" content="{{CSRF_TOKEN}}"><meta name="synk-version" content="{{VERSION}}">
+  <title>synk · Il tuo salone, in sintonia</title><link rel="icon" href="/assets/logo.svg">
+  <link rel="stylesheet" href="/dashboard/assets/app.css">
+  <script defer src="/dashboard/assets/app.js"></script>
+  <script defer src="/dashboard/assets/management-appointments.js"></script>
+  <script defer src="/dashboard/assets/management-catalog.js"></script>
+  <script defer src="/dashboard/assets/operations.js"></script>
+  <script defer src="/dashboard/assets/analytics.js"></script>
+</head>
+<body>
+  <aside class="sidebar">
+    <a class="brand" href="#overview"><img src="/assets/logo.svg" alt="" width="36" height="36"><span>synk<span class="brand-dot">.</span></span></a>
+    <p class="nav-label">IL TUO SPAZIO DI LAVORO</p>
+    <nav aria-label="Navigazione principale">
+      <button data-page="overview" class="active"><span aria-hidden="true">◈</span> Centro operativo</button>
+      <button data-page="appointments"><span aria-hidden="true">▦</span> Appuntamenti</button>
+      <button data-page="clients"><span aria-hidden="true">◎</span> Clienti</button>
+      <button data-page="chats"><span aria-hidden="true">▤</span> Conversazioni</button>
+      <p class="nav-label">ORGANIZZAZIONE</p>
+      <button data-page="catalog"><span aria-hidden="true">◇</span> Trattamenti e team</button>
+      <button data-page="schedule"><span aria-hidden="true">◷</span> Orari e assenze</button>
+      <button data-page="waitlist"><span aria-hidden="true">≋</span> Lista d’attesa</button>
+      <button data-page="settings"><span aria-hidden="true">⚙</span> Impostazioni e backup</button>
+    </nav>
+    <div class="sidebar-footer"><span class="badge warning">VERSIONE DI COLLAUDO</span><p>v{{VERSION}} · dati locali</p><form action="/?logout=1" method="post"><input type="hidden" name="csrf" value="{{CSRF_TOKEN}}"><button class="ghost" type="submit">Esci dalla dashboard ↗</button></form></div>
+  </aside>
+  <div class="workspace">
+    <header class="topbar"><span>Il tuo salone <span class="muted">/</span> <span id="breadcrumb">Centro operativo</span></span><span id="today" class="muted"></span></header>
+    <main>
+      <div class="page-heading"><div><p class="eyebrow">MENO PENSIERI, PIÙ SPAZIO AL TUO LAVORO</p><h1 id="pageTitle">Centro operativo</h1><p id="pageSubtitle" class="muted">Una visione chiara di ciò che succede nel salone.</p></div><button id="newAppointment" class="primary">＋ Nuovo appuntamento</button></div>
+      <div class="release-notice">Prerelease ricostruita: usare solo per il collaudo. Le verifiche Windows, Calendar, WhatsApp e ripristino non sono ancora certificate.</div>
+      <div id="maintenanceBanner" class="alert" role="alert" hidden><strong>PRENOTAZIONI SOSPESE.</strong> È necessaria la riconciliazione tecnica con Google Calendar.</div>
+      <p id="pageError" class="error" role="alert" hidden></p>
+
+      <section data-section="overview" aria-label="Centro operativo">
+        <div class="section-heading"><h2>La salute del tuo salone</h2><button data-action="refresh" class="secondary">↻ Aggiorna</button></div>
+        <div id="statusCards" class="stats-grid"><article class="card muted">Verifica dei servizi in corso…</article></div>
+        <div class="two-columns"><article class="card"><div class="section-heading"><h2>Da tenere d’occhio</h2><span class="badge neutral">SUPERVISIONE UMANA</span></div><div id="incidents" class="stack muted">Caricamento avvisi…</div></article><article class="card"><h2>Attività del salone</h2><p class="muted">Riepilogo mensile da PostgreSQL. Nessun dato dimostrativo.</p><div id="analytics" class="stack"></div></article></div>
+        <article class="card"><h2>Richieste privacy da verificare</h2><p class="muted">La cancellazione della chat locale non elimina automaticamente appuntamenti, dati Google o WhatsApp.</p><div id="privacyRequests" class="stack"></div></article>
+      </section>
+
+      <section data-section="appointments" hidden aria-label="Gestione appuntamenti">
+        <article class="card"><div class="section-heading"><h2>Gestione appuntamenti</h2><span class="badge neutral">POSTGRESQL + CALENDAR</span></div>
+          <form id="appointmentFilters" class="filters"><label>Mostra<select id="gApptMode"><option value="future">In corso e futuri</option><option value="past">Passati</option><option value="all">Tutti</option></select></label><label>Dal<input id="gApptFrom" type="date"></label><label>Al<input id="gApptTo" type="date"></label><button class="secondary">Applica filtri</button></form>
+          <p class="muted">Orari del salone: Europe/Rome. Un salvataggio locale non equivale alla conferma della sincronizzazione Google: controlla lo stato Calendar.</p>
+          <div id="appointmentList" class="table-wrap" aria-live="polite"></div>
+        </article>
+      </section>
+
+      <section data-section="clients" hidden aria-label="Clienti">
+        <div class="two-columns"><article class="card"><h2>Le tue clienti</h2><form id="clientSearchForm" class="inline-form"><label class="grow">Cerca per nome<input id="clientSearch" maxlength="80" placeholder="Nome della cliente"></label><button class="secondary">Cerca</button></form><div id="clientList" class="stack"></div><p class="muted">Nuove clienti: registrale dall’editor appuntamenti, anche senza prenotazioni precedenti.</p></article><article class="card" id="clientDetails"><h2>Scheda cliente</h2><p class="muted">Seleziona una cliente per leggere note e appuntamenti recenti.</p></article></div>
+      </section>
+
+      <section data-section="chats" hidden aria-label="Conversazioni WhatsApp">
+        <div class="two-columns"><article class="card"><div class="section-heading"><h2>Conversazioni</h2><button data-action="refresh" class="secondary">Aggiorna</button></div><div id="chatList" class="stack"></div></article><article class="card"><div class="section-heading"><h2 id="chatTitle">Seleziona una conversazione</h2><button id="chatHandoff" class="secondary" disabled>Prendi in carico</button></div><p id="chatState" class="muted">La presa in carico sospende il bot solo per questa conversazione, fino a 24 ore.</p><div id="chatMessages" class="messages" aria-live="polite"></div><form id="chatSendForm"><label>Messaggio<textarea id="chatText" maxlength="4000" rows="3" required></textarea></label><button id="chatSend" disabled>Invia come operatrice</button></form><button id="chatDelete" class="danger" disabled>Elimina chat locale e apri revisione privacy</button></article></div>
+        <article class="card qr-card"><div><h2>Collega WhatsApp</h2><p id="qrStatus" class="muted">Verifica della sessione…</p><p class="muted">Il QR è riservato. Non condividerlo e non fotografarlo.</p></div><img id="whatsappQr" alt="QR per collegare WhatsApp" width="220" height="220" hidden></article>
+      </section>
+
+      <section data-section="catalog" hidden aria-label="Trattamenti e team">
+        <div class="two-columns"><article class="card"><h2>Trattamenti</h2><div id="serviceList" class="stack"></div><form id="serviceForm" class="form-grid"><input id="gSvcId" type="hidden"><label class="span-2">Nome<input id="gSvcName" maxlength="120" required></label><label>Durata (min)<input id="gSvcDuration" type="number" min="1" max="960" required value="30"></label><label>Buffer dopo (min)<input id="gSvcBuffer" type="number" min="0" max="180" required value="0"></label><label>Prezzo (€)<input id="gSvcPrice" type="number" min="0" max="9999999" step="0.01"></label><label class="checkbox"><input id="gSvcActive" type="checkbox" checked> Attivo</label><div class="span-2 button-row"><button>Salva trattamento</button><button type="button" id="resetService" class="secondary">Nuovo</button></div></form></article>
+        <article class="card"><h2>Operatrici e abilitazioni</h2><div id="professionalList" class="stack"></div><form id="professionalForm" class="form-grid"><input id="gProId" type="hidden"><label class="span-2">Nome<input id="gProName" maxlength="120" required></label><label class="span-2">Email calendario<input id="gProEmail" type="email" maxlength="254" required></label><label class="checkbox span-2"><input id="gProActive" type="checkbox" checked> Attiva</label><div class="span-2 button-row"><button>Salva operatrice</button><button type="button" id="resetProfessional" class="secondary">Nuova</button></div></form><form id="assignmentForm"><h3>Trattamenti abilitati</h3><p class="muted">Seleziona prima un’operatrice. Le durate personalizzate non comprendono il buffer.</p><div id="assignmentList" class="stack"></div><button id="saveAssignments" disabled>Salva abilitazioni e durate</button></form></article></div>
+      </section>
+
+      <section data-section="schedule" hidden aria-label="Orari e assenze">
+        <article class="card"><h2>Orari settimanali</h2><form id="hoursForm"><div class="table-wrap"><table><thead><tr><th>Giorno</th><th>Chiuso</th><th>Apertura</th><th>Chiusura</th><th>Inizio pausa</th><th>Fine pausa</th></tr></thead><tbody id="hoursRows"></tbody></table></div><label>Date di chiusura, una per riga (AAAA-MM-GG)<textarea id="closedDates" rows="3" placeholder="2026-12-25"></textarea></label><button>Salva orari</button><p class="muted">Le modifiche saranno ricaricate dal bot entro circa 90 secondi. Gli appuntamenti già esistenti non vengono spostati.</p></form></article>
+        <article class="card"><h2>Assenze delle operatrici</h2><form id="absenceForm" class="filters"><label>Operatrice<select id="absenceProfessional" required></select></label><label>Dal<input id="absenceStart" type="date" required></label><label>Al<input id="absenceEnd" type="date" required></label><button>Registra assenza</button></form><div id="absenceList" class="stack"></div></article>
+      </section>
+
+      <section data-section="waitlist" hidden aria-label="Lista di attesa">
+        <article class="card narrow"><h2>Un posto per chi aspetta</h2><p class="muted">Registra solo richieste specifiche e con consenso esplicito. Un’offerta non è una prenotazione: la cliente dovrà confermarla.</p><form id="waitlistForm" class="form-grid"><label class="span-2">Numero WhatsApp internazionale (solo cifre)<input id="synkWaitPhone" inputmode="tel" pattern="[0-9]{5,20}" required></label><label>Trattamento<select id="synkWaitService" required></select></label><label>Operatrice<select id="synkWaitProfessional"><option value="">Qualsiasi abilitata</option></select></label><label>Prima disponibilità<input id="synkWaitStart" type="datetime-local" required></label><label>Ultima disponibilità<input id="synkWaitEnd" type="datetime-local" required></label><label class="checkbox span-2"><input id="synkWaitConsent" type="checkbox" required> Ho raccolto il consenso a ricevere proposte per questo trattamento (massimo 30 giorni).</label><div class="span-2 button-row"><button>Registra richiesta</button><button type="button" id="synkWaitWithdraw" class="danger">Revoca richieste del numero</button></div></form></article>
+      </section>
+
+      <section data-section="settings" hidden aria-label="Impostazioni e backup">
+        <div class="two-columns"><article class="card"><h2>Il profilo del salone</h2><form id="settingsForm" class="stack"><label>Nome del salone<input name="salon_name" maxlength="80" required></label><label>Telefono<input name="salon_phone" maxlength="35"></label><label>Link recensioni (HTTPS)<input name="review_url" type="url" maxlength="300"></label><label>Avviso appuntamenti<textarea name="appointment_notice" maxlength="500" rows="2"></textarea></label><button>Salva impostazioni</button></form></article><article class="card"><h2>Backup locali PostgreSQL</h2><p class="muted">Circa ogni 24 ore, conservati 14 giorni. Non includono credenziali, licenza o sessione WhatsApp. Il download contiene dati personali e non è cifrato: usa il comando tecnico per esportare su USB BitLocker.</p><div id="backupList" class="stack"></div></article></div>
+        <article class="card"><h2>Diagnostica e AI locale</h2><p class="muted">L’AI è facoltativa. Attivazione e modelli si gestiscono dal comando tecnico ATTIVA_AI_LOCALE.bat. Non può confermare da sola prenotazioni fuori dai controlli applicativi.</p><div id="aiStatus"></div><dl id="diagnostics" class="detail-grid"></dl></article>
+      </section>
+      <footer class="main-footer"><span>synk · il tuo salone, in sintonia</span><span>Database locale. Supervisione umana, sempre.</span></footer>
+    </main>
+  </div>
+  <dialog id="gApptDialog"><form id="gApptForm"><div class="section-heading"><div><p class="eyebrow">GESTIONE APPUNTAMENTI</p><h2 id="gApptTitle">Nuovo appuntamento</h2></div><button type="button" id="gApptClose" class="icon-button" aria-label="Chiudi">✕</button></div><p class="muted">Disponibilità verificata su Calendar prima del salvataggio. Durata e buffer provengono dal catalogo.</p><div class="form-grid"><label class="span-2">Cerca cliente<input id="gApptClientSearch" maxlength="80" placeholder="Cerca per nome"></label><label class="span-2">Cliente<select id="gApptClient" required></select></label><details class="span-2"><summary>＋ Registra una nuova cliente</summary><div class="form-grid"><label>Nome<input id="gApptNewClientName" maxlength="120"></label><label>Telefono internazionale<input id="gApptNewClientPhone" inputmode="tel" maxlength="21"></label><button id="gApptCreateClient" type="button" class="secondary span-2">Registra e seleziona cliente</button></div></details><label>Operatrice<select id="gApptProfessional" required></select></label><label>Inizio · Europe/Rome<input id="gApptStart" type="datetime-local" required></label><fieldset class="span-2"><legend>Trattamenti, da 1 a 6</legend><div id="gApptServices" class="stack"></div></fieldset><div class="span-2"><ol id="gApptOrder" class="service-order"></ol><p class="total">Durata totale, buffer inclusi <output id="gApptTotal">0 min</output></p></div></div><div class="dialog-footer"><p class="muted">Il cambio dell’ora può rendere un orario ambiguo: in quel caso scegli un altro orario.</p><button id="gApptSave">Verifica e salva</button></div></form></dialog>
+  <div id="toast" class="toast" role="status" hidden></div>
+</body>
+</html>

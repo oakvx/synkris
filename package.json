@@ -1,6 +1,6 @@
 {
   "name": "synk-salone",
-  "version": "1.2.0-rc.5",
+  "version": "1.2.0-rc.6",
   "private": true,
   "type": "module",
   "engines": {
@@ -10,17 +10,34 @@
     "start": "node src/index.js",
     "db:init": "node scripts/db/init.mjs",
     "db:bootstrap": "node scripts/deploy/bootstrap.mjs",
-    "check": "node --check src/index.js",
-    "test": "node --test tests/*.test.js"
+    "check": "node scripts/release/check.mjs --syntax",
+    "test": "node scripts/test-node.mjs",
+    "check:repo": "node scripts/release/check.mjs",
+    "check:php": "node scripts/release/check.mjs --php",
+    "test:php": "node scripts/test-php.mjs",
+    "test:db": "node --test tests/integration/database.mjs",
+    "test:dashboard": "node --test tests/integration/dashboard.mjs",
+    "test:integration": "npm run test:db && npm run test:dashboard",
+    "release:package": "npm run check && npm test && node scripts/release/package.mjs",
+    "audit:release": "node scripts/release/audit.mjs"
   },
   "dependencies": {
-    "@open-wa/wa-automate": "5.1.0",
+    "@open-wa/wa-automate": "4.76.0",
     "dotenv": "^16.6.1",
     "express": "^4.21.2",
     "googleapis": "^154.1.0",
     "luxon": "^3.6.1",
-    "nodemailer": "^7.0.6",
+    "nodemailer": "10.4.0",
     "pg": "^8.16.0",
     "rrule": "^2.8.1"
+  },
+  "devDependencies": {
+    "fflate": "0.8.2",
+    "jsdom": "26.1.0"
+  },
+  "overrides": {
+    "@open-wa/wa-automate": {
+      "parse-url": "8.1.0"
+    }
   }
 }
