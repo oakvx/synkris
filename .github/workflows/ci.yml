@@ -96,6 +96,7 @@ jobs:
             ./tests/windows-scripts.test.ps1
             ./tests/windows-setup.test.ps1
             ./tests/windows-credentials.test.ps1
+            ./tests/windows-environment.test.ps1
           }
           catch {
             $detail = ($_ | Out-String) + "`n" + $_.ScriptStackTrace
