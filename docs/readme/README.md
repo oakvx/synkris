@@ -12,7 +12,7 @@ Il [README principale](../../README.md) usa **9 asset nuovi, ospitati nel reposi
 | `architecture.svg` | Schema semplificato, con confine fra core locale e provider esterni. |
 | `booking-flow.svg` | Verifica, transazione locale/outbox e sincronizzazione asincrona. |
 | `readiness.svg` | Snapshot datato di CI, audit, licenza e collaudo; **non è un badge live**. |
-| `dashboard-overview.webp` | Frontend ricostruito: centro operativo con fixture sintetiche. |
+| `dashboard-overview.webp` | Frontend ricostruito: centro operativo e checklist Primi passi con fixture sintetiche. |
 | `dashboard-agenda.webp` | Frontend ricostruito: sei appuntamenti interamente sintetici. |
 | `dashboard-editor.webp` | Frontend ricostruito: due trattamenti e totale di 100 minuti, buffer inclusi. |
 
@@ -24,6 +24,7 @@ Le anteprime raster derivano da `dashboard/view.html` e dai veri script/CSS del 
 - sostituisce i placeholder di versione e CSRF con metadati documentali, non una sessione applicativa;
 - usa `Cliente esempio NN`, email del dominio riservato `example.com`, date fisse e nessun contatto reale;
 - rende esplicita l’analitica sintetica e usa `+` al posto del carattere full-width quando mancano i font corrispondenti;
+- rende i sei controlli Primi passi tramite il builder effettivo e verifica 3/6 completati nella fixture (non una connessione reale);
 - serve soltanto file statici autorizzati e risposte GET predefinite; rifiuta le scritture;
 - blocca le richieste del frontend fuori dal server di fixture e chiude browser/server alla fine.
 
@@ -77,7 +78,6 @@ Il controllo documentale verifica i riferimenti locali, gli anchor del README, l
 Gli asset documentali seguono **la licenza proprietaria del progetto**, con uso privato non commerciale gratuito e altri usi su accordo commerciale, **non una licenza open source**. Il pacchetto runtime usa una allowlist e non include `docs/`; gli strumenti di cattura e le dipendenze temporanee non sono dipendenze di produzione. Il logo riutilizzato resta in `assets/logo.svg`.
 
 [Licenza e stato della distribuzione](../OPEN_SOURCE_READINESS.md) · [Licenza attuale](../../LICENSE.md)
-
 
 ## Refresh visuale SYNKRIS (viola e fucsia)
 
