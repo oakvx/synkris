@@ -9,7 +9,7 @@ export const releaseFiles = [
   'setup/config.example.json',
 ];
 export const requiredFiles = [
-  ...releaseFiles,'src/index.js','src/licensing/license-verifier.js','scripts/db/schema.sql','scripts/deploy/bootstrap.mjs',
+  ...releaseFiles,'deploy/backup-loop.sh','src/index.js','src/licensing/license-verifier.js','scripts/db/schema.sql','scripts/deploy/bootstrap.mjs',
   'dashboard.php','bridge.php','dashboard/view.html','dashboard/assets/app.js','dashboard/assets/app.css',
   ...['bootstrap','datetime','queries','mutations','router','calendar-outbox'].map(name=>'dashboard/api/'+name+'.php'),
   ...['apache.conf','session.php','license-guard.php'].map(name=>'deploy/'+name),
@@ -24,7 +24,7 @@ export function isReleasePath(name) {
   if (segments.some(s=>['node_modules','.git','runtime','secrets','.cache','artifacts','.wwebjs_auth','.wwebjs_cache'].includes(s.toLowerCase()))) return false;
   if (name.includes('/.env') || (segments.at(-1).startsWith('.') && name!=='.env.example' && name!=='.dockerignore')) return false;
   if (releaseFiles.includes(name)) return true;
-  const extensions = {src:/\.(js|mjs|cjs)$/,dashboard:/\.(js|css|html|php)$/,deploy:/\.(conf|php)$/,assets:/\.(svg|png|jpg|jpeg|webp|woff2?)$/,strumenti:/\.ps1$/,scripts:/\.(js|mjs|cjs|sql)$/};
+  const extensions = {src:/\.(js|mjs|cjs)$/,dashboard:/\.(js|css|html|php)$/,deploy:/\.(conf|php|sh)$/,assets:/\.(svg|png|jpg|jpeg|webp|woff2?)$/,strumenti:/\.ps1$/,scripts:/\.(js|mjs|cjs|sql)$/};
   return Boolean(extensions[segments[0]]?.test(name));
 }
 export function collectReleaseFiles(root) {

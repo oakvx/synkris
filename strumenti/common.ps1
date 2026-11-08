@@ -108,21 +108,33 @@ function New-DatabaseBackup {
     New-Item -ItemType Directory -Force -Path $folder | Out-Null
     $name = 'synk-' + [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss') + '.dump'
     $dest = Join-Path $folder $name
-    if (Test-Path -LiteralPath $dest) { throw 'Backup con lo stesso nome gia esistente. Riprova tra un secondo.' }
-    # Never redirect binary pg_dump output through PowerShell (corrupts dumps in 5.1).
+    if ((Test-Path -LiteralPath $dest) -or (Test-Path -LiteralPath ($dest + '.sha256'))) { throw 'Backup con lo stesso nome gia esistente. Riprova tra un secondo.' }
+    # Copy binary bytes to a private staging file; never redirect pg_dump in PS 5.1.
+    $temporary = Join-Path $folder ('.synk-pending-' + [Guid]::NewGuid().ToString('N'))
     $remote = '/tmp/' + $name
+    $publishedHash = $false; $complete = $false
     try {
         Invoke-Compose -Arguments @('exec','-T','postgres','sh','-c',('umask 077; pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc -f ' + $remote)) | Out-Null
         Invoke-Compose -Arguments @('exec','-T','postgres','pg_restore','--list',$remote) | Out-Null
-        Invoke-Compose -Arguments @('cp',('postgres:' + $remote),$dest) | Out-Null
-        if ((Get-Item -LiteralPath $dest).Length -lt 1) { throw 'Backup vuoto.' }
-        $hash = (Get-FileHash -LiteralPath $dest -Algorithm SHA256).Hash.ToLowerInvariant()
-        Write-Utf8File ($dest + '.sha256') ($hash + '  ' + $name + "`n")
+        $digest = ((@(Invoke-Compose -Arguments @('exec','-T','postgres','sha256sum',$remote)) -join '').Split(' ')[0]).ToLowerInvariant()
+        if ($digest -notmatch '^[a-f0-9]{64}$') { throw 'Checksum del backup remoto non disponibile.' }
+        Invoke-Compose -Arguments @('cp',('postgres:' + $remote),$temporary) | Out-Null
+        if ((Get-Item -LiteralPath $temporary).Length -lt 1) { throw 'Backup vuoto.' }
+        $hash = (Get-FileHash -LiteralPath $temporary -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($hash -cne $digest) { throw 'Checksum dopo la copia non corrispondente: il backup non viene pubblicato.' }
+        Write-Utf8File ($temporary + '.sha256') ($hash + '  ' + $name + "`n")
+        [IO.File]::Move(($temporary + '.sha256'),($dest + '.sha256'))
+        $publishedHash = $true
+        [IO.File]::Move($temporary,$dest)
+        $complete = $true
         return $dest
     } finally {
+        foreach ($file in @($temporary,($temporary + '.sha256'))) { if (Test-Path -LiteralPath $file) { Remove-Item -LiteralPath $file -Force } }
+        if ($publishedHash -and -not $complete) { Remove-Item -LiteralPath ($dest + '.sha256') -Force }
         try { Invoke-Compose -Arguments @('exec','-T','postgres','rm','-f',$remote) | Out-Null } catch { Write-Warning 'Pulizia del file temporaneo nel container non riuscita.' }
     }
 }
+
 function Assert-CodePath([string]$Path) {
     if (Test-Path -LiteralPath $Path) {
         if (((Get-Item -LiteralPath $Path -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Junction o link non ammessi nei percorsi del codice.' }

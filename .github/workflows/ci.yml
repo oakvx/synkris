@@ -24,6 +24,8 @@ jobs:
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npm run check
       - run: npm test
+      - name: Atomic backup producer (synthetic PostgreSQL tools)
+        run: node --test tests/integration/backup-loop.mjs
       - name: Offline documentation, assets and licensing consistency
         if: matrix.node == 22
         run: python3 docs/readme/check-assets.py
