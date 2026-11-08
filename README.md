@@ -1,10 +1,10 @@
 <div align="center">
 
-<img src="docs/assets/synkris-hero.svg" alt="SYNKRIS presenta synk: meno gestione, più relazione. Illustrazione concettuale in viola e fucsia." width="100%">
+<img src="docs/assets/synkris-hero.svg" alt="SYNKRIS / synk: sistema di gestione per saloni. Grafica editoriale viola e fucsia." width="100%">
 
 # SYNKRIS · synk
 
-### Il tuo salone, in sintonia. Anche quando l'agenda si complica.
+### Agenda, messaggi e disponibilità. In un unico sistema.
 
 **synk** è un sistema di automazione per attività che lavorano su appuntamento. Riunisce gestione dei clienti, organizzazione del team, conversazioni WhatsApp e integrazione con Google Calendar in un'esperienza pensata per chi deve occuparsi delle persone, non rincorrere i messaggi.
 
@@ -16,11 +16,11 @@
 
 ---
 
-## Meno tempo a organizzare. Più tempo per il tuo lavoro.
+## Un punto di controllo per il lavoro quotidiano
 
 Un cliente scrive mentre sei impegnato. Un altro chiede un appuntamento. Una collega cambia disponibilità. Poi c'è da controllare il calendario, rispondere, registrare e verificare che tutto sia andato a buon fine.
 
-**synk nasce per rendere questo lavoro più ordinato.** Il sistema è progettato per affiancare il salone nella gestione operativa, automatizzando i passaggi ripetitivi e lasciando al team la possibilità di intervenire.
+**synk collega richieste, appuntamenti e attività del team.** Automatizza i passaggi previsti dalla configurazione e lascia visibili le operazioni da verificare o affidare a un operatore.
 
 <img src="docs/assets/synkris-benefits.svg" width="100%" alt="Tre benefici: meno interruzioni, agenda più chiara, più tempo per la relazione con i clienti.">
 
@@ -102,6 +102,40 @@ Ogni attività ha trattamenti, orari, abitudini e modalità di gestione differen
 **[Richiedi informazioni o una demo di collaudo](https://github.com/oakvx/synkris/issues/new?template=richiesta-demo.yml)**
 
 <sub>La richiesta avviene tramite GitHub e può essere pubblica: non inserire contatti personali, dati di clienti, credenziali o informazioni riservate. Non si tratta di un ordine o di un'attivazione immediata.</sub>
+
+</div>
+
+---
+
+## Tech Stack & GitHub
+
+<div align="center">
+
+**Tecnologie utilizzate nel repository**
+
+<img alt="Node.js 22 e 24" src="https://img.shields.io/badge/Node.js-22%20%2F%2024-7540B8?style=flat-square&labelColor=170C29">
+<img alt="JavaScript ESM" src="https://img.shields.io/badge/JavaScript-ESM-C12CAC?style=flat-square&labelColor=170C29">
+<img alt="PHP 8.3" src="https://img.shields.io/badge/PHP-8.3-7540B8?style=flat-square&labelColor=170C29">
+<img alt="PostgreSQL 16" src="https://img.shields.io/badge/PostgreSQL-16-7540B8?style=flat-square&labelColor=170C29">
+<img alt="Docker Compose" src="https://img.shields.io/badge/Docker-Compose-C12CAC?style=flat-square&labelColor=170C29">
+<img alt="Google Calendar API" src="https://img.shields.io/badge/Google-Calendar%20API-7540B8?style=flat-square&labelColor=170C29">
+<img alt="WhatsApp Web non ufficiale" src="https://img.shields.io/badge/WhatsApp-Web%20non%20ufficiale-C12CAC?style=flat-square&labelColor=170C29">
+<img alt="Ollama opzionale" src="https://img.shields.io/badge/Ollama-opzionale-7540B8?style=flat-square&labelColor=170C29">
+<img alt="PowerShell" src="https://img.shields.io/badge/PowerShell-5.1%20%2F%207-C12CAC?style=flat-square&labelColor=170C29">
+
+**Repository · dati aggiornati da GitHub**
+
+<a href="https://github.com/oakvx/synkris/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/oakvx/synkris?style=flat-square&amp;label=stars&amp;color=C12CAC&amp;labelColor=170C29"></a>
+<a href="https://github.com/oakvx/synkris/forks"><img alt="GitHub forks" src="https://img.shields.io/github/forks/oakvx/synkris?style=flat-square&amp;label=forks&amp;color=7540B8&amp;labelColor=170C29"></a>
+<a href="https://github.com/oakvx/synkris/issues"><img alt="GitHub issues aperte" src="https://img.shields.io/github/issues/oakvx/synkris?style=flat-square&amp;label=issues&amp;color=C12CAC&amp;labelColor=170C29"></a>
+<a href="https://github.com/oakvx/synkris/commits/master/"><img alt="Ultimo commit nel branch master" src="https://img.shields.io/github/last-commit/oakvx/synkris/master?style=flat-square&amp;label=ultimo%20commit&amp;color=7540B8&amp;labelColor=170C29"></a>
+<a href="https://github.com/oakvx/synkris/actions/workflows/ci.yml"><img alt="Stato GitHub Actions CI del branch master" src="https://github.com/oakvx/synkris/actions/workflows/ci.yml/badge.svg?branch=master"></a>
+
+**Accessi al README** · contatore di caricamenti di terze parti
+
+<img alt="Visualizzazioni approssimative del README rilevate dal contatore esterno" src="https://visitor-badge.laobi.icu/badge?page_id=oakvx.synkris">
+
+<sub>Stars, forks, issues e CI provengono da GitHub (Shields.io rende le metriche). Il contatore esterno conta richieste alla sua immagine: **non** equivale alle visite ufficiali né a visitatori unici. Le visite reali sono disponibili al proprietario in <a href="https://github.com/oakvx/synkris/graphs/traffic">GitHub Insights → Traffic</a>. I badge non attestano la prontezza della release per la produzione.</sub>
 
 </div>
 
