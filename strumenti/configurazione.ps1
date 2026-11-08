@@ -111,14 +111,31 @@ function New-SynkSalonConfiguration {
     return [ordered]@{salonName=$salonName;professionals=$professionals;services=$services;businessHours=$hours;closedDays=$closed;lunchBreaks=$breaks;unavailability=@{}}
 }
 function Initialize-SynkSalonConfiguration {
+    param([switch]$Reconfigure)
+    $marker = Join-Path $script:SynkRoot 'runtime/config/.synkris-bootstrap-ok'
+    if ($Reconfigure -and (Test-Path -LiteralPath $marker)) { throw 'Configurazione gia importata: modifica team, trattamenti e orari dalla dashboard. Nessun reimport automatico.' }
     $destination = Join-Path $script:SynkRoot 'setup/config.json'
-    if (Test-Path -LiteralPath $destination -PathType Leaf) {
+    $existing = Test-Path -LiteralPath $destination -PathType Leaf
+    if ($existing -and -not $Reconfigure) {
         Write-Host 'Configurazione iniziale gia presente: non viene sovrascritta.'
         return
     }
+    if ($existing -and (Read-SynkText 'Rifare il file iniziale con backup? RICONFIGURA / ANNULLA' 'ANNULLA' '^(RICONFIGURA|ANNULLA)$') -cne 'RICONFIGURA') { throw 'Configurazione esistente mantenuta.' }
     $config = New-SynkSalonConfiguration
     Write-Host ('Riepilogo: ' + $config.professionals.Count + ' persone, ' + $config.services.Count + ' trattamenti, ' + $config.businessHours.Count + ' giorni aperti.')
     if ((Read-SynkText 'Salvare? S/N' 'S' '^[sSnN]$') -ine 'S') { throw 'Configurazione annullata: nessun file salvato.' }
-    Write-SynkPrivateFile $destination (($config | ConvertTo-Json -Depth 12) + "`n")
+    $encoded = ($config | ConvertTo-Json -Depth 12) + "`n"
+    if ($existing) {
+        $id = [Guid]::NewGuid().ToString('N')
+        $staging = Join-Path $script:SynkRoot ('runtime/setup-staging/config-' + $id + '.json')
+        $backup = Join-Path $script:SynkRoot ('runtime/setup-backups/config-' + $id + '.json')
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $backup) | Out-Null
+        Protect-LocalPath (Split-Path -Parent $backup) -Directory
+        try {
+            Write-SynkPrivateFile $staging $encoded
+            [IO.File]::Replace($staging,$destination,$backup)
+        } finally { if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Force } }
+        Write-Host 'File iniziale precedente conservato nella cartella privata runtime/setup-backups.'
+    } else { Write-SynkPrivateFile $destination $encoded }
     Write-Host 'Configurazione salvata. Dopo il primo import si modifica dalla dashboard.'
 }
