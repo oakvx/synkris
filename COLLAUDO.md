@@ -1,8 +1,19 @@
-# synk 1.2 RC5 - protocollo di collaudo (non eseguito su Windows reale)
+# synk 1.2 RC6 - protocollo di collaudo (non eseguito su Windows reale)
 
-Questa versione ha superato le verifiche statiche e i test Node in ambiente isolato.
+La ricostruzione RC6 richiede una nuova verifica completa. I test automatici
+sono descritti in REPORT_RICOSTRUZIONE_RC6.md e non attestano il collaudo reale.
 **La firma di questa checklist richiede un PC di prova con i calendari e la sessione
 WhatsApp del salone.** Non usare dati reali prima di completarla.
+
+## Ricostruzione RC6 (obbligatorio)
+- [ ] Verificare con il tecnico la nuova dashboard: nessuna parita presunta con i file persi.
+- [ ] Login/logout, scadenza sessione, token CSRF e accesso negato ai file interni.
+- [ ] Servizi/operatrici/abilitazioni, ordine servizi e buffer per operatrice modificati dalla dashboard.
+- [ ] Una risposta incerta/non disponibile non mostra un salvataggio riuscito; nessun fallback localStorage.
+- [ ] Distinguere salvataggio DB, Calendar in coda e Calendar da verificare; niente modifiche su job pendenti.
+- [ ] Verificare import OpenWA v4, stato CONNECTED, shutdown del browser, QR, sessione persistente e riconnessione con account di prova.
+- [ ] Verificare sandbox Chromium sul PC Docker/WSL2: nessun bypass implicito di sandbox o TLS.
+- [ ] Esaminare npm audit e approvare/correggere le dipendenze prima di dati reali.
 
 ## Installazione e sicurezza
 - [ ] Docker Desktop/WSL2 si avvia dopo login Windows; i container tornano attivi senza interventi.

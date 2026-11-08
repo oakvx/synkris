@@ -1,0 +1,64 @@
+name: Prerelease
+on:
+  workflow_dispatch:
+    inputs:
+      create_draft:
+        description: 'Create a private DRAFT prerelease after checks (never publish)'
+        type: boolean
+        required: true
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: prerelease-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  checks:
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+  package:
+    needs: checks
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run release:package
+      - name: Check clean provenance
+        run: |
+          node --input-type=module -e "import fs from 'node:fs'; const m=JSON.parse(fs.readFileSync('artifacts/RELEASE-MANIFEST.json')); if(m.sourceDirty || m.sourceCommit!==process.env.GITHUB_SHA) throw new Error('Unclean release source');"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: synk-prerelease
+          path: |
+            artifacts/synk-*.zip
+            artifacts/synk-*.zip.sha256
+            artifacts/RELEASE-MANIFEST.json
+          if-no-files-found: error
+          retention-days: 30
+      - name: Create draft prerelease only on explicit request
+        if: inputs.create_draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$ ]]
+          TAG="v$VERSION"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release already exists: $TAG. Refusing to overwrite."
+            exit 1
+          fi
+          gh release create "$TAG" \
+            "artifacts/synk-$VERSION.zip" \
+            "artifacts/synk-$VERSION.zip.sha256" \
+            "artifacts/RELEASE-MANIFEST.json" \
+            --target "$GITHUB_SHA" --draft --prerelease \
+            --title "synk $VERSION — ricostruzione per collaudo" \
+            --notes-file .github/prerelease-notes.md

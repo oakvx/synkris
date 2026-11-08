@@ -20,3 +20,10 @@ keys
 licenses
 configs & dashboard
 **/dashboard_dump.json
+
+.cache
+artifacts
+coverage
+.github
+setup/config.json
+README.md

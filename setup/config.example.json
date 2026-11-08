@@ -1,0 +1,31 @@
+{
+  "professionals": {
+    "operatrice@example.com": { "name": "Operatrice dimostrativa" }
+  },
+  "services": {
+    "Manicure": {
+      "durationMin": 30,
+      "price": 25,
+      "professionals": ["operatrice@example.com"],
+      "professionalDurations": { "operatrice@example.com": 30 },
+      "synonyms": ["manicure classica"]
+    }
+  },
+  "businessHours": {
+    "1": ["09:00", "18:00"],
+    "2": ["09:00", "18:00"],
+    "3": ["09:00", "18:00"],
+    "4": ["09:00", "18:00"],
+    "5": ["09:00", "18:00"],
+    "6": ["09:00", "13:00"]
+  },
+  "closedDays": [7],
+  "lunchBreaks": {
+    "1": ["13:00", "14:00"],
+    "2": ["13:00", "14:00"],
+    "3": ["13:00", "14:00"],
+    "4": ["13:00", "14:00"],
+    "5": ["13:00", "14:00"]
+  },
+  "unavailability": {}
+}

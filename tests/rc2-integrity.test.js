@@ -1,9 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {readFileSync} from 'node:fs';
+import {readFileSync,mkdtempSync,mkdirSync,writeFileSync,rmSync} from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
 import {validateSlotRequest,overlapsBusyEvents,checkCalendarSlot} from '../src/services/calendar-guard.js';
 import {findMentionedServices,createMultiBookingConversation} from '../src/services/multi-booking-chat.js';
-import {calendarPauseFile} from '../src/services/calendar-maintenance.js';
+import {calendarPauseFile,isCalendarPaused} from '../src/services/calendar-maintenance.js';
 const read=rel=>readFileSync(new URL('../'+rel,import.meta.url),'utf8');
 const slot={professionalId:2,appointmentId:42,start:'2026-12-03T10:00:00+01:00',end:'2026-12-03T11:00:00+01:00'};
 test('calendar slot validator refuses malformed and excessive intervals',()=>{
@@ -59,5 +61,24 @@ test('technician update recognizes flat ZIP and restore blocks unsafe replay',()
  assert.match(php,/assert_calendar_not_suspended/);
 });
 test('maintenance flag is a local persistent runtime file',()=>{
- assert.equal(calendarPauseFile({APP_DATA_DIR:'/app/runtime/config'},'/app'),'/app/runtime/config/calendar-reconciliation-required.flag');
+ const cwd=path.resolve('synthetic-salon');
+ const data=path.join(cwd,'runtime','config');
+ assert.equal(calendarPauseFile({APP_DATA_DIR:data},cwd),path.join(data,'calendar-reconciliation-required.flag'));
+});
+test('maintenance flag resolves relative data paths beneath a working directory with spaces',()=>{
+ const cwd=path.resolve('synthetic salon');
+ assert.equal(calendarPauseFile({APP_DATA_DIR:'runtime/config'},cwd),path.join(cwd,'runtime','config','calendar-reconciliation-required.flag'));
+});
+test('maintenance stays paused while the local reconciliation flag exists',()=>{
+ const cwd=mkdtempSync(path.join(os.tmpdir(),'synk-maintenance-'));
+ const env={APP_DATA_DIR:'runtime/config'};
+ const flag=path.join(cwd,'runtime','config','calendar-reconciliation-required.flag');
+ try {
+  assert.equal(isCalendarPaused(env,cwd),false);
+  mkdirSync(path.dirname(flag),{recursive:true});
+  writeFileSync(flag,'reconciliation required\n');
+  assert.equal(isCalendarPaused(env,cwd),true);
+  rmSync(flag);
+  assert.equal(isCalendarPaused(env,cwd),false);
+ } finally { rmSync(cwd,{recursive:true,force:true}); }
 });

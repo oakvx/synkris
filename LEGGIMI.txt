@@ -1,4 +1,4 @@
-SYNK 1.2 RC5  |  RELEASE CANDIDATA AL COLLAUDO
+SYNK 1.2 RC6  |  RELEASE CANDIDATA AL COLLAUDO
 ================================================
 
 USO QUOTIDIANO - SALONE
@@ -7,7 +7,7 @@ USO QUOTIDIANO - SALONE
   2) Apri APRI_SYNK.bat, effettua il login alla dashboard.
   3) Crea, modifica e annulla le prenotazioni SOLO nella sezione
      Gestione appuntamenti, collegata a PostgreSQL e al controllo Calendar.
-     Le vecchie viste Calendario/Prenotazioni sono consultive.
+     Le vecchie viste browser non sono distribuite nella dashboard ricostruita.
      Se necessario puoi registrare una nuova cliente nello stesso editor.
      Le modifiche ai dati avvengono dalla dashboard, non dai file JSON.
   4) In Centro operativo verifica gli avvisi. Se Calendar non risponde,
@@ -18,7 +18,9 @@ USO QUOTIDIANO - SALONE
 PER IL TECNICO (PRIMA INSTALLAZIONE)
   - Windows + Docker Desktop con WSL2; installa Docker e abilita l'avvio
     quando l'utente accede a Windows. Non esporre porte su LAN/Internet.
-  - Popola setup/config.json dai dati reali del salone.
+  - Copia setup/config.example.json in setup/config.json e personalizzalo
+    con i dati reali del salone (anche lo script di installazione puo creare
+    l'esempio, fermandosi fino alla personalizzazione).
   - Inserisci SOLO sul PC del salone in secrets/:
       license.txt, license-public.pem, google-service-account.json
     Condividi ogni calendario operativo con il service account e
@@ -60,7 +62,7 @@ MANUTENZIONE (SOLO TECNICO)
 ARCHITETTURA E RISCHI
   - Le vecchie prenotazioni eventualmente conservate soltanto nella
     memoria del browser NON sono importate automaticamente ne eliminate:
-    vanno confrontate con PostgreSQL prima di utilizzare RC5.
+    vanno confrontate con PostgreSQL prima di utilizzare RC6.
   - PostgreSQL locale nel volume Docker, dashboard PHP, bot Node/OpenWA,
     Google Calendar per le agende; Ollama facoltativo e locale.
   - Google Calendar e WhatsApp necessitano di Internet. OpenWA e' un client
@@ -74,3 +76,7 @@ ARCHITETTURA E RISCHI
 PRIMA DI USARLO CON CLIENTI REALI: esegui l'intero COLLAUDO.md.
 Il codice e i test automatici NON sostituiscono un collaudo Windows/Docker,
 OpenWA reale, Google Calendar, SMTP e restore/recovery su una macchina di prova.
+
+RC6: dashboard e strumenti ricostruiti, non recuperati dagli originali.
+Leggi REPORT_RICOSTRUZIONE_RC6.md e RELEASE.md per controlli e limiti aperti.
+Le dipendenze hanno avvisi di sicurezza da valutare prima di un uso reale.

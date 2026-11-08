@@ -4,7 +4,7 @@ import path from 'node:path';
 import { DATA_DIR } from './storage/data-paths.js';
 import { loadAndVerifyLicense, storeLicense, verifyLicenseText } from './licensing/license-utils.js';
 import { startAdminServer } from './services/admin-server.js';
-import { whatsappOptions } from './services/whatsapp-options.js';
+import { whatsappOptions, isWhatsAppConnectedState, stopWhatsAppClient } from './services/whatsapp-options.js';
 import { log } from './core/util/logger.js';
 import { createPgPool } from './storage/postgres.js';
 import { reconcileCalendarSagas } from './services/calendar-saga.js';
@@ -195,7 +195,7 @@ async function main() {
       Promise.allSettled([...inflightMessages]),
       new Promise(resolve => setTimeout(resolve, 12_000)),
     ]);
-    try { await client?.stop?.(); } catch { }
+    try { await stopWhatsAppClient(client); } catch { }
     try { await recoveryPool.end(); } catch { }
     process.exit(exitCode);
   };
@@ -270,7 +270,7 @@ async function main() {
     timers.push(setInterval(() => {
       // Alcune versioni di OpenWA espongono getState() asincrono.
       Promise.resolve(client.getState())
-        .then(state => { status.online = state === 'READY'; })
+        .then(state => { status.online = isWhatsAppConnectedState(state); })
         .catch(() => { status.online = false; });
     }, 15_000));
     const licenseCheckMinutes = Number(process.env.LICENSE_CHECK_INTERVAL_MINUTES || 15);
