@@ -12,7 +12,7 @@ function Show-SynkAccess {
     $window.MaximizeBox = $false; $window.MinimizeBox = $false
     $window.Font = New-Object Drawing.Font('Segoe UI',10)
     $title = New-Object Windows.Forms.Label
-    $title.Text = 'La tua dashboard e pronta'; $title.Location = New-Object Drawing.Point(20,18); $title.Size = New-Object Drawing.Size(520,30)
+    $title.Text = 'Accedi alla tua dashboard'; $title.Location = New-Object Drawing.Point(20,18); $title.Size = New-Object Drawing.Size(520,30)
     $description = New-Object Windows.Forms.Label
     $description.Text = 'Questa e la password gia salvata su questo PC. Conservala nel tuo gestore password. Non viene ruotata o inviata a nessuno.'
     $description.Location = New-Object Drawing.Point(20,52); $description.Size = New-Object Drawing.Size(520,50)

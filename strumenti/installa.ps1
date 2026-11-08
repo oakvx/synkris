@@ -1,12 +1,34 @@
-param([switch]$Reconfigure)
+param([switch]$Reconfigure, [switch]$Menu)
 . (Join-Path $PSScriptRoot 'common.ps1')
 . (Join-Path $PSScriptRoot 'configurazione.ps1')
 . (Join-Path $PSScriptRoot 'credenziali.ps1')
 . (Join-Path $PSScriptRoot 'ambiente.ps1')
 . (Join-Path $PSScriptRoot 'preflight.ps1')
 . (Join-Path $PSScriptRoot 'accesso.ps1')
+. (Join-Path $PSScriptRoot 'avvio.ps1')
+. (Join-Path $PSScriptRoot 'avvio-automatico.ps1')
+. (Join-Path $PSScriptRoot 'supporto.ps1')
+. (Join-Path $PSScriptRoot 'menu.ps1')
 $mutex = $null
 try {
+    if ($Menu) {
+        switch (Select-SynkTool) {
+            'exit' { exit 0 }
+            'start' { Start-SynkServices; exit 0 }
+            'doctor' { & (Join-Path $PSScriptRoot 'diagnostica.ps1'); exit $LASTEXITCODE }
+            'access' { Show-SynkAccess; exit 0 }
+            'support' { Export-SynkSupportReport | Out-Null; exit 0 }
+            'autostart-on' {
+                Write-Host 'Vale solo per questo utente, DOPO il login Windows. Non accende il PC e non sostituisce il collaudo.'
+                if ((Read-SynkText 'Conferma ATTIVA / ANNULLA' 'ANNULLA' '^(ATTIVA|ANNULLA)$') -ceq 'ATTIVA') {
+                    Set-SynkAutostart -Enabled $true
+                } else { Write-Host 'Nessun avvio automatico configurato.' }
+                exit 0
+            }
+            'autostart-off' { Set-SynkAutostart -Enabled $false; exit 0 }
+            'reconfigure' { $Reconfigure = $true }
+        }
+    }
     Write-Host 'synk - installazione guidata locale. Ctrl+C annulla; i file gia salvati restano disponibili.'
     Write-Host '[1/6] Verifica Docker Desktop e motore Linux...'
     Wait-SynkDocker -StartDesktop
