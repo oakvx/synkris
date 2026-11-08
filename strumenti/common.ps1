@@ -32,13 +32,13 @@ function Get-RandomHex([int]$Bytes = 32) {
     return ([BitConverter]::ToString($buffer)).Replace('-','').ToLowerInvariant()
 }
 function Assert-Docker {
-    if (-not (Get-Command docker -ErrorAction SilentlyContinue)) { throw 'Installa Docker Desktop con WSL2.' }
-    & docker compose version | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw 'Docker Compose v2 non disponibile.' }
-    $osType = & docker info --format '{{.OSType}}'
-    if ($LASTEXITCODE -ne 0) { throw 'Avvia Docker Desktop e attendi che sia pronto.' }
-    if ($osType -ne 'linux') { throw 'Docker Desktop deve usare i container Linux con WSL2.' }
+    # Apply the same local-daemon and project-folder safety to legacy technical
+    # entrypoints (update, restore, export, reconciliation, optional AI), not only
+    # the new installation/daily-start flow. Never fall back to a remote daemon.
+    if ((Get-SynkDockerState) -ne 'ready') { throw 'Serve Docker locale, pronto, con Compose v2 e motore Linux. Apri INSTALLA_UNA_VOLTA > Diagnostica. Nessuna operazione tecnica avviata.' }
+    Assert-SynkProjectOwnership
 }
+
 function Invoke-Compose {
     param([Parameter(Mandatory=$true)][string[]]$Arguments)
     Push-Location -LiteralPath $script:SynkRoot
@@ -195,3 +195,6 @@ function Expand-SynkRelease([string]$Archive, [string]$Destination) {
     }
     return $manifest
 }
+
+# Definitions only: no Docker command runs while loading this library.
+. (Join-Path $PSScriptRoot 'preflight.ps1')
