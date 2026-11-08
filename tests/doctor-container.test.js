@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-const read=name=>fs.readFileSync(new URL('../'+name,import.meta.url),'utf8');
+const read=name=>fs.readFileSync(new URL('../'+name,import.meta.url),'utf8').replace(/\r\n/g,'\n');
 test('offline doctor uses the installed runtime image with no network and read-only mounts',()=>{
   const compose=read('compose.yaml');const doctor=compose.split('\n  doctor:\n')[1].split('\n  ollama:\n')[0];
   assert.match(doctor,/network_mode: none/);assert.match(doctor,/read_only: true/);assert.match(doctor,/pull_policy: never/);

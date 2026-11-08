@@ -46,5 +46,25 @@ try {
     Answers @()
     Initialize-SynkSalonConfiguration
     Check ([IO.File]::ReadAllText($file) -ceq $before) 'Rerun must keep existing setup'
+    Answers @('ANNULLA')
+    $rejected=$false;try{Initialize-SynkSalonConfiguration -Reconfigure}catch{$rejected=$true}
+    Check $rejected 'Reconfiguration must require explicit consent'
+    Check ([IO.File]::ReadAllText($file) -ceq $before) 'Cancelled reconfiguration changed the original'
+    $marker=Join-Path $temp 'runtime/config/.synkris-bootstrap-ok'
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $marker) | Out-Null
+    Write-Utf8File $marker 'imported'
+    Answers @()
+    $rejected=$false;try{Initialize-SynkSalonConfiguration -Reconfigure}catch{$rejected=$true}
+    Check $rejected 'Imported configuration must not be silently reimported'
+    Remove-Item -LiteralPath $marker -Force
+    Answers @('RICONFIGURA','Nuovo salone','1','Team sintetico','team@salone.it','1','Trattamento','30','10','1','1,2,3,4,5','09:00','18:00','','S')
+    Initialize-SynkSalonConfiguration -Reconfigure
+    $backups=@(Get-ChildItem -LiteralPath (Join-Path $temp 'runtime/setup-backups') -Filter '*.json')
+    Check ($backups.Count -eq 1) 'Initial config backup missing'
+    Check ([IO.File]::ReadAllText($backups[0].FullName) -ceq $before) 'Backup must preserve original bytes'
+    Check (([IO.File]::ReadAllText($file) | ConvertFrom-Json).salonName -eq 'Nuovo salone') 'Reconfiguration not installed'
+    & node (Join-Path $PSScriptRoot 'validate-salon-fixture.mjs') $file
+    Check ($LASTEXITCODE -eq 0) 'Reconfigured setup must pass the canonical validator'
+
 } finally { $script:SynkRoot=$oldRoot;Remove-Item -LiteralPath $temp -Recurse -Force }
 Write-Host ('PASS: ' + $count + ' guided configuration checks')
