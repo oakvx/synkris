@@ -22,7 +22,7 @@ Un cliente scrive mentre sei impegnato. Un altro chiede un appuntamento. Una col
 
 **synk collega richieste, appuntamenti e attività del team.** Automatizza i passaggi previsti dalla configurazione e lascia visibili le operazioni da verificare o affidare a un operatore.
 
-<img src="docs/assets/synkris-benefits.svg" width="100%" alt="Tre benefici: meno interruzioni, agenda più chiara, più tempo per la relazione con i clienti.">
+<img src="docs/assets/synkris-benefits.svg" width="100%" alt="Tre funzioni operative: conversazioni, appuntamenti e supervisione del team.">
 
 ### Pensato per attività dove ogni appuntamento conta
 
@@ -40,6 +40,7 @@ Il modello di servizi, durate e disponibilità può essere configurato per proce
 | **Messaggi WhatsApp** | Prevede conversazioni operative e presa in carico manuale da parte del team. |
 | **Gestione del lavoro** | Considera orari settimanali, pause, chiusure, assenze e lista d'attesa con consenso. |
 | **Dashboard di controllo** | Espone stato dei servizi, attività da verificare, manutenzione e richieste privacy. |
+| **Primi passi guidati** | Wizard Windows per configurazione iniziale e checklist a sei controlli nella dashboard; assistenza e diagnostica locale. |
 | **AI locale facoltativa** | Offre un'integrazione opzionale con Ollama; non è necessaria per tutte le funzioni e non sostituisce le verifiche applicative. |
 
 Queste sono **capacità implementate nel progetto e oggetto di collaudo**, non una dichiarazione che tutte le integrazioni siano operative presso un salone reale. I risultati dipendono anche dalle impostazioni, dalla disponibilità dei provider e dai test dell'installazione.
@@ -63,7 +64,7 @@ Queste sono **capacità implementate nel progetto e oggetto di collaudo**, non u
 L'interfaccia è pensata per mostrare le informazioni utili senza nascondere gli stati operativi.
 
 > [!NOTE]
-> **Anteprime documentali, non dati di clienti reali.** Le schermate seguenti sono state renderizzate dal frontend ricostruito con **fixture sintetiche** e dati dimostrativi. Non certificano un collegamento WhatsApp o Google Calendar effettivamente funzionante.
+> **Anteprime documentali, non dati di clienti reali.** Le schermate seguenti sono state renderizzate dal frontend ricostruito con **fixture sintetiche** e dati dimostrativi. La schermata centrale include una checklist Primi passi con dati sintetici. Non certificano un collegamento WhatsApp o Google Calendar effettivamente funzionante.
 
 <p align="center"><a href="docs/assets/dashboard-overview.webp"><img src="docs/assets/dashboard-overview.webp" width="100%" alt="Dashboard synk dimostrativa con dati sintetici e stati operativi."></a></p>
 
@@ -175,8 +176,8 @@ Il sistema distingue la **registrazione transazionale nel database** dall'invio 
 | Aspetto | Stato verificato / limite |
 | --- | --- |
 | **Versione** | `1.2.0-rc.6` — prerelease ricostruita, destinata al collaudo |
-| **Test della migrazione** | Alla verifica dell'8 novembre 2026: 139 test Node locali superati |
-| **CI della base storica** | 6 job superati sul commit indicato nel [report di rilascio](REPORT_RICOSTRUZIONE_RC6.md); non è una certificazione della nuova installazione |
+| **Milestone plug-and-play** | Al commit `9ff8000` dell'8 novembre 2026: **239/239 test Node** e **6 job CI** superati; non è un test reale sul PC del salone |
+| **Test aggiuntivi** | Copertura di setup Windows, checklist, diagnosi offline e backup/restore su database sintetico; risultati e limiti in [PLUG_AND_PLAY.md](docs/PLUG_AND_PLAY.md) |
 | **Audit dipendenze** | 19 rilievi noti alla verifica dell'8 novembre 2026: **11 elevati, 8 moderati, 0 critici** |
 | **Test con provider reali** | Ancora necessari su WhatsApp, Google Calendar, SMTP, Windows e procedure di ripristino |
 | **Disponibilità commerciale** | Richiede valutazione, accordo scritto e collaudo assistito; nessun percorso self-service |
@@ -213,17 +214,19 @@ Questi comandi controllano il codice e i componenti disponibili nell'ambiente: *
 <details>
 <summary><strong>Installazione di collaudo e manutenzione su Windows</strong></summary>
 
-L'attuale percorso è **assistito da un tecnico**, con Docker Desktop / WSL2. Leggere prima [LEGGIMI.txt](LEGGIMI.txt), [RELEASE.md](RELEASE.md) e [COLLAUDO.md](COLLAUDO.md). Sono necessari configurazione riservata, chiavi e licenza firmata/HWID anche per la prova privata autorizzata.
+L'attuale percorso è **guidato da un wizard Windows**, ma rimane una installazione di collaudo che richiede assistenza tecnica e Docker Desktop / WSL2. Leggere [Primi passi](deploy/PRIMI_PASSI.md), [LEGGIMI.txt](LEGGIMI.txt), [RELEASE.md](RELEASE.md) e [COLLAUDO.md](COLLAUDO.md). Il wizard chiede team, servizi e orari senza modifiche manuali ai JSON, ma richiede ancora licenza firmata/HWID, credenziali Calendar e collaudo reale.
 
 | Operazione | Entrypoint |
 | --- | --- |
-| Prima installazione | `INSTALLA_UNA_VOLTA.bat` |
+| Prima installazione / menu strumenti | `INSTALLA_UNA_VOLTA.bat` |
 | Avvio e dashboard | `AVVIA_SYNK.bat` / `APRI_SYNK.bat` |
 | Aggiornamento tecnico | `AGGIORNA_SYNK_TECNICO.bat` |
 | Ripristino sospeso | `RIPRISTINA_BACKUP.bat` |
 | Riconciliazione Calendar | `RIATTIVA_CALENDAR_TECNICO.bat` |
 | Esportazione USB BitLocker | `ESPORTA_BACKUP_CIFRATO_TECNICO.bat` |
 | AI locale opzionale | `ATTIVA_AI_LOCALE.bat` |
+
+La dashboard mostra i **sei controlli Primi passi**; il menu locale espone diagnosi e assistenza e non avvia automaticamente l'autostart. Prima dell'uso con clienti reali restano obbligatori i collaudi con i provider.
 
 Per la migrazione WhatsApp, fermare l'istanza precedente e seguire la [guida dedicata](docs/WHATSAPP_MIGRATION.md). **Non eseguire `docker compose down -v` con dati del salone.** Il rollback del codice non annulla una migrazione del database.
 
@@ -261,6 +264,7 @@ La [licenza attuale](LICENSE.md) permette gratuitamente solo un **uso strettamen
 | Cronologia delle modifiche | [CHANGELOG.md](CHANGELOG.md) |
 | Produzione delle immagini del README | [Guida agli asset](docs/readme/README.md) |
 | Controlli automatici | [CI](.github/workflows/ci.yml) · [Prerelease](.github/workflows/prerelease.yml) |
+| Installazione Windows con wizard | [Primi passi](deploy/PRIMI_PASSI.md) · [Implementazione](docs/PLUG_AND_PLAY.md) |
 
 ---
 
