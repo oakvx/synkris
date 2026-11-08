@@ -266,7 +266,7 @@ La [licenza attuale](LICENSE.md) permette gratuitamente solo un **uso strettamen
 
 <div align="center">
 
-**SYNKRIS** · *Automazione con criterio. Persone al centro.*
+**SYNKRIS / synk** · Gestione di appuntamenti, conversazioni e operatrici.
 
 **[Richiedi informazioni](https://github.com/oakvx/synkris/issues/new?template=richiesta-demo.yml)** · **[Torna all'inizio](#synkris-synk)**
 
