@@ -1,3 +1,4 @@
+import {readOnboardingStatus} from './onboarding-status.js';
 import { salonSnapshot, topServices } from './analytics.js';
 import { getSalonSettings, setSalonSetting } from './salon-settings.js';
 import { addToWaitlist, withdrawFromWaitlist, listWaitlistOptions } from './waitlist/waitlist.js';
@@ -69,6 +70,10 @@ export function createAdminApp(state, actions, { token = process.env.ADMIN_TOKEN
   });
   app.use(express.json({ limit: '50kb' }));
   app.get('/status', (_req, res) => res.json({ online: Boolean(state.online), hasError: Boolean(state.lastError) }));
+  app.get('/api/onboarding', async (_req, res) => {
+    try { res.json(await readOnboardingStatus({state,calendarPaused:isCalendarPaused()})); }
+    catch { res.status(503).json({error:'onboarding_unavailable'}); }
+  });
   app.get('/metrics', (_req, res) => res.json({ counters: getMetrics(), online: Boolean(state.online) }));
   app.get('/api/session/qr', (_req, res) => {
     const age = Date.now() - Number(state.qrUpdatedAt || 0);
