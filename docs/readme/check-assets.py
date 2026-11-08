@@ -7,7 +7,7 @@ import json
 import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parents[2]
-DOCUMENTS = [ROOT / 'README.md', ROOT / 'docs/OPEN_SOURCE_READINESS.md', ROOT / 'docs/readme/README.md', ROOT / 'docs/WHATSAPP_MIGRATION.md']
+DOCUMENTS = [ROOT / 'README.md', ROOT / 'docs/OPEN_SOURCE_READINESS.md', ROOT / 'docs/readme/README.md', ROOT / 'docs/WHATSAPP_MIGRATION.md', ROOT / 'deploy/PRIMI_PASSI.md', ROOT / 'docs/PLUG_AND_PLAY.md']
 ASSETS = ROOT / 'docs/assets'
 checks = 0
 

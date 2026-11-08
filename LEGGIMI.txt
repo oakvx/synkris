@@ -30,22 +30,46 @@ USO QUOTIDIANO - SALONE
 PER IL TECNICO (PRIMA INSTALLAZIONE)
   - Windows + Docker Desktop con WSL2; installa Docker e abilita l'avvio
     quando l'utente accede a Windows. Non esporre porte su LAN/Internet.
-  - Copia setup/config.example.json in setup/config.json e personalizzalo
-    con i dati reali del salone (anche lo script di installazione puo creare
-    l'esempio, fermandosi fino alla personalizzazione).
-  - Inserisci SOLO sul PC del salone in secrets/:
+  - Estrai TUTTO lo ZIP in una cartella locale fissa, non condivisa o cloud.
+    Non avviare i file dentro lo ZIP. Node/PHP sono nei container, non servono
+    sul PC. Guida completa: deploy/PRIMI_PASSI.md.
+  - Avvia INSTALLA_UNA_VOLTA.bat e premi Invio: wizard per salone, team,
+    trattamenti e orari, senza JSON manuali. Importa i tre file originali:
       license.txt, license-public.pem, google-service-account.json
-    Condividi ogni calendario operativo con il service account e
-    verifica che il calendario dell'operatrice sia accessibile.
-  - Avvia INSTALLA_UNA_VOLTA.bat, conserva la password della dashboard.
-  - Configura CALENDAR_ID e verifica creazione, spostamento, annullamento
-    e sincronizzazione entrante. Un errore Google deve bloccare la conferma.
+    Puoi trascinarli nella console o incollare il PERCORSO, non il contenuto.
+    Fornisci APP_HWID della tua attivazione e ID del calendario Google.
+  - Condividi ogni calendario operativo con il service account. Il doctor
+    offline controlla forma, firma/HWID e chiavi, non la condivisione Google.
+  - La password dashboard appare mascherata in una finestra locale: copia e
+    rivelazione solo su clic. Non viene stampata o rigenerata. La chiusura non
+    cancella la cronologia appunti/cloud Windows. Usa un gestore password.
+  - Segui Primi passi nel Centro operativo: database, attivazione, catalogo,
+    WhatsApp, Calendar e backup. Anche 6/6 non attestano il collaudo reale.
+  - Verifica creazione, spostamento, annullamento e sync entrante Calendar.
+    Un errore Google deve bloccare la conferma.
   - Associa la sessione WhatsApp col QR, verifica riavvio e riconnessione.
   - Abilita MULTI_BOOKING_WHATSAPP_ENABLED=1 soltanto dopo il collaudo.
     Il bot riconosce /multi e richieste naturali esplicite per 2 servizi;
     chiede sempre consenso e conferma prima di inserire una richiesta.
   - AI locale Ollama opzionale con ATTIVA_AI_LOCALE.bat.
   - Crittografia del PC (BitLocker) consigliata; imposta una password Windows.
+
+MENU INSTALLA_UNA_VOLTA - GLI STESSI STRUMENTI IN UN PUNTO
+  1 Installa/riprendi; 2 Avvia; 3 Diagnostica offline; 4 Finestra password;
+  5 Report assistenza LOCALE; 6 Attiva autostart con conferma; 7 Disattivalo;
+  8 Rifai configurazione iniziale; 9 Correggi file privato iniziale; 0 Esci.
+  - 8 e 9 funzionano SOLO prima del primo import: conferma e backup privato.
+    In 9 la verifica fallita ripristina l'originale; nessun servizio avviato.
+    Per rinnovi/rotazioni dopo l'import serve il tecnico.
+  - L'autostart e' facoltativo e NON viene abilitato dall'installazione:
+    collegamento per l'utente, dopo login, non servizio e non a PC spento.
+    Non salva la password Windows; non apre il browser. Prima di spostare
+    la cartella, disattivalo dalla vecchia copia.
+  - Il report in runtime/support/ seleziona solo stati conosciuti, versione
+    e piattaforma. Non copia log grezzi, chat, contatti, QR, HWID o credenziali.
+    Non viene caricato/inviato: rileggilo prima di condividerlo. Non inviare
+    .env, secrets/, sessioni, dump o runtime/private-file-backups/.
+  - APRI_SYNK / AVVIA_SYNK sono il percorso giornaliero senza build/pull.
 
 PASSAGGIO DA OPENWA (SOLO TECNICO)
   - La versione usa whatsapp-web.js 1.34.7 (Apache-2.0), non OpenWA.
@@ -73,7 +97,9 @@ MANUTENZIONE (SOLO TECNICO)
     protetta con BitLocker; confronta SHA256 prima di dichiarare riuscita.
     Non copia se la cifratura del supporto non e' verificabile.
   - I backup DB automatici sono locali, una volta ogni circa 24 ore,
-    conservati per 14 giorni. Non comprendono QR, chat WhatsApp remota,
+    conservati per 14 giorni. Sono pubblicati dopo staging, controllo struttura
+    e SHA256: non e' una certificazione di restore o copia esterna cifrata.
+    Non comprendono QR, chat WhatsApp remota,
     segreti, credenziali Google o licenze.
   - Le email anomalia sono DISATTIVATE finche' il tecnico configura
     ALERT_EMAIL_ENABLED=1 e credenziali SMTP del salone. Nessun dato

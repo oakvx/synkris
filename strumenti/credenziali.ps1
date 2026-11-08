@@ -49,8 +49,8 @@ function Initialize-SynkCredentials {
     Write-Host 'Il controllo offline non puo verificare la condivisione: il collaudo Calendar resta necessario.'
 }
 
-# Explicit recovery for an INITIAL setup only. No runtime file/config/DB or
-# signing private key is changed. Containers must already be stopped; validation
+# Explicit recovery for an INITIAL setup only. Imported catalog/runtime state,
+# DB and signing private keys are not changed. Containers must already be stopped; validation
 # uses the existing isolated doctor and original production signature verifier.
 function Repair-SynkInitialCredential {
     param([ValidateSet('license.txt','license-public.pem','google-service-account.json')][string]$Name, [string]$Source)

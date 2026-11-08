@@ -191,9 +191,9 @@ save('booking-flow.svg', 'Il flusso di una prenotazione', 'Scelta dei servizi, v
 # Honest status strip. It is explicitly a dated snapshot, not a live badge.
 b = rect(0, 0, 1280, 328, CREAM, 22)
 b += text(40, 51, 'Verifiche verdi. Nessun via libera automatico.', 29, INK, 650)
-b += text(42, 83, '8 novembre 2026 · CI base bdee2e5 · audit del lockfile migrato · nessun badge live', 14, MUTED)
+b += text(42, 83, '8 novembre 2026 · milestone 9ff8000 · audit del lockfile migrato · nessun badge live', 14, MUTED)
 status = [
-    ('check', 'TEST LOCALI', '139 test Node', 'CI base: 6/6 · nuova CI nella PR', GREEN, '#e6efe3'),
+    ('check', 'TEST LOCALI', '239 test Node', 'CI 9ff8000: 6/6 · controlla il tuo ref', GREEN, '#e6efe3'),
     ('lock', 'LICENZA', 'Proprietaria', 'Privato gratuito · altri usi su accordo', AMBER, '#f7ead3'),
     ('shield', 'DIPENDENZE', '11 rilievi elevati', '19 totali · 0 critici nell’audit', AMBER, '#f7ead3'),
     ('calendar', 'USO REALE', 'Collaudo richiesto', 'Provider, recovery e PC del salone', AMBER, '#f7ead3'),
@@ -206,6 +206,6 @@ for i, (key, label, value, note, color, fill) in enumerate(status):
     b += text(x + 64, 149, label, 10, MUTED, 650, 'letter-spacing=".8"')
     b += text(x + 19, 198, value, 21, color, 650)
     b += text(x + 19, 238, note, 11, MUTED)
-save('readiness.svg', 'Stato reale della release al 2026-11-08', 'CI della base bdee2e5: 6 job verdi e 92 test Node. Il modello scelto è proprietario/source-available: uso privato non commerciale gratuito, altri usi su accordo commerciale. Non è open source. OpenWA rimosso; nuovo provider whatsapp-web.js Apache-2.0. Test locali della migrazione: 139. Audit: 19 rilievi, 11 elevati, zero critici. La CI storica non sostituisce quella della nuova PR. Restano i collaudi reali. Questi numeri sono uno snapshot, non un controllo live.', 1280, 328, b)
+save('readiness.svg', 'Stato reale della release al 2026-11-08', 'CI del milestone plug-and-play 9ff8000: 6 job verdi, 239 test Node. Doctor Compose effettivo isolato e restore PostgreSQL 16 su dati CI sintetici, non sul PC destinatario. Il modello scelto è proprietario/source-available: uso privato non commerciale gratuito, altri usi su accordo commerciale. Non è open source. OpenWA rimosso; nuovo provider whatsapp-web.js Apache-2.0. Test Node locali: 239, zero skip. Audit: 19 rilievi, 11 elevati, zero critici. La CI del milestone non sostituisce quella dei commit successivi. Restano i collaudi reali. Questi numeri sono uno snapshot, non un controllo live.', 1280, 328, b)
 
 print(f'Generated 6 self-contained SVG assets in {OUT}')

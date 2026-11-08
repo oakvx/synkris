@@ -120,6 +120,8 @@ try {
   await page.goto(origin,{waitUntil:'networkidle0'});
   await page.waitForSelector('#statusCards .card');
   assert.equal(await page.$eval('#pageError',node=>node.hidden),true);
+  assert.equal(await page.$eval('#onboardingList',node=>node.children.length),6);
+  assert.equal(await page.$eval('#onboardingProgress',node=>node.value),3);
   await page.screenshot({path:path.join(output,'dashboard-overview.webp'),type:'webp',quality:88});
   await page.evaluate(()=>synkShowPage('appointments'));
   await page.waitForSelector('#appointmentList tbody tr');

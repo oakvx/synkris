@@ -1,6 +1,6 @@
 # synk: licenza scelta e stato della distribuzione
 
-**Valutazione dell’8 novembre 2026.** La CI storica è riferita alla base `bdee2e5`; test locali, lockfile, audit e SBOM qui aggiornati si riferiscono alla migrazione a whatsapp-web.js. Verificare sempre anche la CI del commit effettivo della PR.
+**Valutazione dell’8 novembre 2026.** Il milestone plug-and-play `9ff8000` ha 6 job CI verdi e 239 test Node; audit e SBOM mantengono il lockfile migrato a whatsapp-web.js. Verificare la CI del commit effettivo, non solo lo snapshot storico. [Guida e confini delle prove](PLUG_AND_PLAY.md).
 
 ## Risposta breve
 
@@ -19,14 +19,17 @@ Questa è una valutazione tecnica e documentale, **non un parere legale**. La li
 
 ## 1. Che cosa è già verificato
 
-La [CI sul commit di base](https://github.com/oakvxish/synkris/actions/runs/42504896463) aveva completato tutti i **6 job**, con **92 test Node**:
+La [CI plug-and-play `9ff8000`](https://github.com/oakvx/synkris/actions/runs/42527797589) ha completato tutti i **6 job**:
 
-- Node.js 22 e 24.
-- PHP 8.3 nativo con `pdo_pgsql`, `curl`, `sodium`, più integrazione PostgreSQL 16.
-- Windows PowerShell 5.1 e PowerShell 7: build, parser, ZIP e conservazione dei percorsi privati.
-- Build Docker, contratto d’importazione delle dipendenze e smoke test del confine Apache.
+- Node.js 22 e 24: **239 test**, zero fallimenti/skip.
+- PHP 8.3 nativo con `pdo_pgsql`, `curl`, `sodium`, integrazione PostgreSQL 16,
+  proxy/checklist e roundtrip backup/restore su DB CI sintetico separato.
+- Windows PowerShell 5.1 e PowerShell 7: parser, ZIP, configuratore, import,
+  avvio, proprietà progetto, autostart COM solo in TEMP, report e correzione iniziale.
+- Build Docker, import SDK, smoke Apache e doctor effettivo senza rete o avvio
+  dipendenze/DB, senza creare marker import o volumi dati.
 
-**Per la migrazione** sono stati rieseguiti localmente installazione da lockfile, `npm run check` e **139 test Node**, inclusi i contratti del nuovo provider e gli esiti incerti. La CI ora importa il nuovo SDK nell’immagine di produzione e controlla anche asset, link e metadati di licenza. Consultare l’esecuzione della PR per i risultati dei runner sul nuovo commit: il verde della base **non è** la prova della nuova build.
+La migrazione precedente aveva **139 test Node** e la [relativa CI riuscita](https://github.com/oakvxish/synkris/actions/runs/42511346131); la baseline ancora precedente `bdee2e5` ne aveva 92. Sono risultati storici distinti: non usare i numeri della base per attestare un nuovo commit. I casi aggiunti dopo il milestone richiedono la CI del ref corrente.
 
 Il controllo del repository non ha segnalato file privati nell’albero corrente. I provider sono simulati dove previsto; LocalAuth, Message e l’encoder PNG sono esercitati anche tramite le API effettivamente installate, **senza aprire una sessione WhatsApp**.
 

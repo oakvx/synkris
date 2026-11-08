@@ -30,7 +30,8 @@ Il punto non è automatizzare tutto: è **sapere che cosa è stato salvato, che 
 | **Conversazioni** | Interfaccia WhatsApp tramite whatsapp-web.js, presa in carico manuale e revisione privacy. |
 | **Organizzazione** | Orari settimanali, pause, chiusure, assenze e lista d’attesa con consenso. |
 | **Centro operativo** | Stati dei servizi, operazioni in coda, anomalie Calendar e richieste privacy. |
-| **Manutenzione** | ZIP con manifest e SHA256, backup PostgreSQL, restore sospeso e riconciliazione tecnica. |
+| **Primi passi guidati** | Wizard Windows, checklist in dashboard, password locale mascherata, diagnostica e report assistenza selettivo. |
+| **Manutenzione** | ZIP con manifest e SHA256, backup PostgreSQL pubblicati dopo verifica, restore sospeso e riconciliazione tecnica. |
 | **AI locale opzionale** | Integrazione Ollama, disattivata per default. Non sostituisce i controlli applicativi. |
 
 ## Anteprima
@@ -88,22 +89,22 @@ La verifica preliminare e l’outbox **non creano una transazione ACID distribui
 
 ## Stato della release
 
-<img src="docs/assets/readiness.svg" width="1280" alt="Snapshot dell’8 novembre 2026: 139 test Node locali della migrazione; CI della base verificata distinta dalla nuova PR, licenza proprietaria con uso privato gratuito, 11 rilievi elevati e collaudo reale ancora richiesto.">
+<img src="docs/assets/readiness.svg" width="1280" alt="Snapshot dell’8 novembre 2026: 239 test Node, milestone plug-and-play con 6 job CI verdi, licenza proprietaria con uso privato gratuito, 11 rilievi elevati e collaudo reale ancora richiesto.">
 
-**Fotografia verificata l’8 novembre 2026**, non un badge live. Test locali e audit si riferiscono al lockfile migrato; i risultati CI della base non sostituiscono quelli della nuova PR:
+**Fotografia verificata l’8 novembre 2026**, non un badge live. Il milestone plug-and-play **`9ff8000`** ha completato [tutti i 6 job CI](https://github.com/oakvx/synkris/actions/runs/42527797589). Le modifiche successive richiedono la CI del proprio commit:
 
 | Controllo | Risultato / limite |
 | --- | --- |
-| **CI della base `bdee2e5`** | **6/6 job riusciti**: [esecuzione verificata](https://github.com/oakvxish/synkris/actions/runs/42504896463). |
-| **Test Node della migrazione** | **139/139 locali**, inclusi adapter, LocalAuth, QR, inbox, API e invii incerti. I 92 test della CI storica precedono la migrazione. |
-| **PHP e database (base)** | Job CI nativo PHP 8.3 con `pdo_pgsql`, `curl`, `sodium` e PostgreSQL 16 riuscito. |
-| **Windows (base)** | Job Windows PowerShell 5.1 e PowerShell 7 riusciti: build pacchetto, parser, ZIP e percorsi protetti. |
-| **Docker (base)** | Build, import delle dipendenze e smoke test del confine Apache riusciti. |
-| **Audit di produzione** | **19 rilievi: 0 bassi, 8 moderati, 11 elevati, 0 critici.** Rieseguito localmente; il report è un artifact, non un via libera di sicurezza. |
-| **Provider e PC del salone** | Collaudo reale Google, WhatsApp, SMTP, installazione/aggiornamento, restore e USB BitLocker ancora da completare. |
-| **Licenza scelta** | **Proprietaria/source-available:** uso privato non commerciale gratuito; ogni altro uso richiede un accordo commerciale scritto. Non è open source. |
+| **Node.js 22 e 24** | **239/239 test**, senza skip: setup, attivazione, onboarding, API/UI, provider e invii incerti. |
+| **PHP e PostgreSQL 16** | Test nativi e integrazione: proxy autenticato, transazioni, outbox e checklist. **Dump e restore reali su database CI sintetico separato**, non sul PC del salone. |
+| **Windows PowerShell 5.1 e 7** | Parser/ZIP, wizard, file privati, avvio, collisioni progetto e autostart COM in TEMP. **Non è una prova interattiva del desktop/WSL2**. |
+| **Docker** | Build e smoke Apache; doctor reale senza rete/dependencies, senza marker import o volumi dati. |
+| **Backup interrotti** | 7 casi aggiuntivi con strumenti PG sintetici: staging, errori, checksum e conservazione dei precedenti. |
+| **Audit produzione** | **19 rilievi: 8 moderati, 11 elevati, 0 critici.** Rieseguito localmente; non è un via libera di sicurezza. SBOM: 335 componenti. |
+| **Provider e PC destinatario** | Collaudo reale Google, WhatsApp, SMTP se configurato, finestra credenziali, Docker Desktop/WSL2, aggiornamento, restore e USB BitLocker ancora richiesto. |
+| **Licenza** | **Proprietaria/source-available:** solo privato personale non commerciale gratuito; altri usi su accordo commerciale scritto. Firma/HWID restano obbligatori. |
 
-Controllare anche la CI del commit effettivo della PR di migrazione. Il [report di ricostruzione](REPORT_RICOSTRUZIONE_RC6.md) descrive la preparazione locale iniziale; l’esecuzione CI indicata sopra aggiorna gli esiti dei runner che nel report erano ancora in attesa. **CI verde ≠ software stabile, sicuro o automaticamente open source.**
+[Dettagli e limiti del lavoro plug-and-play](docs/PLUG_AND_PLAY.md). Il [report di ricostruzione](REPORT_RICOSTRUZIONE_RC6.md) conserva la baseline storica; non va confuso con i risultati attuali. **CI verde ≠ software stabile, sicuro o automaticamente open source.**
 
 ## Sviluppo
 
@@ -157,14 +158,17 @@ Gli output sono in `artifacts/`, esclusi da Git. Un pacchetto con `sourceDirty: 
 Il percorso attuale è una **installazione Windows di collaudo assistita da un tecnico**, con Docker Desktop/WSL2 in modalità container Linux. Non esiste un percorso senza attivazione: il file firmato è richiesto anche per l’uso privato gratuito, con rilascio manuale. Per un salone o altro uso non privato serve prima l’accordo commerciale.
 
 1. Leggi [LEGGIMI.txt](LEGGIMI.txt) e [RELEASE.md](RELEASE.md).
-2. Estrai lo ZIP **piatto** in una cartella di prova: i file BAT devono stare alla radice, non dentro un’ulteriore cartella contenitore.
-3. Avvia `INSTALLA_UNA_VOLTA.bat` e personalizza localmente `setup/config.json`, creato dall’esempio.
-4. Il tecnico configura credenziali, licenza firmata, HWID e calendari dedicati. Il bootstrap controlla realmente l’autorizzazione: non esiste un bypass produzione.
-5. Completa la [checklist di collaudo](COLLAUDO.md), senza usare clienti reali per la prima prova.
+2. Estrai **tutto** lo ZIP piatto in una cartella locale di prova: individua insieme i BAT, `compose.yaml` e `strumenti/`. Non avviare i file dall’interno dello ZIP o da una cartella condivisa/cloud.
+3. Avvia `INSTALLA_UNA_VOLTA.bat`, premi Invio: il wizard chiede team, trattamenti e orari, importa i tre file privati e prepara i segreti mancanti, **senza modificare JSON a mano**. Le credenziali esistenti non vengono ruotate automaticamente.
+4. Il tecnico fornisce licenza firmata/HWID e credenziali Google; condivide i calendari dedicati. Il doctor offline e il bootstrap verificano realmente l’autorizzazione, senza bypass produzione.
+5. Accedi con la password della finestra locale mascherata e segui **Primi passi** nel Centro operativo: database, attivazione, catalogo, WhatsApp, Calendar e backup.
+6. Completa la [checklist di collaudo](COLLAUDO.md) con account/dati di prova. Anche sei controlli completati non certificano l’uso in produzione.
+
+**[Guida rapida Windows e menu strumenti →](deploy/PRIMI_PASSI.md)** · Node/PHP non servono sul PC ospite. Il menu include diagnostica, recupero password, report assistenza locale, autostart opt-in e correzione iniziale dei file privati. L’avvio quotidiano non esegue build/pull. L’installazione non attiva automaticamente l’autostart.
 
 | Operazione | Entrypoint Windows |
 | --- | --- |
-| Prima installazione | `INSTALLA_UNA_VOLTA.bat` |
+| Installazione e strumenti locali | `INSTALLA_UNA_VOLTA.bat` (Invio per installare) |
 | Avvio / apertura dashboard | `AVVIA_SYNK.bat` / `APRI_SYNK.bat` |
 | Aggiornamento controllato | `AGGIORNA_SYNK_TECNICO.bat` |
 | Restore sospeso | `RIPRISTINA_BACKUP.bat` |
@@ -182,7 +186,7 @@ Il percorso attuale è una **installazione Windows di collaudo assistita da un t
 - La chiave privata che firma le licenze va custodita separatamente, non distribuita al salone. La chiave pubblica di verifica è un file diverso.
 - Il token amministrativo non viene inserito nel browser; le chiamate privilegiate passano dal proxy server-side autorizzato.
 - Il backup PostgreSQL contiene dati personali e **non è cifrato automaticamente**. L’export tecnico su USB richiede BitLocker verificato.
-- Non pubblicare in issue log con numeri, messaggi, QR, token o dati personali. Leggi [SECURITY.md](SECURITY.md).
+- Il menu crea un report locale di soli stati selezionati in `runtime/support/`: niente log grezzi, chat, QR o credenziali, nessun upload. Rileggilo prima di condividerlo. Non inviare `.env`, sessioni o backup privati. Leggi [SECURITY.md](SECURITY.md).
 - Il controllo dei file correnti non equivale a una scansione dell’intera cronologia. Prima di un’apertura pubblica servono revisione e scansione completa, con revoca di eventuali credenziali esposte.
 
 L’audit blocca i rilievi **critici** e i report mancanti; gli altri rilievi non vengono nascosti. Gli **11 elevati** restano da valutare e correggere prima di un impiego con dati reali. Zero critici non significa assenza di vulnerabilità.
@@ -224,7 +228,8 @@ Il runtime usa **`whatsapp-web.js@1.34.7` (Apache-2.0)** e **`qrcode@1.5.4` (MIT
 | Migrare WhatsApp, riassociare la sessione e preparare il rollback | [Guida OpenWA → whatsapp-web.js](docs/WHATSAPP_MIGRATION.md) |
 | Capire licenza, attivazione e vincoli di distribuzione | [Decisione e readiness](docs/OPEN_SOURCE_READINESS.md) |
 | Preparare una RC e la bozza di release | [RELEASE.md](RELEASE.md) |
-| Installare e usare la copia di prova | [LEGGIMI.txt](LEGGIMI.txt) |
+| Installare senza modificare JSON e usare il menu | [Primi passi Windows](deploy/PRIMI_PASSI.md) · [LEGGIMI.txt](LEGGIMI.txt) |
+| Distinguere miglioramenti plug-and-play e prove effettive | [Report tecnico](docs/PLUG_AND_PLAY.md) |
 | Eseguire il collaudo sul PC reale | [COLLAUDO.md](COLLAUDO.md) |
 | Conoscere ricostruzione e limiti | [REPORT_RICOSTRUZIONE_RC6.md](REPORT_RICOSTRUZIONE_RC6.md) |
 | Leggere le modifiche | [CHANGELOG.md](CHANGELOG.md) |
