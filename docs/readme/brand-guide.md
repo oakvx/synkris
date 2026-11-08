@@ -43,3 +43,20 @@ Le screenshot `dashboard-*.webp` rimangono quelle derivate dal frontend con **fi
 4. Nessuna metrica di clienti, percentuale di crescita o testimonianza senza fonte verificabile.
 5. Stato release, licenza e rischi di sicurezza devono rimanere facilmente raggiungibili dalla pagina principale.
 6. Non associare l'uso del colore viola/fucsia a un livello di conformità, sicurezza o privacy certificato.
+
+## Tipografia delle immagini
+
+La nuova direzione evita il tipico layout da landing page con icone, card arrotondate, mockup con KPI inventati e font generici.
+
+- **Titoli:** condensato pesante `Impact / Nimbus Sans Narrow / DejaVu Sans Condensed`, con composizione editoriale; gerarchia definita da dimensioni e allineamento, non da effetti glow.
+- **Annotazioni e microcopy:** `Consolas / DejaVu Sans Mono`; tono da pannello tecnico.
+- **Forme:** griglie leggere, filetti, numerazione e pannelli rettangolari; viola e fucsia usati per gerarchia e identificazione.
+- **Immagini:** nessuna percentuale inventata, nessun conteggio clienti fittizio spacciato per risultato, nessuna screenshot sintetica presentata come produzione.
+
+I nomi dei font sono semplici fallback di sistema; **il repository non incorpora né distribuisce font**. Il rendering dei testi può variare in base al sistema dell'utente.
+
+## Statistiche GitHub
+
+Il README mostra badge `Shields.io` per metriche **dinamiche** (stelle, fork, issue, ultimo commit), più il badge ufficiale del workflow CI. Un badge da un contatore di terze parti stima il numero di **richieste alla propria immagine**: non è il numero di persone che hanno visitato il repository. La metrica ufficiale GitHub Insights → Traffic è accessibile ai gestori autorizzati; il README rimanda a quella schermata senza inventare un numero di visite.
+
+Questi badge sono **risorse esterne**: richiedono Internet, possono non caricarsi e i fornitori ricevono le richieste necessarie a servirli. Le immagini SVG principali e gli screenshot del progetto rimangono locali nel repository.
