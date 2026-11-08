@@ -71,6 +71,12 @@ jobs:
         env:
           TEST_DATABASE_URL: postgresql://synk_test:synk_test@127.0.0.1:5432/synk_test
           SYNK_TEST_DB_ALLOW_RESET: '1'
+      - name: Real PostgreSQL 16 backup and restore (disposable synthetic DB only)
+        run: node tests/integration/backup-roundtrip.mjs
+        env:
+          TEST_DATABASE_URL: postgresql://synk_test:synk_test@127.0.0.1:5432/synk_test
+          SYNK_TEST_DB_ALLOW_RESET: '1'
+          TEST_POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
   windows:
     name: Windows ${{ matrix.shell }}
     runs-on: windows-latest
