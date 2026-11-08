@@ -8,11 +8,12 @@ function Check([bool]$Condition,[string]$Message) { if(-not $Condition){throw $M
 function Rejected([scriptblock]$Action,[string]$Message) { $bad=$false;try{& $Action}catch{$bad=$true};Check $bad $Message }
 function Get-SynkDockerState { return 'ready' }
 function Assert-SynkProjectOwnership { }
-function Get-RunningWorkers { return @() }
-function Read-SynkText { return 'SOSTITUISCI' }
+$script:services=@();$script:confirmation='SOSTITUISCI';$script:doctorAvailable=$true
+function Get-RunningWorkers { return $script:services }
+function Read-SynkText { return $script:confirmation }
 function Show-SynkDoctorReport { param($Report) }
 $script:validation='pass'
-function Get-SynkOfflineDoctor { return [pscustomobject]@{checks=@([pscustomobject]@{id='license';status=$script:validation})} }
+function Get-SynkOfflineDoctor { if(-not $script:doctorAvailable){throw 'Checker image unavailable'};return [pscustomobject]@{checks=@([pscustomobject]@{id='license';status=$script:validation})} }
 $temp=Join-Path ([IO.Path]::GetTempPath()) ('synk-initial-repair-' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $temp | Out-Null
 $oldRoot=$script:SynkRoot;$script:SynkRoot=$temp
@@ -30,6 +31,20 @@ try {
     Rejected {Repair-SynkInitialCredential -Name 'license.txt' -Source $source} 'Rejected signature accepted'
     Check ([IO.File]::ReadAllText($destination) -ceq $accepted) 'Failed check did not restore exact original'
     Check (@(Get-ChildItem -LiteralPath (Join-Path $temp 'secrets') -Force -Filter '.credential-pending-*').Count -eq 0) 'Staging credential left behind'
+    $script:confirmation='ANNULLA';Write-Utf8File $source 'malformed-source-must-not-be-read'
+    Repair-SynkInitialCredential -Name 'license.txt' -Source $source
+    Check ([IO.File]::ReadAllText($destination) -ceq $accepted) 'Cancellation changed the original'
+    $script:confirmation='SOSTITUISCI';$script:services=@('bot')
+    Rejected {Repair-SynkInitialCredential -Name 'license.txt' -Source $source} 'Active workers were not blocked'
+    Check ([IO.File]::ReadAllText($destination) -ceq $accepted) 'Active deployment changed'
+    $script:services=@();$script:doctorAvailable=$false
+    Rejected {Repair-SynkInitialCredential -Name 'license.txt' -Source $source} 'Missing checker should fail before replacement'
+    Check ([IO.File]::ReadAllText($destination) -ceq $accepted) 'Missing checker changed original'
+    $script:doctorAvailable=$true;$script:validation='pass';Write-Utf8File $source $accepted
+    $handle=[IO.File]::Open($destination,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::None)
+    try { Rejected {Repair-SynkInitialCredential -Name 'license.txt' -Source $source} 'Locked destination unexpectedly replaced' } finally { $handle.Dispose() }
+    Check ([IO.File]::ReadAllText($destination) -ceq $accepted) 'Locked original changed'
+    Check (@(Get-ChildItem -LiteralPath (Join-Path $temp 'secrets') -Force -Filter '.credential-pending-*').Count -eq 0) 'Locked destination left a staged credential'
     Write-SynkPrivateFile (Join-Path $temp 'runtime/config/.synkris-bootstrap-ok') 'already-imported'
     Rejected {Repair-SynkInitialCredential -Name 'license.txt' -Source $source} 'Operational deployment was modified'
     Check ([IO.File]::ReadAllText($destination) -ceq $accepted) 'Imported deployment changed'
