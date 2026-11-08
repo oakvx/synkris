@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {testPool,resetDatabase,seed} from './helpers.mjs';
 import {enqueueCalendarJob,drainCalendarOutbox} from '../../src/services/calendar-outbox.js';
+import {readOnboardingStatus} from '../../src/services/onboarding-status.js';
 import {seedInitialSalonSettings} from '../../src/services/initial-salon-settings.js';
 import {createAndLinkCalendarBooking} from '../../src/services/calendar-outbox-booking.js';
 const pool=testPool();let ids;
@@ -58,4 +59,12 @@ test('initial wizard salon name is imported once and cannot overwrite dashboard 
   await pool.query("UPDATE public.salon_settings SET setting_value='Modificato dalla dashboard' WHERE setting_key='salon_name'");
   await seedInitialSalonSettings(pool,{salonName:'Modello precedente'});
   assert.equal((await pool.query("SELECT setting_value FROM public.salon_settings WHERE setting_key='salon_name'")).rows[0].setting_value,'Modificato dalla dashboard');
+});
+
+test('onboarding aggregates use the real PostgreSQL schema without exposing client records',async()=>{
+  const state={dbPool:pool,dbOnline:true,licenseStatus:'valid',online:false};
+  const report=await readOnboardingStatus({state,backupDirectory:'/nonexistent/synk-test-backups'});
+  assert.equal(report.steps.find(step=>step.id==='catalog').status,'done');
+  assert.equal(report.productionReady,false);assert.equal(report.steps.length,6);
+  assert.equal(JSON.stringify(report).includes('Synthetic client'),false);
 });

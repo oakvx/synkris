@@ -1,3 +1,4 @@
+import {buildOnboardingStatus} from '../../src/services/onboarding-status.js';
 // Documentation-only, read-only frontend rendering. No PHP/Node application server,
 // licensing bypass, real database, account, session, credentials or provider calls.
 import assert from 'node:assert/strict';
@@ -58,7 +59,7 @@ const analytics={months:[
 const staticFiles=new Set([
   '/assets/logo.svg','/dashboard/assets/app.css','/dashboard/assets/app.js',
   '/dashboard/assets/management-appointments.js','/dashboard/assets/management-catalog.js',
-  '/dashboard/assets/operations.js','/dashboard/assets/analytics.js',
+  '/dashboard/assets/operations.js','/dashboard/assets/onboarding.js','/dashboard/assets/analytics.js',
 ]);
 const version=JSON.parse(await fs.readFile(path.join(root,'package.json'),'utf8')).version;
 let template=(await fs.readFile(path.join(root,'dashboard/view.html'),'utf8'))
@@ -83,7 +84,7 @@ const server=http.createServer(async(req,res)=>{
     }
     if(url.pathname==='/bridge.php'){
       const bridge=url.searchParams.get('path');
-      const data=bridge==='/api/operations'?operations:bridge==='/api/analytics?months=6'?analytics:null;
+      const data=bridge==='/api/onboarding'?buildOnboardingStatus({state:{dbOnline:true,licenseStatus:'valid',online:false},catalog:{services:2,professionals:1,assignments:2,opening_days:6,unassigned_services:0},now:Date.parse('2026-11-08T12:00:00Z')}):bridge==='/api/operations'?operations:bridge==='/api/analytics?months=6'?analytics:null;
       return json(data?200:404,data||{error:'no_documentation_fixture'});
     }
     if(url.pathname==='/'){
