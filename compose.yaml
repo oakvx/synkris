@@ -16,6 +16,7 @@ services:
       timeout: 3s
       retries: 15
   bootstrap:
+    image: ${COMPOSE_PROJECT_NAME:-synk}-runtime:local
     build: { context: ., dockerfile: Dockerfile }
     restart: 'no'
     user: '0:0'
@@ -42,6 +43,7 @@ services:
     # Il bootstrap aggiorna schema/configurazione; la sessione deve restare scrivibile dal bot non-root.
     command: ["sh", "-c", "mkdir -p /app/runtime/config /app/runtime/session; node scripts/deploy/bootstrap.mjs; result=$$?; chown -R node:node /app/runtime/config /app/runtime/session; exit $$result"]
   bot:
+    image: ${COMPOSE_PROJECT_NAME:-synk}-runtime:local
     build: { context: ., dockerfile: Dockerfile }
     restart: unless-stopped
     init: true
@@ -95,29 +97,28 @@ services:
       TZ: Europe/Rome
     volumes:
       - ./runtime/backups:/backups
+      - ./deploy/backup-loop.sh:/usr/local/bin/synk-backup.sh:ro
     depends_on:
       bootstrap: { condition: service_completed_successfully }
-    command:
-      - sh
-      - -c
-      - |
-        umask 077
-        mkdir -p /backups
-        chgrp 1000 /backups
-        chmod 0750 /backups
-        while true; do
-          file="/backups/synk-$$(date +%Y%m%d-%H%M%S).dump"
-          if pg_dump -Fc --file="$$file"; then
-            chgrp 1000 "$$file"
-            chmod 0640 "$$file"
-            echo 'Backup locale PostgreSQL riuscito'
-            find /backups -name 'synk-*.dump' -type f -mtime +14 -delete
-          else
-            echo 'ERRORE: backup database fallito' >&2
-            rm -f "$$file"
-          fi
-          sleep 86400
-        done
+    command: ["sh", "/usr/local/bin/synk-backup.sh"]
+  # The installed runtime image is reused: diagnostics never pull/build images,
+  # start dependencies, mutate the DB or contact providers.
+  doctor:
+    image: ${COMPOSE_PROJECT_NAME:-synk}-runtime:local
+    pull_policy: never
+    profiles: ["tools"]
+    network_mode: none
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    env_file: .env
+    environment:
+      <<: *runtime_env
+    volumes:
+      - ./runtime/config:/app/runtime/config:ro
+      - ./setup/config.json:/app/bootstrap/config.json:ro
+      - ./secrets:/run/secrets:ro
+    command: ["node", "scripts/deploy/doctor.mjs", "--container", "--json"]
   ollama:
     image: ollama/ollama:0.12.8
     profiles: ["ai"]

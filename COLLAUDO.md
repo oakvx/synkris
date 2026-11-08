@@ -21,6 +21,22 @@ WhatsApp del salone.** Non usare dati reali prima di completarla.
 - [ ] Licenza, credenziali Calendar e password restano in `secrets/`, `.env` e `runtime/`, fuori dal pacchetto.
 - [ ] Verificare importazione iniziale di `setup/config.json` e modifiche da dashboard.
 
+## Percorso guidato plug-and-play (obbligatorio sul PC destinatario)
+- [ ] Estrarre tutto lo ZIP e usare una cartella locale fissa, non condivisa/cloud; provare percorsi con spazi e caratteri italiani.
+- [ ] INSTALLA_UNA_VOLTA + Invio: team, trattamenti, orari e tre file privati senza modificare JSON o installare Node/PHP sul PC.
+- [ ] Docker assente/spento/lento, contesto remoto e motore Windows producono un'indicazione utile, non un deploy su un host diverso.
+- [ ] File/licenza/HWID errati bloccano prima di migrazioni/QR; nessun contenuto sensibile nei messaggi di errore.
+- [ ] Annullare e riprendere: niente sovrascritture di credenziali o password PostgreSQL esistenti.
+- [ ] Prima dell'import, correggere un file errato dal menu 9: conferma, backup privato, verifica e rollback byte-esatto se rifiutato. Provare file bloccato, annullamento e servizi attivi.
+- [ ] Dopo import, opzioni 8/9 bloccate; modificare catalogo/orari in dashboard, non reimportare il template.
+- [ ] Finestra password interattiva: mascherata, rivelazione/copia esplicite, nessuna stampa/rotazione; verificare appunti senza cancellare altri contenuti. Cronologia/cloud Windows da gestire separatamente.
+- [ ] Primi passi mostra sei controlli aggiornati, errori non lasciano vecchi verdi e la manutenzione prevale; completamento non chiamato certificazione.
+- [ ] Attivare autostart con consenso, fare logout/login e riavvio reale: niente browser, nessuna password Windows salvata. Disattivare solo il link di questa cartella; non modificare Startup altrui.
+- [ ] APRI_SYNK/AVVIA_SYNK funzionano senza build/pull con immagini già presenti; immagini mancanti rimandano all'installazione.
+- [ ] Seconda cartella sullo stesso progetto non sostituisce container della prima.
+- [ ] Report assistenza locale: nessun upload, solo campi consentiti, niente chat/nomi/numeri, QR, credenziali/HWID o log. Runtime assente resta sconosciuto.
+- [ ] Backup durante errore/interruzione non pubblicato come finale; vecchi dump integri conservati, SHA corrispondente, permessi privati e warning se assente/vecchio. Il recente non basta senza restore.
+
 ## Verifiche di regressione RC4 (obbligatorie)
 - [ ] In dashboard, salva un appuntamento alle 09:30 a gennaio (offset +01) e a luglio (offset +02): PostgreSQL e Google devono mostrare le stesse ore locali.
 - [ ] Le ore 02:30 del 29 marzo 2026 (inesistente) e 25 ottobre 2026 (ambigua) devono essere respinte, non spostate automaticamente.

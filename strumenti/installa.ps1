@@ -1,55 +1,72 @@
-param()
+param([switch]$Reconfigure, [switch]$Menu)
 . (Join-Path $PSScriptRoot 'common.ps1')
+. (Join-Path $PSScriptRoot 'configurazione.ps1')
+. (Join-Path $PSScriptRoot 'credenziali.ps1')
+. (Join-Path $PSScriptRoot 'ambiente.ps1')
+. (Join-Path $PSScriptRoot 'preflight.ps1')
+. (Join-Path $PSScriptRoot 'accesso.ps1')
+. (Join-Path $PSScriptRoot 'avvio.ps1')
+. (Join-Path $PSScriptRoot 'avvio-automatico.ps1')
+. (Join-Path $PSScriptRoot 'supporto.ps1')
+. (Join-Path $PSScriptRoot 'menu.ps1')
 $mutex = $null
 try {
-    Assert-Docker
-    $mutex = Enter-SynkMaintenance
-    foreach ($dir in @('secrets','setup','runtime/config','runtime/session','runtime/backups')) { New-Item -ItemType Directory -Force -Path (Join-Path $script:SynkRoot $dir) | Out-Null }
-    $config = Join-Path $script:SynkRoot 'setup/config.json'
-    if (-not (Test-Path -LiteralPath $config -PathType Leaf)) {
-        Copy-Item -LiteralPath (Join-Path $script:SynkRoot 'setup/config.example.json') -Destination $config
-        throw 'Creato setup/config.json di esempio. Sostituisci i dati dimostrativi, poi rilancia INSTALLA_UNA_VOLTA.'
-    }
-    $json = Get-Content -LiteralPath $config -Raw | ConvertFrom-Json
-    if (-not $json.services -or -not $json.professionals -or @($json.professionals.PSObject.Properties).Count -lt 1 -or @($json.services.PSObject.Properties).Count -lt 1) { throw 'Configura servizi e operatrici in setup/config.json.' }
-    foreach ($pro in $json.professionals.PSObject.Properties) { if ($pro.Name -match '@example\.com$') { throw 'Sostituisci gli indirizzi dimostrativi in setup/config.json.' } }
-    foreach ($file in @('license.txt','license-public.pem','google-service-account.json')) {
-        if (-not (Test-Path -LiteralPath (Join-Path $script:SynkRoot ('secrets/' + $file)) -PathType Leaf)) { throw ('File privato necessario: secrets/' + $file) }
-    }
-    $envFile = Join-Path $script:SynkRoot '.env'
-    $created = -not (Test-Path -LiteralPath $envFile)
-    if ($created) {
-        Copy-Item -LiteralPath (Join-Path $script:SynkRoot '.env.example') -Destination $envFile
-        Set-EnvValue 'POSTGRES_PASSWORD' (Get-RandomHex)
-        Set-EnvValue 'ADMIN_TOKEN' (Get-RandomHex)
-        $dashboardPassword = Get-RandomHex 16
-        Set-EnvValue 'DASHBOARD_PASSWORD' $dashboardPassword
-        Write-Host 'Password dashboard generata e salvata nel file privato .env:'
-        Write-Host $dashboardPassword
-        Write-Host 'Conservala nel gestore password del salone. Non condividerla nei log.'
-    }
-    foreach ($key in @('CALENDAR_ID','APP_HWID')) {
-        $value = Get-EnvValue $key
-        if ($value -match '^(calendario-del-salone|HWID_ASSOCIATO)' -or [string]::IsNullOrWhiteSpace($value)) {
-            $value = Read-Host ('Inserisci ' + $key + ' (fornito dal tecnico/licenza)')
-            if ([string]::IsNullOrWhiteSpace($value)) { throw ('Valore richiesto: ' + $key) }
-            Set-EnvValue $key $value
+    if ($Menu) {
+        switch (Select-SynkTool) {
+            'exit' { exit 0 }
+            'start' { Start-SynkServices; exit 0 }
+            'doctor' { & (Join-Path $PSScriptRoot 'diagnostica.ps1'); exit $LASTEXITCODE }
+            'access' { Show-SynkAccess; exit 0 }
+            'credentials' {
+                Write-Host '1) File licenza firmata  2) Chiave PUBBLICA del titolare  3) JSON service account Google'
+                $kind = Read-SynkText 'Quale file iniziale vuoi correggere?' '1' '^[1-3]$'
+                $name = @{'1'='license.txt';'2'='license-public.pem';'3'='google-service-account.json'}[$kind]
+                Repair-SynkInitialCredential -Name $name
+                exit 0
+            }
+            'support' { Export-SynkSupportReport | Out-Null; exit 0 }
+            'autostart-on' {
+                Write-Host 'Vale solo per questo utente, DOPO il login Windows. Non accende il PC e non sostituisce il collaudo.'
+                if ((Read-SynkText 'Conferma ATTIVA / ANNULLA' 'ANNULLA' '^(ATTIVA|ANNULLA)$') -ceq 'ATTIVA') {
+                    Set-SynkAutostart -Enabled $true
+                } else { Write-Host 'Nessun avvio automatico configurato.' }
+                exit 0
+            }
+            'autostart-off' { Set-SynkAutostart -Enabled $false; exit 0 }
+            'reconfigure' { $Reconfigure = $true }
         }
     }
-    foreach ($key in @('POSTGRES_PASSWORD','ADMIN_TOKEN','DASHBOARD_PASSWORD')) {
-        $value = Get-EnvValue $key
-        $minimum = if ($key -eq 'DASHBOARD_PASSWORD') { 12 } else { 32 }
-        if ($value.Length -lt $minimum -or $value.StartsWith('SOSTITUISCI')) { throw ('Valore privato da configurare: ' + $key) }
-    }
-    Protect-LocalPath $envFile
-    Protect-LocalPath (Join-Path $script:SynkRoot 'secrets') -Directory
-    Protect-LocalPath (Join-Path $script:SynkRoot 'runtime') -Directory
-    Protect-LocalPath (Join-Path $script:SynkRoot 'setup') -Directory
+    Write-Host 'synk - installazione guidata locale. Ctrl+C annulla; i file gia salvati restano disponibili.'
+    Write-Host '[1/6] Verifica Docker Desktop e motore Linux...'
+    Wait-SynkDocker -StartDesktop
+    $mutex = Enter-SynkMaintenance
+    Assert-SynkProjectOwnership
+    $maintenance = Join-Path $script:SynkRoot 'runtime/config/calendar-reconciliation-required.flag'
+    if (Test-Path -LiteralPath $maintenance) { throw 'Ripristino o aggiornamento da riconciliare: non avvio servizi o migrazioni. Usa la procedura tecnica Calendar.' }
+    foreach ($dir in @('secrets','setup','runtime/config','runtime/session','runtime/backups')) { New-Item -ItemType Directory -Force -Path (Join-Path $script:SynkRoot $dir) | Out-Null }
+    foreach ($dir in @('secrets','runtime','setup')) { Protect-LocalPath (Join-Path $script:SynkRoot $dir) -Directory }
+    $databaseExists = Test-SynkDatabaseVolume
+    Write-Host '[2/6] Team, trattamenti e orari (nessuna modifica manuale del JSON)...'
+    Initialize-SynkSalonConfiguration -Reconfigure:$Reconfigure
+    Write-Host '[3/6] Importazione dei file privati...'
+    Initialize-SynkCredentials
+    Write-Host '[4/6] Credenziali locali e calendario...'
+    $environment = Initialize-SynkEnvironment -DatabaseExists:$databaseExists
     Invoke-Compose -Arguments @('config','--quiet') | Out-Null
-    Invoke-Compose -Arguments @('up','-d','--build')
+    Write-Host '[5/6] Preparazione immagini. Il primo avvio richiede Internet e puo durare diversi minuti...'
+    Invoke-Compose -Arguments @('pull','postgres','backup')
+    Invoke-Compose -Arguments @('build','bootstrap','bot','dashboard')
+    $report = Get-SynkOfflineDoctor
+    Show-SynkDoctorReport $report
+    if (-not $report.readyForBootstrap) { throw 'Preflight incompleto: nessuna migrazione database o associazione WhatsApp avviata. Correggi i punti indicati e rilancia.' }
+    Write-Host '[6/6] Avvio servizi e attesa dashboard...'
+    Invoke-Compose -Arguments @('up','-d','--no-build','--pull','never')
     Wait-SynkHealth
-    Write-Host 'Installazione avviata. Esegui COLLAUDO.md prima dei clienti reali.'
+    Write-Host 'Dashboard raggiungibile: non equivale a WhatsApp associato o al collaudo Calendar.'
+    Write-Host 'La password dashboard e nel tuo file privato .env; non condividerlo nei log.'
+    Write-Host 'Collega WhatsApp dalla dashboard e completa COLLAUDO.md prima dei clienti reali.'
     Start-Process 'http://127.0.0.1:8080/'
+    try { Show-SynkAccess } catch { Write-Warning 'Finestra credenziali non disponibile. La password resta nel file privato .env; usa lo strumento Accesso dal launcher Windows.' }
 } catch {
     Write-Error $_ -ErrorAction Continue
     exit 1

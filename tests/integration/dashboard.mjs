@@ -35,6 +35,7 @@ before(async()=>{
     res.setHeader('Content-Type','application/json');
     if(req.headers['x-admin-token']!==adminToken){res.writeHead(401);res.end('{}');return;}
     if(req.url==='/api/calendar/check-slot'){res.writeHead(gateStatus);res.end(JSON.stringify(gateStatus===200?{available:true}:{error:'synthetic_provider_failure'}));return;}
+    if(req.url==='/api/onboarding'){res.end('{"schema":1,"productionReady":false}');return;}
     if(req.url==='/status'){res.end('{"online":true}');return;}
     res.writeHead(404);res.end('{}');
   });
@@ -124,4 +125,13 @@ test('invalid signed license fails closed even with an authenticated session',as
   fs.writeFileSync(path.join(folder,'license.txt'),'LIC=bad\nSIG=bad');
   try{assert.equal((await request('db_catalog')).status,403);}
   finally{fs.writeFileSync(path.join(folder,'license.txt'),licenseText);}
+});
+
+test('first-run checklist proxy keeps login, token, origin and read-only method boundaries',async()=>{
+  const url=base+'/bridge.php?path='+encodeURIComponent('/api/onboarding');
+  assert.equal((await fetch(url)).status,401);
+  const response=await fetch(url,{headers:{Cookie:cookie}});assert.equal(response.status,200);
+  assert.equal((await response.json()).productionReady,false);assert.equal(calls.at(-1).token,adminToken);
+  assert.equal((await fetch(url,{method:'POST',headers:{Cookie:cookie,'X-CSRF-Token':csrf,'Content-Type':'application/json'},body:'{}'})).status,405);
+  assert.equal((await fetch(url,{headers:{Cookie:cookie,Origin:'https://attacker.invalid'}})).status,403);
 });

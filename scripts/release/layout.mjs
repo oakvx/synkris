@@ -4,16 +4,16 @@ import path from 'node:path';
 export const releaseDirectories = ['src','dashboard','deploy','assets','strumenti','scripts'];
 export const releaseFiles = [
   'package.json','package-lock.json','dashboard.php','bridge.php','Dockerfile','Dockerfile.dashboard','compose.yaml','.dockerignore','.env.example',
-  'LEGGIMI.txt','LICENSE.md','deploy/THIRD_PARTY_NOTICES.md','SECURITY.md','COLLAUDO.md','RELEASE.md','CHANGELOG.md','REPORT_BUGFIX_RC4.md','REPORT_BUGFIX_RC5.md','REPORT_RICOSTRUZIONE_RC6.md',
+  'LEGGIMI.txt','LICENSE.md','deploy/THIRD_PARTY_NOTICES.md','deploy/PRIMI_PASSI.md','SECURITY.md','COLLAUDO.md','RELEASE.md','CHANGELOG.md','REPORT_BUGFIX_RC4.md','REPORT_BUGFIX_RC5.md','REPORT_RICOSTRUZIONE_RC6.md',
   'AGGIORNA_SYNK_TECNICO.bat','APRI_SYNK.bat','ATTIVA_AI_LOCALE.bat','AVVIA_SYNK.bat','ESPORTA_BACKUP_CIFRATO_TECNICO.bat','INSTALLA_UNA_VOLTA.bat','RIATTIVA_CALENDAR_TECNICO.bat','RIPRISTINA_BACKUP.bat',
   'setup/config.example.json',
 ];
 export const requiredFiles = [
-  ...releaseFiles,'src/index.js','src/licensing/license-verifier.js','scripts/db/schema.sql','scripts/deploy/bootstrap.mjs',
-  'dashboard.php','bridge.php','dashboard/view.html','dashboard/assets/app.js','dashboard/assets/app.css',
+  ...releaseFiles,'deploy/backup-loop.sh','src/index.js','src/licensing/license-verifier.js','scripts/db/schema.sql','scripts/deploy/bootstrap.mjs',
+  'dashboard.php','bridge.php','dashboard/view.html','dashboard/assets/app.js','dashboard/assets/onboarding.js','dashboard/assets/app.css',
   ...['bootstrap','datetime','queries','mutations','router','calendar-outbox'].map(name=>'dashboard/api/'+name+'.php'),
   ...['apache.conf','session.php','license-guard.php'].map(name=>'deploy/'+name),
-  ...['common','installa','aggiorna','ripristina','riattiva-calendar','attiva-ai','esporta-backup'].map(name=>'strumenti/'+name+'.ps1'),
+  ...['common','installa','configurazione','credenziali','ambiente','preflight','diagnostica','avvio','avvia','accesso','avvio-automatico','supporto','menu','aggiorna','ripristina','riattiva-calendar','attiva-ai','esporta-backup'].map(name=>'strumenti/'+name+'.ps1'),
 ];
 const sensitiveBasenames = new Set(['.env','config.json','bookings.json','chatdb.json','session.data.json','license.txt','google-service-account.json']);
 export function isReleasePath(name) {
@@ -24,7 +24,7 @@ export function isReleasePath(name) {
   if (segments.some(s=>['node_modules','.git','runtime','secrets','.cache','artifacts','.wwebjs_auth','.wwebjs_cache'].includes(s.toLowerCase()))) return false;
   if (name.includes('/.env') || (segments.at(-1).startsWith('.') && name!=='.env.example' && name!=='.dockerignore')) return false;
   if (releaseFiles.includes(name)) return true;
-  const extensions = {src:/\.(js|mjs|cjs)$/,dashboard:/\.(js|css|html|php)$/,deploy:/\.(conf|php)$/,assets:/\.(svg|png|jpg|jpeg|webp|woff2?)$/,strumenti:/\.ps1$/,scripts:/\.(js|mjs|cjs|sql)$/};
+  const extensions = {src:/\.(js|mjs|cjs)$/,dashboard:/\.(js|css|html|php)$/,deploy:/\.(conf|php|sh)$/,assets:/\.(svg|png|jpg|jpeg|webp|woff2?)$/,strumenti:/\.ps1$/,scripts:/\.(js|mjs|cjs|sql)$/};
   return Boolean(extensions[segments[0]]?.test(name));
 }
 export function collectReleaseFiles(root) {

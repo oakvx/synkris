@@ -55,7 +55,10 @@ SYNK_TEST_DB_ALLOW_RESET=1 npm run test:integration
 
 La suite resetta lo schema `public`, usa firme effimere e un gate Calendar
 simulato. Verifica transazioni e comportamento HTTP, non la disponibilità dei
-servizi esterni.
+servizi esterni. La CI esegue inoltre un doctor Compose reale senza rete/startup
+dipendenze e un roundtrip pg_dump/list/SHA256/pg_restore con PostgreSQL 16 su un
+nuovo database sintetico cancellabile. I test autostart COM scrivono solo in TEMP,
+mai nella cartella Esecuzione automatica reale. Non sono un collaudo Desktop/WSL2.
 
 Controllare anche `npm audit --omit=dev` e `npm run audit:release`: il report viene conservato dalla CI,
 ma **non è un via libera di sicurezza**. `npm run audit:release` blocca la CI
@@ -111,10 +114,26 @@ istruzioni, senza creare tag che puntino a modifiche non salvate.
 
 ## 4. Installazione e aggiornamento di prova
 
-Estrarre in una cartella Windows dedicata. `INSTALLA_UNA_VOLTA.bat` crea, se
-assente, `setup/config.json` dall’esempio e si interrompe finché non viene
-personalizzato. Inserire le tre credenziali/licenze solo in `secrets/`. Il tecnico
-configura CALENDAR_ID e APP_HWID; il bootstrap verifica realmente firma e HWID.
+Estrarre tutto in una cartella Windows locale dedicata e fissa (evitare cartelle
+condivise o sincronizzate). `INSTALLA_UNA_VOLTA.bat` apre il menu: Invio avvia
+il wizard per team, trattamenti e orari, importazione dei tre file privati e
+configurazione CALENDAR_ID/APP_HWID. Non servono JSON manuali o Node/PHP sul PC.
+Il doctor Docker è read-only, senza rete o dipendenze avviate e usa il verificatore
+di produzione prima del bootstrap. Il bootstrap verifica realmente firma e HWID.
+`deploy/PRIMI_PASSI.md` è incluso nello ZIP e nei percorsi già consentiti dall'updater.
+
+Il menu include diagnostica, finestra password mascherata, report assistenza
+locale status-only e autostart per utente opt-in dopo login. Il report non carica
+nulla e non contiene log grezzi/segreti. La finestra non cancella cronologia
+appunti/cloud Windows. Il recupero del file iniziale e la correzione dei file
+privati sono consentiti solo prima del marker import; conservano backup privati.
+La correzione verifica il file e ripristina l'originale se rifiutato, senza avviare
+servizi. Dopo import, rinnovi/rotazioni richiedono una procedura tecnica.
+
+Un progetto Docker già appartenente a un'altra cartella viene bloccato. L'avvio
+quotidiano `APRI_SYNK`/`AVVIA_SYNK` non esegue build o pull. Credenziali esistenti
+e password database non sono rigenerate automaticamente. Dopo un restore la
+sospensione Calendar continua a prevalere: un avvio non la rimuove.
 Il provider è whatsapp-web.js 1.34.7 con LocalAuth. Chromium usa argomenti
 espliciti, senza bypass TLS/CSP o sandbox impliciti. Se la sandbox non parte sullo specifico host Docker/WSL2, fermare il
 collaudo e far valutare al tecnico l’isolamento del container/VM. Non aggiungere
@@ -139,7 +158,8 @@ ZIP runtime). Collaudare QR, riavvio, revoca, LID se disponibili e presa in cari
 Un invio dall’esito incerto non va ritentato automaticamente: verificare prima
 WhatsApp. Il passaggio non cambia le verifiche di licenza firmata/HWID.
 
-Le password casuali vengono generate solo alla prima creazione di `.env`:
+Le password casuali vengono generate solo per i valori mancanti/dimostrativi,
+mai ruotando alla cieca una password di database esistente:
 conservare la password dashboard nel gestore password del salone. Lo script non
 rimpiazza una configurazione privata esistente. Docker Desktop deve essere
 attivo, con motore Linux/WSL2 e avvio dopo il login Windows.
