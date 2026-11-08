@@ -43,7 +43,17 @@ for document in DOCUMENTS:
 
 svgs = sorted(ASSETS.glob('*.svg'))
 previews = sorted(ASSETS.glob('*.webp'))
-check(len(svgs) == 6, 'Expected 6 generated SVG assets')
+legacy_svgs = {
+    'hero.svg', 'stack.svg', 'features.svg', 'architecture.svg',
+    'booking-flow.svg', 'readiness.svg'
+}
+brand_svgs = {
+    'synkris-hero.svg', 'synkris-benefits.svg', 'synkris-journey.svg',
+    'synkris-architecture.svg', 'synkris-stack.svg', 'synkris-booking-flow.svg'
+}
+actual_svgs = {asset.name for asset in svgs}
+check(legacy_svgs.issubset(actual_svgs), 'Legacy SVG documentation assets missing')
+check(brand_svgs.issubset(actual_svgs), 'SYNKRIS branded SVG documentation assets missing')
 check(len(previews) == 3, 'Expected 3 rendered frontend previews')
 for asset in svgs:
     content = asset.read_text(encoding='utf-8')
@@ -81,4 +91,4 @@ check(package['dependencies'].get('qrcode') == '1.5.4', 'Explicit QR encoder/ver
 check(not any('@open-wa/' in name for name in lock['packages']), 'OpenWA remains in the install graph')
 check('La migrazione del codice è eseguita' in readme, 'Migration implementation must not be described as only a candidate')
 check('collaudo WhatsApp reale resta da fare' in readme, 'Do not claim live provider acceptance')
-print(f'PASS: {checks} documentation checks; 6 self-contained SVGs, 3 WebP previews, local links and README anchors verified.')
+print(f'PASS: {checks} documentation checks; {len(svgs)} self-contained SVGs, 3 WebP previews, local links and README anchors verified.')
