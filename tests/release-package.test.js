@@ -93,15 +93,17 @@ test('release carries the new upstream license texts without relicensing them',(
   assert.match(fs.readFileSync(path.join(root,'Dockerfile'),'utf8'),/COPY LICENSE\.md deploy\/THIRD_PARTY_NOTICES\.md/);
 });
 
-test('entrypoint keeps signed activation before provider creation and rechecks it before accepting messages',()=>{
+test('entrypoint waits for real provider readiness and keeps bounded shutdown without activation code',()=>{
   const source=Buffer.from(files['src/index.js']).toString('utf8');
-  assert.ok(source.indexOf('await ensureLicense();')<source.indexOf('client = createWhatsAppClient('));
-  assert.ok(source.indexOf('await monitor.check();')<source.indexOf('acceptingMessages = true;'));
-  assert.ok(source.indexOf('await monitor.check();')<source.indexOf('actions.sendText = (to, message)'));
+  const ready=source.indexOf('await client.initialize();');
+  assert.ok(ready>source.indexOf('client = createWhatsAppClient('));
+  assert.ok(ready<source.indexOf('acceptingMessages = true;'));
+  assert.ok(ready<source.indexOf('actions.sendText = (to, message)'));
   assert.match(source,/if \(closing \|\| !acceptingMessages\) return;/);
   assert.ok(source.indexOf('client?.beginShutdown();')<source.indexOf('Promise.allSettled([...inflightMessages])'));
   assert.match(Buffer.from(files['compose.yaml']).toString('utf8'),/stop_grace_period: 30s/);
-  assert.match(source,/await monitor\.check\(\);\s*if \(closing\) return;/);
+  assert.doesNotMatch(source,/ensureLicense|verifyLicense|createLicenseMonitor|LICENSE_|APP_HWID/);
+  for(const name of Object.keys(files))assert.doesNotMatch(name,/^(?:src\/licensing\/|deploy\/license-guard\.php$|scripts\/deploy\/verify-installation-license\.mjs$)/);
 });
 
 test('Windows updater code allowlist covers every generated package entry',()=>{

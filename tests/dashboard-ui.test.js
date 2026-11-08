@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import {JSDOM} from 'jsdom';
 import {buildOnboardingStatus} from '../src/services/onboarding-status.js';
-const onboardingFixture=()=>buildOnboardingStatus({state:{dbOnline:true,licenseStatus:'valid',online:false},catalog:{services:1,professionals:1,assignments:1,opening_days:5,unassigned_services:0}});
+const onboardingFixture=()=>buildOnboardingStatus({state:{dbOnline:true,online:false},catalog:{services:1,professionals:1,assignments:1,opening_days:5,unassigned_services:0}});
 const read=name=>fs.readFileSync(new URL('../'+name,import.meta.url),'utf8');
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 const catalog={services:[{service_id:1,service_name:'Manicure <script>alert(1)</script>',default_duration_min:30,buffer_after_min:10,is_active:true},{service_id:2,service_name:'Pedicure',default_duration_min:40,buffer_after_min:5,is_active:true}],professionals:[{professional_id:1,full_name:'Operatrice',is_active:true,email:'test@example.com'}],assignments:[{professional_id:1,service_id:1,duration_min:45},{professional_id:1,service_id:2,duration_min:40}]};
@@ -109,9 +109,9 @@ test('ambiguous WhatsApp delivery warns the operator without clearing or retryin
 
 test('first-run checklist uses measured steps and takes the operator straight to QR pairing',async()=>{
   const ui=await page();try{
-    assert.match(ui.$('onboardingSummary').textContent,/3 di 6/);
-    assert.equal(ui.$('onboardingList').children.length,6);
-    assert.equal(ui.$('onboardingProgress').value,3);
+    assert.match(ui.$('onboardingSummary').textContent,/2 di 5/);
+    assert.equal(ui.$('onboardingList').children.length,5);
+    assert.equal(ui.$('onboardingProgress').value,2);
     const action=ui.$('onboardingActions').querySelector('button');assert.match(action.textContent,/Collega WhatsApp/);
     action.click();await tick();assert.equal(ui.eval('APP.page'),'chats');
     assert.equal(ui.w.localStorage.length,0);
@@ -120,7 +120,7 @@ test('first-run checklist uses measured steps and takes the operator straight to
 test('a failed checklist refresh removes previous green state instead of showing stale success',async()=>{
   let failing=false;const ui=await page(r=>r.bridge==='/api/onboarding'&&failing?{status:503,body:{error:'onboarding_unavailable'}}:undefined);
   try{
-    assert.equal(ui.$('onboardingProgress').value,3);failing=true;await ui.eval('loadOnboarding()');
+    assert.equal(ui.$('onboardingProgress').value,2);failing=true;await ui.eval('loadOnboarding()');
     assert.equal(ui.$('onboardingProgress').value,0);assert.match(ui.$('onboardingSummary').textContent,/non disponibile/);
     assert.equal(ui.$('onboardingList').querySelectorAll('.badge.good').length,0);assert.equal(ui.$('onboardingActions').children.length,0);
   }finally{ui.w.close();}
@@ -128,11 +128,11 @@ test('a failed checklist refresh removes previous green state instead of showing
 test('completed automatic checklist still calls for live acceptance and cannot certify production',async()=>{
   const report=onboardingFixture();for(const step of report.steps)step.status='done';
   const ui=await page(r=>r.bridge==='/api/onboarding'?{status:200,body:report}:undefined);
-  try{assert.match(ui.$('onboardingSummary').textContent,/6 di 6/);assert.match(ui.$('onboardingMessage').textContent,/restano il collaudo WhatsApp/);assert.equal(ui.$('onboardingActions').children.length,0);}
+  try{assert.match(ui.$('onboardingSummary').textContent,/5 di 5/);assert.match(ui.$('onboardingMessage').textContent,/restano il collaudo WhatsApp/);assert.equal(ui.$('onboardingActions').children.length,0);}
   finally{ui.w.close();}
 });
 test('checklist provider text stays text and cannot inject markup or arbitrary navigation',async()=>{
-  const report=onboardingFixture();report.steps[3].title='<img src=x onerror=alert(1)>';report.steps[3].page='javascript:alert(1)';
+  const report=onboardingFixture();report.steps[2].title='<img src=x onerror=alert(1)>';report.steps[2].page='javascript:alert(1)';
   const ui=await page(r=>r.bridge==='/api/onboarding'?{status:200,body:report}:undefined);
   try{assert.equal(ui.$('onboardingList').querySelector('img'),null);assert.match(ui.$('onboardingList').textContent,/<img/);assert.equal(ui.$('onboardingActions').children.length,0);}
   finally{ui.w.close();}

@@ -1,6 +1,6 @@
 'use strict';
 let onboardingGeneration = 0;
-const ONBOARDING_IDS = ['database','activation','catalog','whatsapp','calendar','backup'];
+const ONBOARDING_IDS = ['database','catalog','whatsapp','calendar','backup'];
 const ONBOARDING_ACTIONS = {catalog:'Controlla team e trattamenti',chats:'Collega WhatsApp',overview:'Controlla il Centro operativo',settings:'Controlla i backup'};
 async function loadOnboarding() {
   const generation = ++onboardingGeneration;
@@ -9,15 +9,15 @@ async function loadOnboarding() {
   try {
     const report = await synkBridge('/api/onboarding');
     if (generation !== onboardingGeneration) return;
-    if (report.schema !== 1 || report.productionReady !== false || !Array.isArray(report.steps) || report.steps.length !== 6 ||
+    if (report.schema !== 1 || report.productionReady !== false || !Array.isArray(report.steps) || report.steps.length !== ONBOARDING_IDS.length ||
         ONBOARDING_IDS.some(id => report.steps.filter(step => step.id === id).length !== 1) ||
         report.steps.some(step => !['done','todo','attention','unknown'].includes(step.status) || typeof step.title !== 'string' || typeof step.help !== 'string')) throw new Error('invalid_checklist');
     const steps = ONBOARDING_IDS.map(id => report.steps.find(step => step.id === id));
     const completed = steps.filter(step => step.status === 'done').length;
     const next = steps.find(step => step.status !== 'done');
-    $('onboardingSummary').textContent = completed + ' di 6 controlli automatici completati';
+    $('onboardingSummary').textContent = completed + ' di ' + ONBOARDING_IDS.length + ' controlli automatici completati';
     $('onboardingProgress').value = completed;
-    $('onboardingProgress').textContent = completed + '/6';
+    $('onboardingProgress').textContent = completed + '/' + ONBOARDING_IDS.length;
     $('onboardingMessage').textContent = next ? next.help : 'Controlli automatici completati. Prima dei clienti reali restano il collaudo WhatsApp, Calendar e il ripristino dei backup.';
     const actions = [];
     if (next?.page && Object.hasOwn(ONBOARDING_ACTIONS,next.page)) {
@@ -32,7 +32,7 @@ async function loadOnboarding() {
   } catch {
     if (generation !== onboardingGeneration) return;
     $('onboardingSummary').textContent = 'Stato dei controlli non disponibile';
-    $('onboardingProgress').value = 0;$('onboardingProgress').textContent = '0/6';
+    $('onboardingProgress').value = 0;$('onboardingProgress').textContent = '0/' + ONBOARDING_IDS.length;
     $('onboardingMessage').textContent = 'Non posso confermare lo stato attuale. Premi Ricontrolla o apri la diagnostica da INSTALLA_UNA_VOLTA. Nessun controllo precedente viene considerato ancora valido.';
     $('onboardingActions').replaceChildren();
     $('onboardingList').replaceChildren(empty('Nessun via libera: attendi una verifica riuscita.'));

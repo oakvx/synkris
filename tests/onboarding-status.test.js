@@ -4,20 +4,24 @@ import {buildOnboardingStatus,readOnboardingStatus} from '../src/services/onboar
 import {createAdminApp} from '../src/services/admin-server.js';
 const now=Date.now();
 const catalog={services:'1',professionals:'1',assignments:'1',opening_days:'5',unassigned_services:'0'};
-const state={dbOnline:true,online:true,licenseStatus:'valid',lastInboundSyncStatus:'ok',lastInboundSyncAt:new Date(now-1000).toISOString()};
+const state={dbOnline:true,online:true,lastInboundSyncStatus:'ok',lastInboundSyncAt:new Date(now-1000).toISOString()};
 const complete=()=>({state:{...state},catalog:{...catalog},backup:{status:'recent'},now});
 const step=(report,id)=>report.steps.find(item=>item.id===id);
 test('all measured checks can complete but never certify production or real-provider acceptance',()=>{
   const report=buildOnboardingStatus(complete());
-  assert.equal(report.completed,6);assert.equal(report.automaticChecksComplete,true);assert.equal(report.productionReady,false);
+  assert.equal(report.completed,5);assert.equal(report.automaticChecksComplete,true);assert.equal(report.productionReady,false);
   assert.equal(report.nextStep,null);assert.match(step(report,'backup').help,/Non prova/);
   assert.match(step(report,'calendar').help,/collaudo/);
 });
 test('missing database state is unknown, not a successful check',()=>{
-  const report=buildOnboardingStatus();assert.equal(step(report,'database').status,'unknown');assert.equal(step(report,'activation').status,'unknown');assert.equal(report.automaticChecksComplete,false);
+  const report=buildOnboardingStatus();assert.equal(step(report,'database').status,'unknown');assert.equal(report.automaticChecksComplete,false);
 });
-for(const license of ['invalid','temporary_read_failure','unverified',undefined])test('activation does not pass for '+license,()=>{
-  const data=complete();data.state.licenseStatus=license;assert.notEqual(step(buildOnboardingStatus(data),'activation').status,'done');
+test('checklist has five operational checks and no activation requirement',()=>{
+  const data=complete();data.state.licenseStatus='invalid';
+  const report=buildOnboardingStatus(data);
+  assert.deepEqual(report.steps.map(step=>step.id),['database','catalog','whatsapp','calendar','backup']);
+  assert.equal(report.total,5);assert.equal(report.completed,5);
+  assert.doesNotMatch(JSON.stringify(report),/licenseStatus|HWID|Attivazione/);
 });
 for(const change of [{services:0},{professionals:0},{assignments:0},{opening_days:0},{unassigned_services:1},{assignments:undefined}])test('incomplete catalog cannot pass '+JSON.stringify(change),()=>{
   const data=complete();Object.assign(data.catalog,change);assert.notEqual(step(buildOnboardingStatus(data),'catalog').status,'done');
@@ -48,5 +52,5 @@ test('onboarding endpoint remains token protected, no-store, origin guarded and 
   assert.equal((await fetch(url,{headers:{'X-Admin-Token':token,Origin:'https://untrusted.example'}})).status,403);
   const response=await fetch(url,{headers:{'X-Admin-Token':token}});assert.equal(response.status,200);assert.equal(response.headers.get('cache-control'),'no-store');
   const text=await response.text();assert.doesNotMatch(text,/SENSITIVE_QR_MARKER|SELECT|BEGIN PUBLIC KEY/);
-  assert.equal(JSON.parse(text).steps.length,6);
+  assert.equal(JSON.parse(text).steps.length,5);
 });

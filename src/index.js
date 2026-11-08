@@ -2,7 +2,7 @@ import 'dotenv/config';
 import fs from 'node:fs';
 import path from 'node:path';
 import { DATA_DIR } from './storage/data-paths.js';
-import { loadAndVerifyLicense, storeLicense, verifyLicenseText } from './licensing/license-utils.js';
+import {validateRuntimeEnvironment} from './services/runtime-environment.js';
 import { startAdminServer } from './services/admin-server.js';
 import { stopWhatsAppClient } from './services/whatsapp-options.js';
 import { createWhatsAppClient } from './services/whatsapp-provider.js';
@@ -12,7 +12,6 @@ import { reconcileCalendarSagas } from './services/calendar-saga.js';
 import { cancelCalendarEvent, createCalendarEvent } from './services/gcal.js';
 import { createAndLinkCalendarBooking, updateCalendarBookingSummary } from './services/calendar-outbox-booking.js';
 import { count, withTrace } from './observability/metrics.js';
-import { createLicenseMonitor } from './licensing/license-monitor.js';
 import { createMessageDispatcher } from './services/message-dispatcher.js';
 import { createPersistentMessageInbox } from './services/message-inbox.js';
 import { runCalendarSync } from './services/reconciliation/runner.js';
@@ -28,51 +27,9 @@ import {createMultiBookingConversation} from './services/multi-booking-chat.js';
 import {getCalendarClient} from './services/gcal.js';
 import {isCalendarPaused} from './services/calendar-maintenance.js';
 
-function validateEnvironment() {
-  const required = ['DATABASE_URL', 'CALENDAR_ID', 'ADMIN_TOKEN'];
-  const missing = required.filter(key => !process.env[key]?.trim());
-  if (!process.env.LICENSE_PUBLIC_KEY_PEM && !process.env.LICENSE_PUBLIC_KEY_FILE) {
-    missing.push('LICENSE_PUBLIC_KEY_PEM oppure LICENSE_PUBLIC_KEY_FILE');
-  }
-  if (!process.env.GOOGLE_CREDENTIALS_JSON && !process.env.GOOGLE_CREDENTIALS_B64 && !process.env.GOOGLE_APPLICATION_CREDENTIALS &&
-    !fs.existsSync(path.join(DATA_DIR, 'google-credentials.json'))) {
-    missing.push('credenziali Google Service Account');
-  }
-  if (missing.length) throw new Error(`Configurazione mancante: ${missing.join(', ')}`);
-  if (process.env.ADMIN_TOKEN.trim().length < 32) throw new Error('ADMIN_TOKEN deve contenere almeno 32 caratteri');
-}
-
-async function ensureLicense() {
-  // Explicit deployment configuration takes precedence over a previously stored license.
-  const text = process.env.LICENSE_TEXT || process.env.LICENSE_CODE;
-  const file = process.env.LICENSE_FILE;
-  if (text || file) {
-    const license = text || fs.readFileSync(file, 'utf8');
-    await verifyLicenseText(license);
-    await storeLicense(license);
-    return;
-  }
-  try {
-    await loadAndVerifyLicense();
-    return;
-  } catch (error) {
-    if (process.env.NODE_ENV === 'production' || !process.stdin.isTTY) throw error;
-  }
-  const { createInterface } = await import('node:readline/promises');
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
-  try {
-    const lic = (await rl.question('Riga LIC=: ')).trim();
-    const sig = (await rl.question('Riga SIG=: ')).trim();
-    await storeLicense(`LIC=${lic}\nSIG=${sig}\n`);
-  } finally {
-    rl.close();
-  }
-}
-
 async function main() {
-  validateEnvironment();
+  validateRuntimeEnvironment();
   fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
-  await ensureLicense();
   // Read non-secret salon settings before importing the legacy facade, whose
   // presentation constants are initialized at module import time.
   const settingsPool = createPgPool();
@@ -88,13 +45,13 @@ async function main() {
     handleMessage, remind24hTick, resetState, safeSend, getPrivacyText,
     startReviewFollowupsLoop, confirmAppointmentsTick, warmModels, refreshBookingsCache, refreshServicesCache,
   } = await import('./core/util.js');
-  const status = { licenseStatus:'valid', startedAt:Date.now(), online: false, qrDataUrl: null, qrUpdatedAt: 0, dbOnline: false, lastError: null, lastCalendarRecoveryAt: null, lastInboundSyncAt: null, lastInboundSyncStatus: 'disabled', queueSnapshot: null };
+  const status = { startedAt:Date.now(), online: false, qrDataUrl: null, qrUpdatedAt: 0, dbOnline: false, lastError: null, lastCalendarRecoveryAt: null, lastInboundSyncAt: null, lastInboundSyncStatus: 'disabled', queueSnapshot: null };
   const actions = { sendText: null };
   const server = await startAdminServer(status, actions);
   let client;
   const timers = [];
   let closing = false;
-  let acceptingMessages = false; // Enabled only after the post-pairing license recheck.
+  let acceptingMessages = false; // Enabled only after provider readiness and handler setup.
   const inflightMessages = new Set();
   let stopReviewLoop = () => {};
   const recoveryPool = createPgPool();
@@ -286,35 +243,6 @@ async function main() {
     });
     await client.initialize();
     if (closing) return;
-    const licenseCheckMinutes = Number(process.env.LICENSE_CHECK_INTERVAL_MINUTES || 15);
-    if (!Number.isFinite(licenseCheckMinutes) || licenseCheckMinutes < 1 || licenseCheckMinutes > 1440) {
-      throw new Error('LICENSE_CHECK_INTERVAL_MINUTES deve essere compreso tra 1 e 1440');
-    }
-    const monitor = createLicenseMonitor({
-      readLicense: async () => {
-        const configured = process.env.LICENSE_TEXT || process.env.LICENSE_CODE;
-        if (configured) return configured;
-        if (process.env.LICENSE_FILE) return fs.readFileSync(process.env.LICENSE_FILE, 'utf8');
-        const saved = await loadAndVerifyLicense();
-        return fs.readFileSync(saved.file, 'utf8');
-      },
-      verify: verifyLicenseText,
-      outageGraceMs: Number(process.env.LICENSE_READ_GRACE_MINUTES || 10) * 60_000,
-    });
-    await monitor.check();
-    if (closing) return;
-    status.licenseStatus = monitor.snapshot().status;
-    timers.push(setInterval(() => {
-      monitor.check().then(result => {
-        status.licenseStatus = monitor.snapshot().status;
-        if (result.degraded) log('warn', 'license_storage_temporarily_unavailable');
-      }).catch(error => {
-        status.licenseStatus = 'invalid';
-        count('license_verification_failed');
-        log('error', 'Licenza non valida durante il funzionamento', { code: error?.code || 'invalid_license' });
-        void shutdown(1);
-      });
-    }, licenseCheckMinutes * 60_000));
     log('info', 'WhatsApp pronto');
     void recoverCalendar();
     void inboundSync();

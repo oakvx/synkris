@@ -62,9 +62,9 @@ test('initial wizard salon name is imported once and cannot overwrite dashboard 
 });
 
 test('onboarding aggregates use the real PostgreSQL schema without exposing client records',async()=>{
-  const state={dbPool:pool,dbOnline:true,licenseStatus:'valid',online:false};
+  const state={dbPool:pool,dbOnline:true,online:false};
   const report=await readOnboardingStatus({state,backupDirectory:'/nonexistent/synk-test-backups'});
   assert.equal(report.steps.find(step=>step.id==='catalog').status,'done');
-  assert.equal(report.productionReady,false);assert.equal(report.steps.length,6);
+  assert.equal(report.productionReady,false);assert.equal(report.steps.length,5);
   assert.equal(JSON.stringify(report).includes('Synthetic client'),false);
 });

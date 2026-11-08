@@ -62,7 +62,7 @@ jobs:
       - uses: shivammathur/setup-php@v2
         with:
           php-version: '8.3'
-          extensions: pdo_pgsql, curl, sodium
+          extensions: pdo_pgsql, curl
           coverage: none
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npm run check:php
@@ -139,7 +139,7 @@ jobs:
       - name: PHP image prerequisites
         run: >-
           docker run --rm synk-ci-dashboard php -r
-          "foreach (['pdo_pgsql','curl','sodium'] as \$e) { if (!extension_loaded(\$e)) exit(1); }"
+          "foreach (['pdo_pgsql','curl'] as \$e) { if (!extension_loaded(\$e)) exit(1); }"
       - run: docker run --rm synk-ci-dashboard apache2ctl -t
       - name: Apache login and private-file smoke checks
         run: node tests/docker-smoke.mjs

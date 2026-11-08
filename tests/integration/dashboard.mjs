@@ -11,7 +11,7 @@ import {fileURLToPath} from 'node:url';
 import {testPool,resetDatabase,seed} from './helpers.mjs';
 
 const root=fileURLToPath(new URL('../../',import.meta.url));
-const pool=testPool();let ids,folder,php,gate,base,licenseText;
+const pool=testPool();let ids,folder,php,gate,base;
 const calls=[];let gateStatus=200;let cookie='',csrf='';
 const adminToken=crypto.randomBytes(32).toString('hex');
 async function freePort(){const server=net.createServer();await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port;}
@@ -25,10 +25,6 @@ async function doneJobs(){await pool.query("UPDATE public.calendar_outbox SET st
 before(async()=>{
   await resetDatabase(pool);ids=await seed(pool);
   folder=fs.mkdtempSync(path.join(os.tmpdir(),'synk-http-'));fs.mkdirSync(path.join(folder,'sessions'));fs.mkdirSync(path.join(folder,'config'));
-  const {privateKey,publicKey}=crypto.generateKeyPairSync('ed25519');
-  const bytes=Buffer.from(JSON.stringify({version:1,customer:'Synthetic integration fixture',plan:'test',hwid:'HW-INTEGRATION',expiry:Date.now()+3600000,graceDays:0}));
-  licenseText=`LIC=${bytes.toString('base64url')}\nSIG=${crypto.sign(null,bytes,privateKey).toString('base64url')}\n`;
-  fs.writeFileSync(path.join(folder,'license.txt'),licenseText);fs.writeFileSync(path.join(folder,'public.pem'),publicKey.export({type:'spki',format:'pem'}));
   gate=http.createServer(async(req,res)=>{
     const chunks=[];for await(const chunk of req)chunks.push(chunk);
     calls.push({path:req.url,token:req.headers['x-admin-token'],body:chunks.length?JSON.parse(Buffer.concat(chunks)):null});
@@ -41,7 +37,7 @@ before(async()=>{
   });
   await new Promise(resolve=>gate.listen(0,'127.0.0.1',resolve));
   const port=await freePort();base='http://127.0.0.1:'+port;
-  php=spawn(process.env.PHP_BINARY||'php',['-d','session.save_path='+path.join(folder,'sessions'),'-S','127.0.0.1:'+port,'-t',root,path.join(root,'tests/integration/php-router.php')],{cwd:root,env:{...process.env,TMPDIR:folder,DATABASE_URL:process.env.TEST_DATABASE_URL,APP_HWID:'HW-INTEGRATION',LICENSE_FILE:path.join(folder,'license.txt'),LICENSE_PUBLIC_KEY_FILE:path.join(folder,'public.pem'),LICENSE_PUBLIC_KEY_PEM:'',HWID:'',DASHBOARD_PASSWORD:'synthetic-test-password-only',ADMIN_TOKEN:adminToken,BOT_API_INTERNAL:'http://127.0.0.1:'+gate.address().port,APP_DATA_DIR:path.join(folder,'config'),TZ:'Europe/Rome'},stdio:['ignore','ignore','pipe']});
+  php=spawn(process.env.PHP_BINARY||'php',['-d','session.save_path='+path.join(folder,'sessions'),'-S','127.0.0.1:'+port,'-t',root,path.join(root,'tests/integration/php-router.php')],{cwd:root,env:{...process.env,TMPDIR:folder,DATABASE_URL:process.env.TEST_DATABASE_URL,DASHBOARD_PASSWORD:'synthetic-test-password-only',ADMIN_TOKEN:adminToken,BOT_API_INTERNAL:'http://127.0.0.1:'+gate.address().port,APP_DATA_DIR:path.join(folder,'config'),TZ:'Europe/Rome'},stdio:['ignore','ignore','pipe']});
   await new Promise((resolve,reject)=>{
     const timeout=setTimeout(()=>reject(new Error('Native PHP test server did not start.')),15000);
     php.once('error',error=>{clearTimeout(timeout);reject(error);});
@@ -121,10 +117,10 @@ test('persistent restore-maintenance flag blocks booking writes before any commi
   try{const result=await request('db_appointment_save',{method:'POST',body:{clientId:ids.client,professionalId:ids.pro,serviceIds:[ids.service],startTime:'2099-01-16T10:00'}});assert.equal(result.status,503);assert.equal(result.data.error,'calendar_reconciliation_required');}
   finally{fs.unlinkSync(flag);}
 });
-test('invalid signed license fails closed even with an authenticated session',async()=>{
-  fs.writeFileSync(path.join(folder,'license.txt'),'LIC=bad\nSIG=bad');
-  try{assert.equal((await request('db_catalog')).status,403);}
-  finally{fs.writeFileSync(path.join(folder,'license.txt'),licenseText);}
+test('legacy activation files are ignored without affecting authenticated database access',async()=>{
+  const legacy=path.join(folder,'license.txt');fs.writeFileSync(legacy,'obsolete-invalid-activation-file');
+  assert.equal((await request('db_catalog')).status,200);
+  assert.equal(fs.readFileSync(legacy,'utf8'),'obsolete-invalid-activation-file');
 });
 
 test('first-run checklist proxy keeps login, token, origin and read-only method boundaries',async()=>{

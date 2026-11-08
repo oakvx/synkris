@@ -2,7 +2,6 @@
 declare(strict_types=1);
 require_once __DIR__ . '/deploy/session.php';
 synk_require_login(); synk_check_origin();
-require_once __DIR__ . '/deploy/license-guard.php'; synkris_assert_license();
 header('Content-Type: application/json; charset=utf-8');
 $path = $_GET['path'] ?? '';
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';

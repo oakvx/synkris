@@ -28,8 +28,6 @@ services:
       SESSION_PATH: /app/runtime/session
       ADMIN_HOST: 0.0.0.0
       ADMIN_ALLOWED_ORIGINS: http://127.0.0.1:8080,http://localhost:8080
-      LICENSE_FILE: /run/secrets/license.txt
-      LICENSE_PUBLIC_KEY_FILE: /run/secrets/license-public.pem
       GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/google-service-account.json
       PUPPETEER_EXECUTABLE_PATH: /usr/bin/chromium
       CHROME_HEADLESS: '1'
@@ -37,7 +35,7 @@ services:
     volumes: &runtime_volumes
       - ./runtime:/app/runtime
       - ./setup/config.json:/app/bootstrap/config.json:ro
-      - ./secrets:/run/secrets:ro
+      - ./secrets/google-service-account.json:/run/secrets/google-service-account.json:ro
     depends_on:
       postgres: { condition: service_healthy }
     # Il bootstrap aggiorna schema/configurazione; la sessione deve restare scrivibile dal bot non-root.
@@ -71,15 +69,12 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgresql://synk:${POSTGRES_PASSWORD:?Configura POSTGRES_PASSWORD in .env}@postgres:5432/synk
-      LICENSE_FILE: /run/secrets/license.txt
-      LICENSE_PUBLIC_KEY_FILE: /run/secrets/license-public.pem
       TZ: Europe/Rome
       APP_ENV: production
       APP_DATA_DIR: /app/runtime/config
       BOT_API_INTERNAL: http://bot:3000
       CALENDAR_OUTBOX_ENABLED: '1'
     volumes:
-      - ./secrets:/run/secrets:ro
       - ./runtime/config:/app/runtime/config:ro
     depends_on:
       bootstrap: { condition: service_completed_successfully }
@@ -117,7 +112,7 @@ services:
     volumes:
       - ./runtime/config:/app/runtime/config:ro
       - ./setup/config.json:/app/bootstrap/config.json:ro
-      - ./secrets:/run/secrets:ro
+      - ./secrets/google-service-account.json:/run/secrets/google-service-account.json:ro
     command: ["node", "scripts/deploy/doctor.mjs", "--container", "--json"]
   ollama:
     image: ollama/ollama:0.12.8

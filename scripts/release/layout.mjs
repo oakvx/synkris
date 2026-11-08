@@ -9,10 +9,10 @@ export const releaseFiles = [
   'setup/config.example.json',
 ];
 export const requiredFiles = [
-  ...releaseFiles,'deploy/backup-loop.sh','src/index.js','src/licensing/license-verifier.js','scripts/db/schema.sql','scripts/deploy/bootstrap.mjs',
+  ...releaseFiles,'deploy/backup-loop.sh','src/index.js','scripts/db/schema.sql','scripts/deploy/bootstrap.mjs',
   'dashboard.php','bridge.php','dashboard/view.html','dashboard/assets/app.js','dashboard/assets/onboarding.js','dashboard/assets/app.css',
   ...['bootstrap','datetime','queries','mutations','router','calendar-outbox'].map(name=>'dashboard/api/'+name+'.php'),
-  ...['apache.conf','session.php','license-guard.php'].map(name=>'deploy/'+name),
+  ...['apache.conf','session.php'].map(name=>'deploy/'+name),
   ...['common','installa','configurazione','credenziali','ambiente','preflight','diagnostica','avvio','avvia','accesso','avvio-automatico','supporto','menu','aggiorna','ripristina','riattiva-calendar','attiva-ai','esporta-backup'].map(name=>'strumenti/'+name+'.ps1'),
 ];
 const sensitiveBasenames = new Set(['.env','config.json','bookings.json','chatdb.json','session.data.json','license.txt','google-service-account.json']);

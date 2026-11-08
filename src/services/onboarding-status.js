@@ -5,8 +5,6 @@ export function buildOnboardingStatus({state = {}, catalog = null, backup = {sta
   const add = (id,status,title,help,page = null) => steps.push({id,status,title,help,page});
   const db = state.dbOnline === true;
   add('database',db ? 'done' : state.dbOnline === false ? 'attention' : 'unknown','Database locale',db ? 'PostgreSQL risponde al controllo del processo.' : 'Apri INSTALLA_UNA_VOLTA e usa la diagnostica. Non modificare o eliminare i volumi Docker.');
-  const license = state.licenseStatus;
-  add('activation',license === 'valid' ? 'done' : license === 'invalid' || license === 'temporary_read_failure' ? 'attention' : 'unknown','Attivazione firmata',license === 'valid' ? 'Il processo ha verificato la licenza firmata e l\'HWID.' : 'Richiedi il controllo del file firmato al titolare. Non esiste un accesso anonimo senza attivazione.');
   const counts = catalog && ['services','professionals','assignments','opening_days','unassigned_services'].every(key => catalog[key] !== null && catalog[key] !== undefined && Number.isInteger(Number(catalog[key])) && Number(catalog[key]) >= 0);
   const configured = counts && Number(catalog.services) > 0 && Number(catalog.professionals) > 0 && Number(catalog.assignments) > 0 && Number(catalog.opening_days) > 0 && Number(catalog.unassigned_services) === 0;
   add('catalog',!counts || !db ? 'unknown' : configured ? 'done' : 'todo','Team, trattamenti e orari',configured && db ? 'Esistono trattamenti attivi abilitati al team e almeno un giorno di apertura.' : 'Controlla Trattamenti e team e Orari e assenze. Ogni trattamento attivo deve avere almeno una persona abilitata.','catalog');

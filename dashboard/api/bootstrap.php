@@ -1,8 +1,6 @@
 <?php
 declare(strict_types=1);
-require_once __DIR__ . '/../../deploy/license-guard.php';
 require_once __DIR__ . '/datetime.php';
-synkris_assert_license();
 ini_set('display_errors', '0');
 date_default_timezone_set((string)(getenv('TZ') ?: 'Europe/Rome'));
 

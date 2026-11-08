@@ -5,12 +5,12 @@ const env={ADMIN_TOKEN:'synthetic-runtime-support-token-only'};
 test('support summary copies only enumerated states and real booleans, never arbitrary diagnostics',()=>{
   const summary=filterRuntimeDiagnostics({whatsappReady:true,databaseReady:'SENSITIVE_MARKER',licenseStatus:'valid',lastInboundSyncStatus:'error',calendarMaintenance:false,aiConfigured:false,
     messages:{chatId:'SENSITIVE_MARKER'},lastError:'SENSITIVE_MARKER',token:'SENSITIVE_MARKER',metrics:{SENSITIVE_MARKER:1}});
-  assert.equal(summary.whatsappReady,true);assert.equal(summary.databaseReady,null);assert.equal(summary.licenseStatus,'valid');
+  assert.equal(summary.whatsappReady,true);assert.equal(summary.databaseReady,null);assert.equal(Object.hasOwn(summary,'licenseStatus'),false);
   assert.doesNotMatch(JSON.stringify(summary),/SENSITIVE_MARKER|messages|lastError|metrics|token/);
 });
 test('unexpected strings cannot masquerade as a checked status',()=>{
   const summary=filterRuntimeDiagnostics({licenseStatus:'SENSITIVE_LICENSE_PAYLOAD',lastInboundSyncStatus:'SENSITIVE_PROVIDER_ERROR'});
-  assert.equal(summary.licenseStatus,'unknown');assert.equal(summary.calendarStatus,'unknown');
+  assert.equal(Object.hasOwn(summary,'licenseStatus'),false);assert.equal(summary.calendarStatus,'unknown');
 });
 test('null or array diagnostics remain unknown',()=>{
   for(const data of [null,[],undefined])assert.equal(filterRuntimeDiagnostics(data).whatsappReady,null);

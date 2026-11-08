@@ -8,7 +8,6 @@ export function filterRuntimeDiagnostics(data = {}) {
   return {schema:1,scope:'runtime-status',
     whatsappReady:bool(data.whatsappReady),databaseReady:bool(data.databaseReady),
     calendarMaintenance:bool(data.calendarMaintenance),aiConfigured:bool(data.aiConfigured),
-    licenseStatus:allowed(data.licenseStatus,['valid','invalid','unverified','temporary_read_failure','unknown']),
     calendarStatus:allowed(data.lastInboundSyncStatus,['ok','error','partial','disabled','suspended_for_reconciliation','unknown'])};
 }
 

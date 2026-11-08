@@ -2,7 +2,7 @@ import 'dotenv/config';
 import { existsSync, readFileSync, mkdirSync, copyFileSync, writeFileSync, constants } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { verifyLicenseText } from '../../src/licensing/license-utils.js';
+import {validateBootstrapEnvironment} from '../../src/services/runtime-environment.js';
 import { assertSalonConfig } from '../../src/services/setup-validation.js';
 
 const dataDir = process.env.APP_DATA_DIR || './runtime/config';
@@ -10,16 +10,6 @@ const source = '/app/bootstrap/config.json';
 const destination = join(dataDir, 'config.json');
 const marker = join(dataDir, '.synkris-bootstrap-ok');
 
-function assertConfiguration() {
-  for (const key of ['APP_HWID', 'CALENDAR_ID', 'ADMIN_TOKEN', 'DATABASE_URL', 'LICENSE_FILE', 'LICENSE_PUBLIC_KEY_FILE']) {
-    if (!process.env[key]?.trim()) throw new Error(`Configurazione necessaria: ${key}`);
-  }
-  if (process.env.ADMIN_TOKEN.length < 32) throw new Error('ADMIN_TOKEN troppo corto');
-  if (process.env.LICENSE_DISABLE_HWID_CHECK === '1') throw new Error('Disattivazione HWID non consentita in produzione');
-  for (const file of [process.env.LICENSE_FILE, process.env.LICENSE_PUBLIC_KEY_FILE, process.env.GOOGLE_APPLICATION_CREDENTIALS]) {
-    if (!file || !existsSync(file)) throw new Error(`File richiesto non trovato: ${file || '(non configurato)'}`);
-  }
-}
 function checkConfig(location) {
   return assertSalonConfig(JSON.parse(readFileSync(location, 'utf8').replace(/^\uFEFF/, '')));
 }
@@ -29,8 +19,7 @@ function run(script) {
 }
 
 async function main() {
-  assertConfiguration();
-  await verifyLicenseText(readFileSync(process.env.LICENSE_FILE, 'utf8'));
+  validateBootstrapEnvironment();
   // Reject invalid initial setup before any schema or data change. An existing
   // deployment keeps its database-managed catalog, not a stale setup template.
   if (!existsSync(marker)) {

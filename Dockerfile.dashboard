@@ -1,13 +1,12 @@
 FROM php:8.3-apache-bookworm
-RUN apt-get update && apt-get install -y --no-install-recommends libpq-dev libcurl4-openssl-dev libsodium-dev \
+RUN apt-get update && apt-get install -y --no-install-recommends libpq-dev libcurl4-openssl-dev \
     && docker-php-ext-install -j"$(nproc)" pdo_pgsql \
     && (php -r 'exit(extension_loaded("curl") ? 0 : 1);' || docker-php-ext-install curl) \
-    && (php -r 'exit(extension_loaded("sodium") ? 0 : 1);' || docker-php-ext-install sodium) \
     && a2enmod rewrite headers \
     && rm -rf /var/lib/apt/lists/*
 RUN printf 'expose_php=Off\ndisplay_errors=Off\nlog_errors=On\nsession.cookie_httponly=1\nsession.use_strict_mode=1\nsession.cookie_samesite=Strict\n' > /usr/local/etc/php/conf.d/synk.ini
 COPY deploy/apache.conf /etc/apache2/sites-available/000-default.conf
-COPY deploy/license-guard.php deploy/session.php /var/www/html/deploy/
+COPY deploy/session.php /var/www/html/deploy/
 COPY dashboard.php bridge.php package.json /var/www/html/
 COPY dashboard /var/www/html/dashboard
 COPY assets /var/www/html/assets

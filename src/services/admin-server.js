@@ -83,7 +83,6 @@ export function createAdminApp(state, actions, { token = process.env.ADMIN_TOKEN
   app.get('/diagnostics', (_req, res) => res.json({
     whatsappReady: Boolean(state.online),
     databaseReady: state.dbOnline !== false,
-    licenseStatus: state.licenseStatus || 'unknown',
     lastCalendarRecoveryAt: state.lastCalendarRecoveryAt || null,
     lastInboundSyncAt: state.lastInboundSyncAt || null,
     lastInboundSyncStatus: isCalendarPaused()?'suspended_for_reconciliation':(state.lastInboundSyncStatus || 'disabled'),

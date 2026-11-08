@@ -28,7 +28,10 @@ try{
   const auth=await fetch(base+'/',{method:'POST',redirect:'manual',headers:{Cookie:cookie},body:new URLSearchParams({password:'synthetic-smoke-password',csrf})});
   assert.equal(auth.status,303);
   const session=auth.headers.getSetCookie()[0].split(';')[0];
-  assert.equal((await fetch(base+'/',{headers:{Cookie:session}})).status,403,'Missing production license must fail closed');
+  const dashboard=await fetch(base+'/',{headers:{Cookie:session}});
+  assert.equal(dashboard.status,200,'Authenticated dashboard must not require activation files');
+  assert.match(await dashboard.text(),/Primi passi|PRIMI PASSI/);
+  assert.equal((await fetch(base+'/bridge.php?path=%2Fstatus',{headers:{Cookie:session}})).status,503,'Unconfigured bridge must still fail closed');
   console.log('PASS: Docker Apache/auth/private-file boundary smoke checks. No real provider was contacted.');
 }finally{
   if(container)docker('rm','-f',container);
