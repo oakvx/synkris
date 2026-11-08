@@ -3,6 +3,7 @@ import path from 'node:path';
 import { readFile } from 'node:fs/promises';
 import { createPgPool } from '../../src/storage/postgres.js';
 import { DATA_DIR } from '../../src/storage/data-paths.js';
+import {seedInitialSalonSettings} from '../../src/services/initial-salon-settings.js';
 
 const pool = createPgPool();
 let transactionClient;
@@ -224,6 +225,7 @@ async function upsertAppointmentFromBooking(b) {
 
 async function importConfig(config) {
   if (!config || typeof config !== 'object') return;
+  await seedInitialSalonSettings({query:q}, config);
 
   // professionals
   if (config.professionals && typeof config.professionals === 'object') {

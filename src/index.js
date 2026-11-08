@@ -88,7 +88,7 @@ async function main() {
     handleMessage, remind24hTick, resetState, safeSend, getPrivacyText,
     startReviewFollowupsLoop, confirmAppointmentsTick, warmModels, refreshBookingsCache, refreshServicesCache,
   } = await import('./core/util.js');
-  const status = { startedAt:Date.now(), online: false, qrDataUrl: null, qrUpdatedAt: 0, dbOnline: false, lastError: null, lastCalendarRecoveryAt: null, lastInboundSyncAt: null, lastInboundSyncStatus: 'disabled', queueSnapshot: null };
+  const status = { licenseStatus:'valid', startedAt:Date.now(), online: false, qrDataUrl: null, qrUpdatedAt: 0, dbOnline: false, lastError: null, lastCalendarRecoveryAt: null, lastInboundSyncAt: null, lastInboundSyncStatus: 'disabled', queueSnapshot: null };
   const actions = { sendText: null };
   const server = await startAdminServer(status, actions);
   let client;
@@ -309,6 +309,7 @@ async function main() {
         status.licenseStatus = monitor.snapshot().status;
         if (result.degraded) log('warn', 'license_storage_temporarily_unavailable');
       }).catch(error => {
+        status.licenseStatus = 'invalid';
         count('license_verification_failed');
         log('error', 'Licenza non valida durante il funzionamento', { code: error?.code || 'invalid_license' });
         void shutdown(1);

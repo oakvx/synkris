@@ -1,5 +1,6 @@
 'use strict';
 async function loadOverview() {
+  void loadOnboarding();
   const [data,analytics] = await Promise.all([synkBridge('/api/operations'),synkBridge('/api/analytics?months=6')]);
   $('maintenanceBanner').hidden=!data.calendarMaintenance;
   const cards=[['WhatsApp',data.whatsapp?'Connesso':'Non connesso',data.whatsapp?'La sessione è operativa.':'Verifica il QR nelle conversazioni.',data.whatsapp],['Database',data.database?'Raggiungibile':'Non disponibile','PostgreSQL sul PC del salone.',data.database],['Google Calendar',data.calendarMaintenance?'Sospeso':(data.syncStatus||'Stato da verificare'),data.lastSync?'Ultima sincronizzazione: '+formatDate(data.lastSync):'Nessuna sincronizzazione entrante confermata.',!data.calendarMaintenance&&data.syncStatus==='ok']];

@@ -3,6 +3,7 @@ import { existsSync, readFileSync, mkdirSync, copyFileSync, writeFileSync, const
 import { dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { verifyLicenseText } from '../../src/licensing/license-utils.js';
+import { assertSalonConfig } from '../../src/services/setup-validation.js';
 
 const dataDir = process.env.APP_DATA_DIR || './runtime/config';
 const source = '/app/bootstrap/config.json';
@@ -20,15 +21,9 @@ function assertConfiguration() {
   }
 }
 function checkConfig(location) {
-  const config = JSON.parse(readFileSync(location, 'utf8'));
-  if (!config || !config.services || !config.professionals ||
-      Object.keys(config.services).length === 0 || Object.keys(config.professionals).length === 0) {
-    throw new Error('setup/config.json richiede services e professionals validi');
-  }
-  const emails = Object.keys(config.professionals);
-  if (emails.some(s => s.endsWith('@example.com'))) throw new Error('Sostituisci gli indirizzi dimostrativi in setup/config.json');
-  return config;
+  return assertSalonConfig(JSON.parse(readFileSync(location, 'utf8').replace(/^\uFEFF/, '')));
 }
+
 function run(script) {
   execFileSync(process.execPath, [script], { stdio: 'inherit', env: process.env });
 }
@@ -36,12 +31,16 @@ function run(script) {
 async function main() {
   assertConfiguration();
   await verifyLicenseText(readFileSync(process.env.LICENSE_FILE, 'utf8'));
+  // Reject invalid initial setup before any schema or data change. An existing
+  // deployment keeps its database-managed catalog, not a stale setup template.
+  if (!existsSync(marker)) {
+    if (!existsSync(source) && !existsSync(destination)) throw new Error('Crea setup/config.json prima del deploy');
+    checkConfig(existsSync(destination) ? destination : source);
+  }
   // Lo schema viene aggiornato ad OGNI deploy. Il marker limita solo l'import iniziale.
   // Se emergono conflitti esistenti, il deploy fallisce senza cancellare appuntamenti.
   run('scripts/db/init.mjs');
   if (existsSync(marker)) { console.log('[bootstrap] Schema verificato, configurazione gia importata'); return; }
-  if (!existsSync(source) && !existsSync(destination)) throw new Error('Crea setup/config.json prima del deploy');
-  checkConfig(existsSync(destination) ? destination : source);
   mkdirSync(dirname(destination), { recursive: true, mode: 0o700 });
   if (!existsSync(destination)) copyFileSync(source, destination, constants.COPYFILE_EXCL);
   run('scripts/db/migrate-json-to-pg.mjs');

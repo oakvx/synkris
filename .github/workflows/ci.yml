@@ -24,6 +24,8 @@ jobs:
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npm run check
       - run: npm test
+      - name: Atomic backup producer (synthetic PostgreSQL tools)
+        run: node --test tests/integration/backup-loop.mjs
       - name: Offline documentation, assets and licensing consistency
         if: matrix.node == 22
         run: python3 docs/readme/check-assets.py
@@ -69,6 +71,12 @@ jobs:
         env:
           TEST_DATABASE_URL: postgresql://synk_test:synk_test@127.0.0.1:5432/synk_test
           SYNK_TEST_DB_ALLOW_RESET: '1'
+      - name: Real PostgreSQL 16 backup and restore (disposable synthetic DB only)
+        run: node tests/integration/backup-roundtrip.mjs
+        env:
+          TEST_DATABASE_URL: postgresql://synk_test:synk_test@127.0.0.1:5432/synk_test
+          SYNK_TEST_DB_ALLOW_RESET: '1'
+          TEST_POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
   windows:
     name: Windows ${{ matrix.shell }}
     runs-on: windows-latest
@@ -92,7 +100,20 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Parse scripts and verify ZIP/protected paths
         run: |
-          try { ./tests/windows-scripts.test.ps1 }
+          try {
+            ./tests/windows-scripts.test.ps1
+            ./tests/windows-setup.test.ps1
+            ./tests/windows-credentials.test.ps1
+            ./tests/windows-credential-repair.test.ps1
+            ./tests/windows-environment.test.ps1
+            ./tests/windows-preflight.test.ps1
+            ./tests/windows-startup.test.ps1
+            ./tests/windows-ownership.test.ps1
+            ./tests/windows-technical-safety.test.ps1
+            ./tests/windows-autostart.test.ps1
+            ./tests/windows-support.test.ps1
+            ./tests/windows-menu.test.ps1
+          }
           catch {
             $detail = ($_ | Out-String) + "`n" + $_.ScriptStackTrace
             $detail = $detail.Replace('%','%25').Replace("`r",'%0D').Replace("`n",'%0A')
@@ -113,6 +134,8 @@ jobs:
         run: >-
           docker run --rm --entrypoint node synk-ci-bot --input-type=module -e
           "import assert from 'node:assert/strict'; const {default:w}=await import('whatsapp-web.js'); const {default:q}=await import('qrcode'); assert.equal(w.version,'1.34.7'); assert.equal(typeof w.Client,'function'); assert.equal(typeof w.LocalAuth,'function'); assert.equal(w.Events.READY,'ready'); assert.equal(w.WAState.CONNECTED,'CONNECTED'); assert.equal(typeof w.Client.prototype.getContactLidAndPhone,'function'); assert.equal(typeof w.Client.prototype.destroy,'function'); assert.equal(typeof q.toDataURL,'function');"
+      - name: Actual offline doctor without network or dependency startup
+        run: node tests/docker-doctor.mjs
       - name: PHP image prerequisites
         run: >-
           docker run --rm synk-ci-dashboard php -r

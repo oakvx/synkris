@@ -2,6 +2,31 @@
 
 ## Non rilasciato
 
+### Percorso guidato Windows e checklist (8 novembre 2026)
+- Wizard senza JSON manuali: catalogo/orari iniziali validati prima del DB, nome
+  salone inizializzato una volta, import file privati e ambiente riprendibile.
+- Preflight Docker locale/Linux/Compose, doctor read-only senza rete/dependencies
+  con verificatore di produzione, attesa servizi e blocco progetti di altre root.
+- Menu nel launcher esistente: avvio senza build/pull, diagnostica, finestra
+  password mascherata, autostart per utente opt-in e report status-only locale.
+- Esteso il guard Docker locale/ownership anche agli entrypoint tecnici storici,
+  prima delle operazioni di aggiornamento, restore, export, riconciliazione e AI.
+- Recupero configurazione e correzione file privati soltanto prima del primo
+  import, con conferme e backup; rollback del file rifiutato dal doctor.
+- Checklist dashboard autenticata: DB, firma/attivazione, catalogo, WhatsApp,
+  sync Calendar e backup; progress/azioni sicure, nessun vecchio verde su errore
+  e nessuna certificazione produzione implicita.
+- Backup atomici finali con staging, pg_restore --list e SHA256. Conservati i
+  precedenti in caso di errore; metadata recenti non attestano un restore.
+- 239 test Node, casi backup con fault injection, regressioni Windows 5.1/7,
+  integrazioni PG/PHP e test Docker doctor effettivo. CI aggiunge restore reale
+  di un DB PostgreSQL 16 sintetico: nessuna prova sul PC destinatario implicita.
+- Guide, checklist di collaudo e anteprime aggiornate con sole fixture sintetiche.
+  Nessuna nuova PR/tag/release o pubblicazione npm, nessun bypass attivazione,
+  allargamento porte, sandbox disattivata o cambio ai diritti d'uso.
+
+### Migrazione e decisione di licenza precedenti
+
 - Definito il modello proprietario/source-available: uso privato non commerciale
   gratuito per persone fisiche; ogni altro uso su accordo commerciale scritto,
   senza fissare prezzi o royalties e senza affermare conseguenze penali automatiche.

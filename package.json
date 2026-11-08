@@ -19,7 +19,8 @@
     "test:dashboard": "node --test tests/integration/dashboard.mjs",
     "test:integration": "npm run test:db && npm run test:dashboard",
     "release:package": "npm run check && npm test && node scripts/release/package.mjs",
-    "audit:release": "node scripts/release/audit.mjs"
+    "audit:release": "node scripts/release/audit.mjs",
+    "doctor": "node scripts/deploy/doctor.mjs"
   },
   "dependencies": {
     "dotenv": "^16.6.1",

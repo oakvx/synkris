@@ -9,6 +9,7 @@
   <script defer src="/dashboard/assets/management-appointments.js"></script>
   <script defer src="/dashboard/assets/management-catalog.js"></script>
   <script defer src="/dashboard/assets/operations.js"></script>
+  <script defer src="/dashboard/assets/onboarding.js"></script>
   <script defer src="/dashboard/assets/analytics.js"></script>
 </head>
 <body>
@@ -37,6 +38,13 @@
       <p id="pageError" class="error" role="alert" hidden></p>
 
       <section data-section="overview" aria-label="Centro operativo">
+        <article id="onboardingCard" class="card onboarding-card" aria-label="Primi passi e controlli iniziali" aria-busy="true">
+          <div class="section-heading"><div><p class="eyebrow">PRIMI PASSI</p><h2>Mettiamo tutto in sintonia</h2></div><button id="onboardingRefresh" type="button" class="secondary">Ricontrolla</button></div>
+          <div class="onboarding-progress"><progress id="onboardingProgress" max="6" value="0" aria-label="Controlli automatici completati">0/6</progress><strong id="onboardingSummary">Verifica dei primi passi…</strong></div>
+          <p id="onboardingMessage" role="status">Leggo gli stati reali di attivazione, servizi e backup.</p><div id="onboardingActions" class="button-row"></div>
+          <details><summary>Mostra i 6 controlli e cosa fare</summary><div id="onboardingList" class="onboarding-grid"></div></details>
+          <small class="muted">Questa checklist non certifica l’uso con clienti reali. Le prove WhatsApp, Calendar e ripristino restano obbligatorie.</small>
+        </article>
         <div class="section-heading"><h2>La salute del tuo salone</h2><button data-action="refresh" class="secondary">↻ Aggiorna</button></div>
         <div id="statusCards" class="stats-grid"><article class="card muted">Verifica dei servizi in corso…</article></div>
         <div class="two-columns"><article class="card"><div class="section-heading"><h2>Da tenere d’occhio</h2><span class="badge neutral">SUPERVISIONE UMANA</span></div><div id="incidents" class="stack muted">Caricamento avvisi…</div></article><article class="card"><h2>Attività del salone</h2><p class="muted">Riepilogo mensile da PostgreSQL. Nessun dato dimostrativo.</p><div id="analytics" class="stack"></div></article></div>
@@ -76,7 +84,7 @@
 
       <section data-section="settings" hidden aria-label="Impostazioni e backup">
         <div class="two-columns"><article class="card"><h2>Il profilo del salone</h2><form id="settingsForm" class="stack"><label>Nome del salone<input name="salon_name" maxlength="80" required></label><label>Telefono<input name="salon_phone" maxlength="35"></label><label>Link recensioni (HTTPS)<input name="review_url" type="url" maxlength="300"></label><label>Avviso appuntamenti<textarea name="appointment_notice" maxlength="500" rows="2"></textarea></label><button>Salva impostazioni</button></form></article><article class="card"><h2>Backup locali PostgreSQL</h2><p class="muted">Circa ogni 24 ore, conservati 14 giorni. Non includono credenziali, licenza o sessione WhatsApp. Il download contiene dati personali e non è cifrato: usa il comando tecnico per esportare su USB BitLocker.</p><div id="backupList" class="stack"></div></article></div>
-        <article class="card"><h2>Diagnostica e AI locale</h2><p class="muted">L’AI è facoltativa. Attivazione e modelli si gestiscono dal comando tecnico ATTIVA_AI_LOCALE.bat. Non può confermare da sola prenotazioni fuori dai controlli applicativi.</p><div id="aiStatus"></div><dl id="diagnostics" class="detail-grid"></dl></article>
+        <article class="card"><h2>Diagnostica e AI locale</h2><p class="muted">Per assistenza apri INSTALLA_UNA_VOLTA: scegli Diagnostica oppure Crea report assistenza. Il report è locale e seleziona solo stati tecnici; non condividere .env, QR, sessioni o file di attivazione.</p><p class="muted">L’AI è facoltativa. Attivazione e modelli si gestiscono dal comando tecnico ATTIVA_AI_LOCALE.bat. Non può confermare da sola prenotazioni fuori dai controlli applicativi.</p><div id="aiStatus"></div><dl id="diagnostics" class="detail-grid"></dl></article>
       </section>
       <footer class="main-footer"><span>synk · il tuo salone, in sintonia</span><span>Database locale. Supervisione umana, sempre.</span></footer>
     </main>

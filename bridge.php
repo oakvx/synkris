@@ -8,7 +8,7 @@ $path = $_GET['path'] ?? '';
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 if (!is_string($path) || strlen($path) > 1000 || !str_starts_with($path, '/') || str_contains($path, '//') || preg_match('~[\x00-\x20\\\\]~', $path)) { http_response_code(400); exit('{"error":"invalid_path"}'); }
 $routes = [
-    '/status'=>['GET'], '/diagnostics'=>['GET'], '/api/session/qr'=>['GET'], '/api/analytics'=>['GET'],
+    '/status'=>['GET'], '/diagnostics'=>['GET'], '/api/onboarding'=>['GET'], '/api/session/qr'=>['GET'], '/api/analytics'=>['GET'],
     '/api/settings'=>['GET','PUT'], '/api/operations'=>['GET'], '/api/chats'=>['GET'], '/api/messages'=>['GET'],
     '/api/handoff'=>['POST'], '/api/send'=>['POST'], '/api/chats/delete'=>['POST'], '/api/ai'=>['GET'],
     '/api/backups'=>['GET'], '/api/backups/download'=>['GET'], '/api/privacy/request/review'=>['POST'],
