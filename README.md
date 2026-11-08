@@ -134,7 +134,7 @@ Ogni attività ha trattamenti, orari, abitudini e modalità di gestione differen
 
 **Accessi al README** · contatore di caricamenti di terze parti
 
-<img alt="Visualizzazioni approssimative del README rilevate dal contatore esterno" src="https://visitor-badge.laobi.icu/badge?page_id=oakvx.synkris">
+<img alt="Visualizzazioni approssimative del README rilevate dal contatore esterno" src="https://visitor-badge.laobi.icu/badge?page_id=oakvx.synkris&amp;left_text=visite&amp;left_color=%23170C29&amp;right_color=%23C12CAC">
 
 <sub>Stars, forks, issues e CI provengono da GitHub (Shields.io rende le metriche). Il contatore esterno conta richieste alla sua immagine: **non** equivale alle visite ufficiali né a visitatori unici. Le visite reali sono disponibili al proprietario in <a href="https://github.com/oakvx/synkris/graphs/traffic">GitHub Insights → Traffic</a>. I badge non attestano la prontezza della release per la produzione.</sub>
 
