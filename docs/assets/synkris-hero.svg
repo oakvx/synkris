@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 550" width="1280" height="550" role="img" aria-labelledby="title desc">
+<title id="title">SYNKRIS — tecnologia che lascia spazio alle persone</title>
+<desc id="desc">Banner vettoriale viola e fucsia con il prodotto synk e un'illustrazione concettuale della dashboard e di una chat. Non è uno screenshot reale.</desc>
+<defs>
+ <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#120923"/><stop offset=".55" stop-color="#211044"/><stop offset="1" stop-color="#090613"/></linearGradient>
+ <radialGradient id="glow"><stop stop-color="#D82FC6" stop-opacity=".48"/><stop offset="1" stop-color="#D82FC6" stop-opacity="0"/></radialGradient>
+ <linearGradient id="accent" x1="0" x2="1" y1="1" y2="0"><stop stop-color="#8B5CF6"/><stop offset="1" stop-color="#FC3BC4"/></linearGradient>
+ <linearGradient id="panel" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#251343"/><stop offset="1" stop-color="#130C26"/></linearGradient>
+ <pattern id="dots" width="36" height="36" patternUnits="userSpaceOnUse"><circle cx="2" cy="2" r="1" fill="#A78BFA" opacity=".24"/></pattern>
+ <filter id="shadow"><feDropShadow dx="0" dy="18" stdDeviation="24" flood-color="#020007" flood-opacity=".45"/></filter>
+</defs>
+<rect width="1280" height="550" rx="28" fill="url(#bg)"/>
+<rect width="1280" height="550" rx="28" fill="url(#dots)"/>
+<ellipse cx="1135" cy="180" rx="340" ry="270" fill="url(#glow)"/>
+<circle cx="1110" cy="220" r="296" stroke="#E879F9" stroke-opacity=".1" stroke-width="2" fill="none"/>
+<circle cx="1110" cy="220" r="244" stroke="#E879F9" stroke-opacity=".1" stroke-width="2" fill="none"/>
+<path d="M0 491C296 369 400 624 727 451S1119 377 1280 420" stroke="#D946EF" stroke-width="2" stroke-opacity=".24" fill="none"/>
+<g font-family="Inter,Segoe UI,Arial,sans-serif">
+ <g transform="translate(64 48)">
+  <rect width="49" height="49" rx="15" fill="url(#accent)"/>
+  <path d="M15 15h22v6H21c-3 0-3 4 0 4h7c14 0 14 17-1 17H14v-6h13c5 0 5-5 0-5h-7C7 31 7 15 15 15z" fill="#160C27"/>
+  <text x="68" y="35" fill="#FFF" font-weight="800" font-size="35" letter-spacing="8">SYNKRIS</text>
+ </g>
+ <rect x="64" y="135" width="180" height="30" rx="15" fill="#4C2578" stroke="#9E63E3" stroke-opacity=".6"/>
+ <circle cx="82" cy="150" r="4" fill="#F472D0"/>
+ <text x="94" y="155" font-size="12" fill="#F3D8FF" font-weight="700" letter-spacing="1.3">PRESENTA SYNK</text>
+ <text x="64" y="237" fill="#FFF" font-size="55" font-weight="800" letter-spacing="-2">Meno gestione.</text>
+ <text x="64" y="299" fill="#FFF" font-size="55" font-weight="800" letter-spacing="-2">Più <tspan fill="#F472D0">relazione.</tspan></text>
+ <text x="64" y="354" fill="#DACCEA" font-size="21">L'assistente operativo per i saloni:</text>
+ <text x="64" y="385" fill="#DACCEA" font-size="21">appuntamenti, messaggi e agenda</text>
+ <text x="64" y="416" fill="#DACCEA" font-size="21">in un flusso più semplice.</text>
+ <rect x="64" y="454" width="200" height="44" rx="14" fill="url(#accent)"/>
+ <text x="85" y="482" font-size="15" fill="#160B21" font-weight="800">SCOPRI COME FUNZIONA</text>
+ <text x="280" y="481" font-size="18" fill="#DCC6EE">↗</text>
+</g>
+<!-- Conceptual product illustration, deliberately synthetic -->
+<g filter="url(#shadow)" font-family="Inter,Segoe UI,Arial,sans-serif">
+ <rect x="656" y="117" width="519" height="356" rx="23" fill="#120C21" stroke="#8953C5" stroke-width="2"/>
+ <rect x="656" y="117" width="519" height="57" rx="23" fill="#2B1746"/>
+ <rect x="656" y="155" width="519" height="19" fill="#2B1746"/>
+ <circle cx="680" cy="145" r="6" fill="#FA6DB8"/><circle cx="702" cy="145" r="6" fill="#A78BFA"/><circle cx="724" cy="145" r="6" fill="#60507B"/>
+ <text x="759" y="151" font-size="15" font-weight="700" fill="#F9EEFF">synk / centro operativo</text>
+ <rect x="679" y="198" width="118" height="247" rx="12" fill="#211333"/>
+ <rect x="690" y="212" width="96" height="34" rx="9" fill="#6B319E"/>
+ <text x="702" y="233" font-size="13" font-weight="700" fill="#FFF">▦  Agenda</text>
+ <text x="703" y="283" font-size="12" fill="#C7ABD8">◇  Clienti</text>
+ <text x="703" y="320" font-size="12" fill="#C7ABD8">▤  Servizi</text>
+ <text x="703" y="357" font-size="12" fill="#C7ABD8">◌  Messaggi</text>
+ <text x="703" y="394" font-size="12" fill="#C7ABD8">⚙  Stato</text>
+ <text x="823" y="220" font-size="21" font-weight="750" fill="#F8EDFF">Agenda, con chiarezza.</text>
+ <text x="824" y="244" font-size="13" fill="#C5A8DC">Esempio illustrativo · dati fittizi</text>
+ <rect x="823" y="268" width="315" height="65" rx="11" fill="#332047" stroke="#64448A"/>
+ <circle cx="846" cy="300" r="9" fill="#E879F9"/>
+ <text x="866" y="294" fill="#FFF" font-size="14" font-weight="700">Trattamento A</text>
+ <text x="866" y="315" fill="#B9A1C9" font-size="12">Orario e operatrice</text>
+ <rect x="1043" y="282" width="79" height="25" rx="12" fill="#264D42"/>
+ <text x="1056" y="298" font-size="11" fill="#B6F6DB">in agenda</text>
+ <rect x="823" y="347" width="315" height="65" rx="11" fill="#332047" stroke="#64448A"/>
+ <circle cx="846" cy="378" r="9" fill="#9B7BEA"/>
+ <text x="866" y="375" fill="#FFF" font-size="14" font-weight="700">Trattamento B</text>
+ <text x="866" y="394" fill="#B9A1C9" font-size="12">Verifica sincronizzazione</text>
+ <rect x="1028" y="362" width="95" height="25" rx="12" fill="#574021"/>
+ <text x="1039" y="378" font-size="10.5" fill="#FFE3A0">da verificare</text>
+</g>
+<g font-family="Inter,Segoe UI,Arial,sans-serif">
+ <rect x="1054" y="433" width="173" height="51" rx="16" fill="#391A56" stroke="#D660C8"/>
+ <circle cx="1080" cy="458" r="13" fill="#D946EF"/>
+ <path d="M1073 459l5 5 10-12" stroke="#FFF" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+ <text x="1101" y="454" fill="#FFF" font-size="12.5" font-weight="700">Sotto controllo</text>
+ <text x="1101" y="470" fill="#D4B5E8" font-size="10">con supervisione umana</text>
+</g>
+</svg>
