@@ -53,7 +53,7 @@ La nuova direzione evita il tipico layout da landing page con icone, card arroto
 - **Forme:** griglie leggere, filetti, numerazione e pannelli rettangolari; viola e fucsia usati per gerarchia e identificazione.
 - **Immagini:** nessuna percentuale inventata, nessun conteggio clienti fittizio spacciato per risultato, nessuna screenshot sintetica presentata come produzione.
 
-**Provenienza:** [Universalis su Font Library](https://fontlibrary.org/font/universalis) — designer Hirwen Harendal, Arkandis Digital Foundry; licenza GPLv2+ con Font Exception. La grafica di copertina contiene **solo il tracciato SVG della scritta `synkris`**, derivato dal carattere regolare, per renderla identica anche nell'anteprima GitHub. Gli altri testi sono `<text>` SVG con font stack di fallback; la loro resa dipende dai caratteri installati sul dispositivo.
+**Provenienza:** [Universalis su Font Library](https://fontlibrary.org/font/universalis) — designer Hirwen Harendal, Arkandis Digital Foundry; licenza GPLv2+ con Font Exception. La grafica di copertina contiene **il tracciato SVG della scritta `synkris`**, derivato dal carattere regolare, per renderla identica anche nell'anteprima GitHub. Anche la parola **«gestione»** nell'asset dei benefici usa tracciati con una legatura discrezionale **`s_t`** realmente presente nel font. Gli altri testi sono `<text>` SVG con font stack di fallback; la loro resa dipende dai caratteri installati sul dispositivo.
 
 **Non è incorporato né distribuito alcun file font nel repository.** I riferimenti a Font Library servono a documentare la scelta, non vengono caricati dagli SVG: GitHub e i visualizzatori che bloccano risorse esterne devono poter mostrare tutte le immagini.
 
