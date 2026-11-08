@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="520" viewBox="0 0 1280 520" role="img" aria-labelledby="title desc">
-<title id="title">SYNKRIS — synk / software operativo per saloni</title>
+<title id="title">synkris / software operativo per saloni</title>
 <desc id="desc">Composizione editoriale nero, viola e fucsia con lettering condensato e diagramma del flusso dal messaggio al calendario. Schema illustrativo, non screenshot di un prodotto connesso.</desc>
 <defs>
   <pattern id="grid" width="36" height="36" patternUnits="userSpaceOnUse"><path d="M36 0H0V36" fill="none" stroke="#644375" stroke-opacity=".16"/></pattern>
@@ -17,18 +17,16 @@
   <text x="61" y="493">SYNK  /  NODE · PHP · POSTGRESQL</text>
   <text x="1078" y="493">RC.6  /  2026</text>
 </g>
-<g transform="translate(58 82) skewX(-7)" font-family="Impact,Nimbus Sans Narrow,DejaVu Sans Condensed,sans-serif" font-weight="900" fill="#F9F2FC">
-  <text x="10" y="91" font-size="95" letter-spacing="-1">SYNKRIS<tspan fill="#E548BE">.</tspan></text>
-</g>
-<path d="M62 192H612" stroke="#A278C5" stroke-width="2"/>
-<g font-family="Impact,Nimbus Sans Narrow,DejaVu Sans Condensed,sans-serif" font-weight="850" font-stretch="condensed" letter-spacing="-.6">
-  <text x="61" y="256" font-size="62" fill="#F5EAFB">PRENOTAZIONI</text>
-  <text x="61" y="319" font-size="62" fill="#F5EAFB">E CONVERSAZIONI</text>
-  <text x="61" y="382" font-size="62" fill="#E548BE">NELLO STESSO FLUSSO.</text>
+<!-- Wordmark outlines derived from Universalis ADF Regular; self-contained, no font file embedded. -->
+<g transform="translate(61 188) scale(0.185 -0.185)" fill="#F9F2FC"><path d="M355 400C309 442 265 458 219 458C121 458 59 402 59 319C61 245 110 212 202 187C261 172 294 162 294 108C292 62 266 52 199 52C161 52 123 71 97 107L42 60C79 14 143 -11 197 -11C315 -11 371 39 371 122V124C371 199 297 234 231 251C180 262 131 278 128 322C128 369 166 395 216 395C257 395 283 378 312 351ZM778 229C778 122 730 59 648 59C565 59 521 123 521 229V448H442V229C442 90 520 -11 631 -11C698 -11 748 7 778 60V-15C778 -117 724 -164 630 -164C582 -164 541 -142 518 -108L463 -157C501 -202 568 -225 630 -225H641C786 -225 853 -149 853 -1V448H778ZM1346 270C1346 394 1289 458 1185 458C1120 458 1073 431 1037 377V448H961V0H1037V252C1039 341 1086 394 1168 394C1236 393 1270 352 1270 267V0H1346ZM1448 750V0H1524V218L1757 0H1856L1601 237L1845 448H1749L1524 253V750ZM2191 444C2173 454 2147 458 2138 458C2064 458 2015 432 1983 377V448H1907V0H1983V235C1985 336 2029 393 2115 393C2136 393 2148 386 2165 376ZM2241 448V0H2317V448ZM2279 675C2251 675 2229 652 2229 624C2229 596 2251 574 2279 574C2307 574 2330 596 2330 624C2330 652 2307 675 2279 675ZM2711 400C2665 442 2621 458 2575 458C2477 458 2415 402 2415 319C2417 245 2466 212 2558 187C2617 172 2650 162 2650 108C2648 62 2622 52 2555 52C2517 52 2479 71 2453 107L2398 60C2435 14 2499 -11 2553 -11C2671 -11 2727 39 2727 122V124C2727 199 2653 234 2587 251C2536 262 2487 278 2484 322C2484 369 2522 395 2572 395C2613 395 2639 378 2668 351Z"/></g>
+<path d="M62 240H612" stroke="#A278C5" stroke-width="2"/>
+<g font-family="Universalis ADF Std,URW Gothic,Arial,sans-serif" font-weight="400" letter-spacing="-.5">
+  <text x="61" y="294" font-size="41" fill="#F5EAFB">appuntamenti e messaggi</text>
+  <text x="61" y="347" font-size="41" fill="#E548BE">nello stesso flusso.</text>
 </g>
 <g font-family="Consolas,DejaVu Sans Mono,monospace" fill="#BBA1D0" font-size="13">
-  <text x="62" y="425">synk  /  agenda · team · messaggi</text>
-  <text x="62" y="447">Installazione locale. Supervisione umana.</text>
+  <text x="62" y="410">synk  /  agenda · team · messaggi</text>
+  <text x="62" y="432">Installazione locale. Supervisione umana.</text>
 </g>
 <path d="M655 84V459" stroke="#78518E" stroke-width="1"/>
 <g font-family="Consolas,DejaVu Sans Mono,monospace">
@@ -38,7 +36,7 @@
     <rect x="689" y="127" width="516" height="70" fill="#24152F" stroke="#674779"/>
     <rect x="689" y="127" width="6" height="70" fill="#E547BB"/>
     <text x="709" y="150" font-size="12" fill="#E548BE">01  /  MESSAGGIO</text>
-    <text x="709" y="178" font-size="19" font-family="Impact,Nimbus Sans Narrow,sans-serif" fill="#FCF6FE" letter-spacing=".6">RICHIESTA DAL CLIENTE</text>
+    <text x="709" y="178" font-size="19" font-family="Universalis ADF Std,URW Gothic,sans-serif" font-weight="400" fill="#FCF6FE" letter-spacing=".1">RICHIESTA DAL CLIENTE</text>
     <text x="1170" y="164" font-size="13" text-anchor="end" fill="#C1A9D4">in ingresso</text>
   </g>
   <path d="M949 197V213" stroke="#DB4CBF" stroke-width="2"/>
@@ -46,7 +44,7 @@
     <rect x="689" y="213" width="516" height="70" fill="#24152F" stroke="#674779"/>
     <rect x="689" y="213" width="6" height="70" fill="#9865D9"/>
     <text x="709" y="236" font-size="12" fill="#B98DF5">02  /  VERIFICA</text>
-    <text x="709" y="264" font-size="19" font-family="Impact,Nimbus Sans Narrow,sans-serif" fill="#FCF6FE" letter-spacing=".6">SERVIZI E DISPONIBILITÀ</text>
+    <text x="709" y="264" font-size="19" font-family="Universalis ADF Std,URW Gothic,sans-serif" font-weight="400" fill="#FCF6FE" letter-spacing=".1">SERVIZI E DISPONIBILITÀ</text>
     <text x="1170" y="250" font-size="13" text-anchor="end" fill="#C1A9D4">regole locali</text>
   </g>
   <path d="M949 283V299" stroke="#DB4CBF" stroke-width="2"/>
@@ -54,7 +52,7 @@
     <rect x="689" y="299" width="516" height="70" fill="#24152F" stroke="#674779"/>
     <rect x="689" y="299" width="6" height="70" fill="#E547BB"/>
     <text x="709" y="322" font-size="12" fill="#E548BE">03  /  AGENDA</text>
-    <text x="709" y="350" font-size="19" font-family="Impact,Nimbus Sans Narrow,sans-serif" fill="#FCF6FE" letter-spacing=".6">REGISTRAZIONE E SYNC</text>
+    <text x="709" y="350" font-size="19" font-family="Universalis ADF Std,URW Gothic,sans-serif" font-weight="400" fill="#FCF6FE" letter-spacing=".1">REGISTRAZIONE E SYNC</text>
     <text x="1170" y="336" font-size="13" text-anchor="end" fill="#C1A9D4">stati espliciti</text>
   </g>
   <path d="M949 369V385" stroke="#DB4CBF" stroke-width="2"/>
@@ -62,7 +60,7 @@
     <rect x="689" y="385" width="516" height="70" fill="#24152F" stroke="#674779"/>
     <rect x="689" y="385" width="6" height="70" fill="#9865D9"/>
     <text x="709" y="408" font-size="12" fill="#B98DF5">04  /  TEAM</text>
-    <text x="709" y="436" font-size="19" font-family="Impact,Nimbus Sans Narrow,sans-serif" fill="#FCF6FE" letter-spacing=".6">INTERVENTO QUANDO SERVE</text>
+    <text x="709" y="436" font-size="19" font-family="Universalis ADF Std,URW Gothic,sans-serif" font-weight="400" fill="#FCF6FE" letter-spacing=".1">INTERVENTO QUANDO SERVE</text>
     <text x="1170" y="422" font-size="13" text-anchor="end" fill="#C1A9D4">operatore</text>
   </g>
 </g>

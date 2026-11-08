@@ -48,12 +48,14 @@ Le screenshot `dashboard-*.webp` rimangono quelle derivate dal frontend con **fi
 
 La nuova direzione evita il tipico layout da landing page con icone, card arrotondate, mockup con KPI inventati e font generici.
 
-- **Titoli:** condensato pesante `Impact / Nimbus Sans Narrow / DejaVu Sans Condensed`, con composizione editoriale; gerarchia definita da dimensioni e allineamento, non da effetti glow.
+- **Titoli:** `Universalis ADF Std Regular` (Arkandis Digital Foundry), un sans geometrico non corsivo con peso normale e legature OpenType `liga` / `dlig` (`st`, `ct`, `sp`, `tt`). È volutamente distante dal precedente Impact condensato e pesante. Per il testo SVG si mantengono fallback sans leggibili.
 - **Annotazioni e microcopy:** `Consolas / DejaVu Sans Mono`; tono da pannello tecnico.
 - **Forme:** griglie leggere, filetti, numerazione e pannelli rettangolari; viola e fucsia usati per gerarchia e identificazione.
 - **Immagini:** nessuna percentuale inventata, nessun conteggio clienti fittizio spacciato per risultato, nessuna screenshot sintetica presentata come produzione.
 
-I nomi dei font sono semplici fallback di sistema; **il repository non incorpora né distribuisce font**. Il rendering dei testi può variare in base al sistema dell'utente.
+**Provenienza:** [Universalis su Font Library](https://fontlibrary.org/font/universalis) — designer Hirwen Harendal, Arkandis Digital Foundry; licenza GPLv2+ con Font Exception. La grafica di copertina contiene **il tracciato SVG della scritta `synkris`**, derivato dal carattere regolare, per renderla identica anche nell'anteprima GitHub. Anche la parola **«gestione»** nell'asset dei benefici usa tracciati con una legatura discrezionale **`s_t`** realmente presente nel font. Gli altri testi sono `<text>` SVG con font stack di fallback; la loro resa dipende dai caratteri installati sul dispositivo.
+
+**Non è incorporato né distribuito alcun file font nel repository.** I riferimenti a Font Library servono a documentare la scelta, non vengono caricati dagli SVG: GitHub e i visualizzatori che bloccano risorse esterne devono poter mostrare tutte le immagini.
 
 ## Statistiche GitHub
 

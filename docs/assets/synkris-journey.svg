@@ -7,11 +7,11 @@
 <text x="39" y="54" letter-spacing="1.5" fill="#E572D2">SYNK / FLUSSO PRENOTAZIONE</text><text x="1142" y="54" letter-spacing="1">FIG. 01</text>
 </g>
 <path d="M335 93V244M636 93V244M937 93V244" stroke="#654574"/>
-<g font-family="Impact,Nimbus Sans Narrow,DejaVu Sans Condensed,sans-serif" font-weight="900">
-<text x="41" y="150" fill="#E65BBF" font-size="70">01</text>
-<text x="342" y="150" fill="#9164E1" font-size="70">02</text>
-<text x="643" y="150" fill="#E65BBF" font-size="70">03</text>
-<text x="944" y="150" fill="#9164E1" font-size="70">04</text>
+<g font-family="Universalis ADF Std,URW Gothic,Arial,sans-serif" font-variant-ligatures="common-ligatures discretionary-ligatures" font-weight="400">
+<text x="41" y="150" fill="#E65BBF" font-size="65">01</text>
+<text x="342" y="150" fill="#9164E1" font-size="65">02</text>
+<text x="643" y="150" fill="#E65BBF" font-size="65">03</text>
+<text x="944" y="150" fill="#9164E1" font-size="65">04</text>
 <text x="42" y="183" fill="#FFFFFF" font-size="25">MESSAGGIO</text>
 <text x="343" y="183" fill="#FFFFFF" font-size="25">VERIFICA</text>
 <text x="644" y="183" fill="#FFFFFF" font-size="25">AGENDA</text>
