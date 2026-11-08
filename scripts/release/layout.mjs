@@ -13,7 +13,7 @@ export const requiredFiles = [
   'dashboard.php','bridge.php','dashboard/view.html','dashboard/assets/app.js','dashboard/assets/app.css',
   ...['bootstrap','datetime','queries','mutations','router','calendar-outbox'].map(name=>'dashboard/api/'+name+'.php'),
   ...['apache.conf','session.php','license-guard.php'].map(name=>'deploy/'+name),
-  ...['common','installa','configurazione','credenziali','ambiente','preflight','diagnostica','aggiorna','ripristina','riattiva-calendar','attiva-ai','esporta-backup'].map(name=>'strumenti/'+name+'.ps1'),
+  ...['common','installa','configurazione','credenziali','ambiente','preflight','diagnostica','avvio','avvia','aggiorna','ripristina','riattiva-calendar','attiva-ai','esporta-backup'].map(name=>'strumenti/'+name+'.ps1'),
 ];
 const sensitiveBasenames = new Set(['.env','config.json','bookings.json','chatdb.json','session.data.json','license.txt','google-service-account.json']);
 export function isReleasePath(name) {
