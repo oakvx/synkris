@@ -4,6 +4,7 @@ param([switch]$Reconfigure)
 . (Join-Path $PSScriptRoot 'credenziali.ps1')
 . (Join-Path $PSScriptRoot 'ambiente.ps1')
 . (Join-Path $PSScriptRoot 'preflight.ps1')
+. (Join-Path $PSScriptRoot 'accesso.ps1')
 $mutex = $null
 try {
     Write-Host 'synk - installazione guidata locale. Ctrl+C annulla; i file gia salvati restano disponibili.'
@@ -35,6 +36,7 @@ try {
     Write-Host 'La password dashboard e nel tuo file privato .env; non condividerlo nei log.'
     Write-Host 'Collega WhatsApp dalla dashboard e completa COLLAUDO.md prima dei clienti reali.'
     Start-Process 'http://127.0.0.1:8080/'
+    try { Show-SynkAccess } catch { Write-Warning 'Finestra credenziali non disponibile. La password resta nel file privato .env; usa lo strumento Accesso dal launcher Windows.' }
 } catch {
     Write-Error $_ -ErrorAction Continue
     exit 1
