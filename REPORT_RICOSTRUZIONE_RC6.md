@@ -15,8 +15,9 @@ La verifica locale della migrazione conta **139 test Node**; audit **19 rilievi
 della relativa PR e completare i test con account/PC reali: questi numeri non
 certificano una stabile. `RELEASE.md`, `COLLAUDO.md` e
 `deploy/THIRD_PARTY_NOTICES.md` descrivono lo stato aggiornato anche nello ZIP.
-Le vecchie sessioni non vengono convertite o cancellate e i verificatori
-firma/HWID rimangono invariati. Le sezioni seguenti conservano le evidenze della
+Le vecchie sessioni non vengono convertite o cancellate. Successivamente il
+vecchio sistema di attivazione firma/HWID è stato rimosso: i riferimenti ai
+verificatori e a libsodium sotto sono soltanto storici. Le sezioni seguenti conservano le evidenze della
 preparazione iniziale, inclusi i limiti dei runner allora non ancora eseguiti.
 
 ## Provenienza e limiti

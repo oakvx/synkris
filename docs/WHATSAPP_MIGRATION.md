@@ -2,7 +2,7 @@
 
 **Aggiornamento dell’8 novembre 2026.** Il runtime usa `whatsapp-web.js@1.34.7` (Apache-2.0) e `qrcode@1.5.4` (MIT). OpenWA e il relativo override `parse-url` sono rimossi da manifest e lockfile. Non è una migrazione a OpenWA v5 né alla WhatsApp Business Cloud API ufficiale.
 
-Il codice è ancora una RC ricostruita. I test offline non sostituiscono l’associazione e il collaudo con un account dedicato. Questa modifica non pubblica una release, non cambia la visibilità del repository e non disattiva firma/HWID.
+Il codice è ancora una RC ricostruita. I test offline non sostituiscono l’associazione e il collaudo con un account dedicato. Questa modifica non pubblica una release, non cambia la visibilità del repository e non modifica i diritti d’uso. Il successivo aggiornamento ha rimosso il vecchio sistema tecnico di attivazione.
 
 ## Che cosa cambia
 
@@ -37,11 +37,11 @@ runtime/session/
 
 Senza `SESSION_PATH`, il nuovo default è `<APP_DATA_DIR>/session/whatsapp-web.js` (con i fallback di `resolveDataDir`). Il vecchio default OpenWA `<APP_DATA_DIR>/session-v5` rimane intatto. L’intera directory privata deve restare scrivibile dall’utente del bot; il bootstrap Compose conserva il mount `runtime/` e prepara la proprietà non-root.
 
-Il backup PostgreSQL **non include il profilo LocalAuth**, le licenze o i segreti. Proteggere separatamente eventuali copie autorizzate di `runtime/` e `secrets/`. La portabilità del profilo fra PC/sistemi operativi non è garantita: potrebbe servire una nuova associazione.
+Il backup PostgreSQL **non include il profilo LocalAuth**, gli eventuali vecchi file di attivazione o i segreti. Proteggere separatamente eventuali copie autorizzate di `runtime/` e `secrets/`. La portabilità del profilo fra PC/sistemi operativi non è garantita: potrebbe servire una nuova associazione.
 
 ## Procedura tecnica di collaudo
 
-1. Usare un account WhatsApp e calendari dedicati, senza clienti reali. Verificare autorizzazione, file firmato/HWID e configurazione prima dell’avvio.
+1. Usare un account WhatsApp e calendari dedicati, senza clienti reali. Verificare autorizzazione d’uso, configurazione e credenziali delle integrazioni prima dell’avvio; non occorrono file firmati/HWID.
 2. Conservare backup verificato del database, codice/lockfile precedenti, configurazione e directory privata delle vecchie sessioni. **Mai `docker compose down -v`.**
 3. Fermare l’istanza OpenWA e qualsiasi altra copia del bot. Eseguire l’aggiornamento dal pacchetto ufficiale con `AGGIORNA_SYNK_TECNICO.bat`, oppure dal checkout autorizzato seguendo [RELEASE.md](../RELEASE.md). Non sovrascrivere `.env`, `setup/config.json`, `runtime/` o `secrets/`.
 4. Ricostruire le immagini dal nuovo lockfile e avviare i servizi. Il volume runtime resta quello esistente; la nuova sessione vive nella sottocartella mostrata sopra. Non vengono eseguite conversioni di sessione o dello schema DB specifiche di questo provider.
@@ -65,7 +65,7 @@ Le immagini del README usano soltanto fixture frontend e **non sono prove di que
 | `AUTH_TIMEOUT_MS` | Millisecondi per l’inizializzazione auth/injection del provider, default 30.000; il provider tratta `0` come default. Non è un timeout totale del collaudo. |
 | `QR_TIMEOUT_MS` | Millisecondi dall’inizio della richiesta QR, senza azzerare il termine a ogni rotazione; default `0`, nessun limite aggiuntivo. Non cambia la scadenza del QR lato WhatsApp. |
 
-La firma della licenza viene verificata prima di creare il provider e ricontrollata dopo l’associazione, prima di abilitare worker e gestione dei messaggi. Il monitor periodico resta attivo. I test con factory/encoder iniettati sono soltanto unit test: non esiste una variabile d’ambiente che salti licenza, firma o HWID.
+Il sistema di attivazione è stato successivamente rimosso: niente file firmati, HWID, scadenze o monitor. Le azioni e la gestione dei messaggi vengono abilitate soltanto dopo l’inizializzazione del provider; lo shutdown continua a bloccare nuovi invii e attendere quelli già in corso. I test con factory/encoder iniettati sono soltanto unit test, non account WhatsApp reali.
 
 ## Rollback
 

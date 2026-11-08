@@ -70,7 +70,7 @@ check('uso privato non commerciale gratuito' in license_text, 'Private noncommer
 check('persona fisica' in license_text, 'Private-use scope must be explicit')
 check('accordo commerciale scritto' in license_text and 'a titolo oneroso' in license_text, 'Non-private commercial agreement missing')
 check('prezzi o percentuali automatici' in license_text, 'Do not invent royalties/prices')
-check('rilascio è gestito manualmente' in readme, 'Activation limitations must be disclosed')
+check('non richiede file di attivazione' in readme, 'Removed activation must not remain an installation prerequisite')
 package = json.loads((ROOT / 'package.json').read_text())
 lock = json.loads((ROOT / 'package-lock.json').read_text())
 check(package.get('license') == 'SEE LICENSE IN LICENSE.md', 'npm metadata must point to the custom license')

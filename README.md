@@ -65,7 +65,7 @@ Il punto non è automatizzare tutto: è **sapere che cosa è stato salvato, che 
 
 | Componente | Responsabilità |
 | --- | --- |
-| **Dashboard PHP 8.3** | Sessioni, CSRF, verifica licenza, editor PDO e proxy interno con allowlist. |
+| **Dashboard PHP 8.3** | Login, sessioni, CSRF, editor PDO e proxy interno con allowlist. |
 | **Node.js / whatsapp-web.js** | Bot, API amministrativa interna, verifica Calendar e worker di sincronizzazione. |
 | **PostgreSQL 16** | Fonte applicativa dei dati, vincolo anti-sovrapposizione, transazioni e outbox. |
 | **Docker Compose** | Servizi locali, bootstrap, volumi persistenti e backup pianificati. |
@@ -89,20 +89,20 @@ La verifica preliminare e l’outbox **non creano una transazione ACID distribui
 
 ## Stato della release
 
-<img src="docs/assets/readiness.svg" width="1280" alt="Snapshot dell’8 novembre 2026: 239 test Node, milestone plug-and-play con 6 job CI verdi, licenza proprietaria con uso privato gratuito, 11 rilievi elevati e collaudo reale ancora richiesto.">
+<img src="docs/assets/readiness.svg" width="1280" alt="Snapshot dell’8 novembre 2026: 242 test Node, milestone senza attivazione con 6 job CI verdi, licenza proprietaria con uso privato gratuito, 11 rilievi elevati e collaudo reale ancora richiesto.">
 
-**Fotografia verificata l’8 novembre 2026**, non un badge live. Il milestone plug-and-play **`9ff8000`** ha completato [tutti i 6 job CI](https://github.com/oakvx/synkris/actions/runs/42527797589). Le modifiche successive richiedono la CI del proprio commit:
+**Fotografia verificata l’8 novembre 2026**, non un badge live. Il milestone senza attivazione **`a7deb3d`** ha completato [tutti i 6 job CI](https://github.com/oakvx/synkris/actions/runs/42531242615). Le modifiche successive richiedono la CI del proprio commit:
 
 | Controllo | Risultato / limite |
 | --- | --- |
-| **Node.js 22 e 24** | **239/239 test**, senza skip: setup, attivazione, onboarding, API/UI, provider e invii incerti. |
-| **PHP e PostgreSQL 16** | Test nativi e integrazione: proxy autenticato, transazioni, outbox e checklist. **Dump e restore reali su database CI sintetico separato**, non sul PC del salone. |
+| **Node.js 22 e 24** | **242/242 test locali**, senza skip: setup senza attivazione, onboarding, API/UI, provider e invii incerti. |
+| **PHP e PostgreSQL 16** | Test nativi e integrazione: bootstrap effettivo senza licenza, proxy autenticato, transazioni, outbox e checklist. **Dump e restore reali su database CI sintetico separato**, non sul PC del salone. |
 | **Windows PowerShell 5.1 e 7** | Parser/ZIP, wizard, file privati, avvio, collisioni progetto e autostart COM in TEMP. **Non è una prova interattiva del desktop/WSL2**. |
-| **Docker** | Build e smoke Apache; doctor reale senza rete/dependencies, senza marker import o volumi dati. |
+| **Docker** | Build e smoke Apache con login senza licenza; doctor reale senza rete/dependencies, con sole credenziali Google e senza marker import o volumi dati. |
 | **Backup interrotti** | 7 casi aggiuntivi con strumenti PG sintetici: staging, errori, checksum e conservazione dei precedenti. |
 | **Audit produzione** | **19 rilievi: 8 moderati, 11 elevati, 0 critici.** Rieseguito localmente; non è un via libera di sicurezza. SBOM: 335 componenti. |
 | **Provider e PC destinatario** | Collaudo reale Google, WhatsApp, SMTP se configurato, finestra credenziali, Docker Desktop/WSL2, aggiornamento, restore e USB BitLocker ancora richiesto. |
-| **Licenza** | **Proprietaria/source-available:** solo privato personale non commerciale gratuito; altri usi su accordo commerciale scritto. Firma/HWID restano obbligatori. |
+| **Licenza** | **Proprietaria/source-available:** solo privato personale non commerciale gratuito; altri usi su accordo commerciale scritto. Non richiede file di attivazione o HWID. |
 
 [Dettagli e limiti del lavoro plug-and-play](docs/PLUG_AND_PLAY.md). Il [report di ricostruzione](REPORT_RICOSTRUZIONE_RC6.md) conserva la baseline storica; non va confuso con i risultati attuali. **CI verde ≠ software stabile, sicuro o automaticamente open source.**
 
@@ -117,12 +117,12 @@ npm test
 npm run audit:release
 ```
 
-Questi comandi verificano i sorgenti: **non avviano un salone configurato**. L’avvio applicativo richiede configurazione locale, autorizzazione di licenza e credenziali delle integrazioni previste.
+Questi comandi verificano i sorgenti: **non avviano un salone configurato**. L’avvio applicativo richiede configurazione locale e credenziali delle integrazioni previste.
 
 <details>
 <summary><strong>PHP, database, Windows e pacchetto</strong></summary>
 
-Per i test PHP servono **PHP 8.3**, `pdo_pgsql`, `curl` e `sodium`:
+Per i test PHP servono **PHP 8.3**, `pdo_pgsql` e `curl`:
 
 ```sh
 npm run check:php
@@ -155,14 +155,14 @@ Gli output sono in `artifacts/`, esclusi da Git. Un pacchetto con `sourceDirty: 
 
 ## Installazione
 
-Il percorso attuale è una **installazione Windows di collaudo assistita da un tecnico**, con Docker Desktop/WSL2 in modalità container Linux. Non esiste un percorso senza attivazione: il file firmato è richiesto anche per l’uso privato gratuito, con rilascio manuale. Per un salone o altro uso non privato serve prima l’accordo commerciale.
+Il percorso attuale è una **installazione Windows di collaudo assistita da un tecnico**, con Docker Desktop/WSL2 in modalità container Linux. Il programma non richiede file di attivazione, chiavi di licenza o HWID. Per un salone o altro uso non privato serve prima l’accordo commerciale.
 
 1. Leggi [LEGGIMI.txt](LEGGIMI.txt) e [RELEASE.md](RELEASE.md).
 2. Estrai **tutto** lo ZIP piatto in una cartella locale di prova: individua insieme i BAT, `compose.yaml` e `strumenti/`. Non avviare i file dall’interno dello ZIP o da una cartella condivisa/cloud.
-3. Avvia `INSTALLA_UNA_VOLTA.bat`, premi Invio: il wizard chiede team, trattamenti e orari, importa i tre file privati e prepara i segreti mancanti, **senza modificare JSON a mano**. Le credenziali esistenti non vengono ruotate automaticamente.
-4. Il tecnico fornisce licenza firmata/HWID e credenziali Google; condivide i calendari dedicati. Il doctor offline e il bootstrap verificano realmente l’autorizzazione, senza bypass produzione.
-5. Accedi con la password della finestra locale mascherata e segui **Primi passi** nel Centro operativo: database, attivazione, catalogo, WhatsApp, Calendar e backup.
-6. Completa la [checklist di collaudo](COLLAUDO.md) con account/dati di prova. Anche sei controlli completati non certificano l’uso in produzione.
+3. Avvia `INSTALLA_UNA_VOLTA.bat`, premi Invio: il wizard chiede team, trattamenti e orari, importa il JSON originale del service account Google e prepara i segreti mancanti, **senza modificare JSON a mano**. Le credenziali esistenti non vengono ruotate automaticamente.
+4. Il tecnico prepara le credenziali Google e condivide i calendari dedicati. Il doctor offline verifica configurazione, segreti e formato della chiave Google prima del bootstrap; nessun rilascio di licenza è necessario.
+5. Accedi con la password della finestra locale mascherata e segui **Primi passi** nel Centro operativo: database, catalogo, WhatsApp, Calendar e backup.
+6. Completa la [checklist di collaudo](COLLAUDO.md) con account/dati di prova. Anche cinque controlli completati non certificano l’uso in produzione.
 
 **[Guida rapida Windows e menu strumenti →](deploy/PRIMI_PASSI.md)** · Node/PHP non servono sul PC ospite. Il menu include diagnostica, recupero password, report assistenza locale, autostart opt-in e correzione iniziale dei file privati. L’avvio quotidiano non esegue build/pull. L’installazione non attiva automaticamente l’autostart.
 
@@ -182,8 +182,8 @@ Il percorso attuale è una **installazione Windows di collaudo assistita da un t
 
 ## Sicurezza e dati
 
-- `.env`, `setup/config.json`, `runtime/`, sessioni, licenze e credenziali restano **fuori da Git e dagli ZIP**.
-- La chiave privata che firma le licenze va custodita separatamente, non distribuita al salone. La chiave pubblica di verifica è un file diverso.
+- `.env`, `setup/config.json`, `runtime/`, sessioni, eventuali vecchi file di attivazione e credenziali restano **fuori da Git e dagli ZIP**.
+- I vecchi file di attivazione e le relative variabili sono ignorati, non cancellati né copiati in ZIP o report. Il JSON Google resta privato e necessario all’integrazione.
 - Il token amministrativo non viene inserito nel browser; le chiamate privilegiate passano dal proxy server-side autorizzato.
 - Il backup PostgreSQL contiene dati personali e **non è cifrato automaticamente**. L’export tecnico su USB richiede BitLocker verificato.
 - Il menu crea un report locale di soli stati selezionati in `runtime/support/`: niente log grezzi, chat, QR o credenziali, nessun upload. Rileggilo prima di condividerlo. Non inviare `.env`, sessioni o backup privati. Leggi [SECURITY.md](SECURITY.md).
@@ -197,7 +197,7 @@ L’audit blocca i rilievi **critici** e i report mancanti; gli altri rilievi no
 
 | Utilizzo | Regola |
 | --- | --- |
-| Uso personale/domestico e sperimentazione personale non commerciale | Diritto d’uso gratuito, rispettando la licenza e l’attivazione tecnica. |
+| Uso personale/domestico e sperimentazione personale non commerciale | Diritto d’uso gratuito, rispettando i termini; nessuna attivazione tecnica. |
 | Uso operativo nel proprio salone, azienda o attività professionale | Accordo commerciale richiesto, anche per la sola gestione interna. |
 | Uso per clienti, associazioni, enti, scuole o altre organizzazioni | Non è uso privato: accordo richiesto anche senza utile o incasso immediato. |
 | Rivendita, hosting, SaaS, white-label o integrazione in altri prodotti | Accordo specifico; prezzo, canone o eventuale royalty vanno concordati. |
@@ -205,7 +205,7 @@ L’audit blocca i rilievi **critici** e i report mancanti; gli altri rilievi no
 **Non sono stati fissati prezzi o percentuali sui ricavi.** La licenza non crea una partecipazione automatica a qualsiasi fatturato. Il software non ha ricevuto un sistema di incasso, rendicontazione royalties o classificazione automatica dell’uso.
 
 > [!IMPORTANT]
-> **Gratuito non significa già attivato.** La versione attuale richiede una licenza firmata/HWID anche per l’uso privato. Per tale uso il diritto d’uso e la relativa attivazione sono gratuiti, ma il rilascio è gestito manualmente dal titolare: non esiste ancora un percorso self-service o un bypass. Prima della prova occorre ottenere il file necessario.
+> **Nessuna attivazione tecnica.** Il vecchio sistema di file firmati, HWID, scadenze e monitor è stato rimosso, non aggirato con un selettore “sempre valido”. Questo non concede automaticamente nuovi diritti d’uso o redistribuzione: restano i termini proprietari e le condizioni dei terzi.
 
 Rendere visibili i sorgenti non rende synk open source. AGPL, MIT o Apache permetterebbero anche usi commerciali conformi senza corrispondere automaticamente compensi al titolare: non sono il modello selezionato. Le eventuali violazioni si valutano secondo la legge applicabile, **senza promettere conseguenze penali automatiche**. Il testo personalizzato e gli accordi economici devono essere verificati da un professionista prima della distribuzione commerciale.
 
@@ -219,14 +219,14 @@ Il runtime usa **`whatsapp-web.js@1.34.7` (Apache-2.0)** e **`qrcode@1.5.4` (MIT
 
 **[Decisione di licenza e stato della distribuzione →](docs/OPEN_SOURCE_READINESS.md)**
 
-`private: true` in `package.json` continua a impedire pubblicazioni npm accidentali. I metadati rimandano ai termini personalizzati con `SEE LICENSE IN LICENSE.md`. La visibilità del repository e i controlli tecnici di attivazione non sono stati modificati.
+`private: true` in `package.json` continua a impedire pubblicazioni npm accidentali. I metadati rimandano ai termini personalizzati con `SEE LICENSE IN LICENSE.md`. La visibilità del repository non è cambiata. I vecchi controlli tecnici di attivazione sono invece stati rimossi.
 
 ## Documentazione
 
 | Voglio… | Dove andare |
 | --- | --- |
 | Migrare WhatsApp, riassociare la sessione e preparare il rollback | [Guida OpenWA → whatsapp-web.js](docs/WHATSAPP_MIGRATION.md) |
-| Capire licenza, attivazione e vincoli di distribuzione | [Decisione e readiness](docs/OPEN_SOURCE_READINESS.md) |
+| Capire diritti d’uso e vincoli di distribuzione | [Decisione e readiness](docs/OPEN_SOURCE_READINESS.md) |
 | Preparare una RC e la bozza di release | [RELEASE.md](RELEASE.md) |
 | Installare senza modificare JSON e usare il menu | [Primi passi Windows](deploy/PRIMI_PASSI.md) · [LEGGIMI.txt](LEGGIMI.txt) |
 | Distinguere miglioramenti plug-and-play e prove effettive | [Report tecnico](docs/PLUG_AND_PLAY.md) |

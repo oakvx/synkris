@@ -15,15 +15,15 @@
 | Pubblicare una prerelease realmente open source | **Non con il modello scelto:** richiedere un pagamento per ogni uso non privato non è una licenza open source. Servirebbe una nuova decisione del titolare. |
 | Dichiarare una stabile per clienti reali | **No**: restano revisione delle vulnerabilità, aspetti legali e collaudo operativo. |
 
-Questa è una valutazione tecnica e documentale, **non un parere legale**. La licenza di synk e i metadati sono stati aggiornati alla decisione del titolare. I verificatori firma/HWID, la visibilità del repository, i tag e le release remote non sono stati modificati. Il testo personalizzato e gli accordi economici richiedono revisione professionale prima della distribuzione commerciale.
+Questa è una valutazione tecnica e documentale, **non un parere legale**. La licenza di synk e i metadati sono stati aggiornati alla decisione del titolare. Il vecchio sistema tecnico di attivazione è stato rimosso. Visibilità del repository, tag e release remote non sono stati modificati; la rimozione non amplia i diritti d’uso. Il testo personalizzato e gli accordi economici richiedono revisione professionale prima della distribuzione commerciale.
 
 ## 1. Che cosa è già verificato
 
-La [CI plug-and-play `9ff8000`](https://github.com/oakvx/synkris/actions/runs/42527797589) ha completato tutti i **6 job**:
+La [CI senza attivazione `a7deb3d`](https://github.com/oakvx/synkris/actions/runs/42531242615) ha completato tutti i **6 job**:
 
-- Node.js 22 e 24: **239 test**, zero fallimenti/skip.
-- PHP 8.3 nativo con `pdo_pgsql`, `curl`, `sodium`, integrazione PostgreSQL 16,
-  proxy/checklist e roundtrip backup/restore su DB CI sintetico separato.
+- Node.js 22 e 24: **242 test**, zero fallimenti/skip.
+- PHP 8.3 nativo con `pdo_pgsql` e `curl`, integrazione PostgreSQL 16,
+  bootstrap reale senza licenza, proxy/checklist e roundtrip backup/restore su DB CI sintetico separato.
 - Windows PowerShell 5.1 e PowerShell 7: parser, ZIP, configuratore, import,
   avvio, proprietà progetto, autostart COM solo in TEMP, report e correzione iniziale.
 - Build Docker, import SDK, smoke Apache e doctor effettivo senza rete o avvio
@@ -70,13 +70,13 @@ WhatsApp Web rimane un’integrazione **non ufficiale**: una libreria permissiva
 
 ### C. Diritto d’uso e attivazione tecnica sono distinti
 
-I verificatori in `src/licensing/`, `deploy/license-guard.php` e nel bootstrap verificano il file firmato e l’HWID. **Sono rimasti invariati e sono richiesti anche per l’uso privato.** La verifica precede la creazione del provider e viene ripetuta dopo l’associazione prima di abilitare messaggi e worker. Non è stata aggiunta una variabile che trasformi qualsiasi installazione in una modalità gratuita o aggiri la firma.
+Il vecchio sistema tecnico di attivazione è stato **eliminato**: verificatori Node/PHP, file firmati, HWID, scadenze, monitor e vincoli di bootstrap non fanno più parte dell’applicazione. Installazione, dashboard, associazione WhatsApp e API autenticate non richiedono una licenza tecnica, una chiave pubblica o un rinnovo. Non è un flag di bypass o un falso stato “valido”.
 
-Per l’uso privato non commerciale il diritto d’uso e la relativa attivazione sono gratuiti secondo la licenza, ma la richiesta e l’emissione del file sono gestite manualmente dal titolare. Non esiste ancora un percorso self-service: la gratuità giuridica non equivale a un’attivazione già disponibile.
+Restano configurazione, credenziali Google, password database/dashboard, token admin, login, controlli origin/CSRF, porte loopback e riconciliazione dopo restore. I vecchi file/impostazioni di attivazione sono ignorati e non cancellati o esportati; le esclusioni e le redazioni difensive restano per evitare fughe di dati legacy.
 
-Per gli usi non privati il file firmato non sostituisce l’accordo economico. Il software non classifica automaticamente la natura dell’utilizzo, non calcola royalties e non ha ricevuto un sistema di incasso o rendicontazione. I costi di servizi terzi, hardware, installazione assistita e assistenza restano distinti dal diritto d’uso privato gratuito.
+**Questa rimozione non cambia il modello proprietario né concede nuovi diritti d’uso o redistribuzione.** Per gli usi non privati resta l’accordo richiesto. Il software non classifica la natura dell’utilizzo e non calcola o incassa royalties. I costi dei servizi terzi, hardware, installazione e assistenza restano distinti dal diritto d’uso privato gratuito.
 
-**Le anteprime restano soltanto frontend con fixture documentali**, non un’applicazione avviata senza licenza. Prima della distribuzione occorre documentare e verificare con il titolare il processo manuale di rilascio, senza pubblicare chiavi private o attivazioni cliente.
+**Le anteprime restano soltanto frontend con fixture documentali**, non una prova dei provider reali. Non pubblicare segreti, vecchie attivazioni cliente, sessioni o backup privati.
 
 ### D. Prima di rendere pubblico serve una revisione della cronologia
 
@@ -85,7 +85,7 @@ Il checkout disponibile è **shallow**. `npm run check:repo` controlla l’alber
 Prima di cambiare visibilità:
 
 - [ ] Ottenere e scansionare la cronologia completa e i ref destinati alla pubblicazione.
-- [ ] Rivedere log, artifact, immagini Docker, dump, licenze cliente, profili browser, sessioni e QR.
+- [ ] Rivedere log, artifact, immagini Docker, dump, vecchi file di attivazione, profili browser, sessioni e QR.
 - [ ] Revocare eventuali credenziali esposte: cancellare un file non revoca un segreto.
 - [ ] Verificare copyright, provenienza degli asset e diritti sui contributi.
 - [ ] Stabilire un canale privato per le segnalazioni di vulnerabilità e regole di contribuzione coerenti con la licenza.
@@ -122,7 +122,7 @@ Prima di un impiego con dati reali occorrono almeno:
 
 1. **Formalizzare il modello scelto:** uso privato non commerciale gratuito; tutti gli altri usi su accordo commerciale scritto. Verifica professionale di titolarità, testo e contratti economici.
 2. **Revisionare i componenti effettivi dopo la migrazione:** inventario, avvisi, licenze e 19 rilievi; non soltanto il nuovo SDK.
-3. **Collaudare installazione e attivazione:** rilascio manuale dell’attivazione privata gratuita e procedure commerciali distinte; nuova sessione WhatsApp, nessun bypass nascosto.
+3. **Collaudare l’installazione senza attivazione tecnica:** Google, nuova sessione WhatsApp, credenziali e protezioni operative; verificare separatamente l’autorizzazione d’uso applicabile.
 4. **Revisionare un’eventuale apertura pubblica:** cronologia completa, segreti, diritti e canale security.
 5. **Pubblicare eventualmente una RC sperimentale**, con limiti e audit chiari, da un commit esatto e verificato. Richiede una nuova autorizzazione alla pubblicazione.
 6. **Promuovere a stabile solo dopo il collaudo reale** e la revisione di sicurezza.

@@ -12,13 +12,13 @@ corruzioni ma non è una firma digitale di autenticità. Il manifest contiene
 commit sorgente e hash di ogni file. Non sono incluse credenziali, sessioni o dati
 cliente: configurarli solo sul PC del salone.
 
-### Licenza e attivazione
+### Diritti d’uso
 
 Licenza proprietaria/source-available: solo uso privato non commerciale gratuito;
 ogni altro uso richiede un accordo commerciale scritto a titolo oneroso, salvo
 diversa autorizzazione scritta. Prezzi e royalties vanno concordati, non sono
-automatici. Il file di attivazione firmato/HWID serve anche al privato: il suo
-rilascio è gratuito ma manuale, da richiedere al titolare prima della prova.
+automatici. Il vecchio sistema tecnico di attivazione è stato rimosso: non servono file
+firmati/HWID, chiavi di licenza o rinnovi. I diritti d’uso non sono stati ampliati.
 Non è una release open source. Leggere `LICENSE.md`.
 
 ### Limiti da non ignorare

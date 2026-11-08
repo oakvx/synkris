@@ -12,9 +12,8 @@ privato non commerciale di una persona fisica è gratuito; ogni altro uso, inclu
 quello interno a un salone, richiede prima un accordo commerciale scritto a titolo
 oneroso, salvo diversa autorizzazione scritta. Prezzi e royalties non sono fissati
 in automatico. Vedi `LICENSE.md` e la revisione legale richiesta prima della
-distribuzione commerciale. Il file firmato/HWID resta necessario anche per il
-privato: l’attivazione privata è gratuita ma va richiesta al titolare, con rilascio
-manuale; non esiste ancora un percorso self-service.
+distribuzione commerciale. Il vecchio sistema tecnico di attivazione è stato
+rimosso: non servono file firmati, HWID o rinnovi. I diritti d’uso e le condizioni dei terzi restano invariati.
 
 **Blocchi per una stabile:** completare `COLLAUDO.md`, valutare/correggere gli
 avvisi delle dipendenze, verificare distribuzione e licenze di terzi e approvare
@@ -25,7 +24,7 @@ WhatsApp reale.
 
 ## 1. Verificare il codice
 
-Prerequisiti: Node 22/24; PHP 8.3 con pdo_pgsql, curl, sodium; Docker per la build;
+Prerequisiti: Node 22/24; PHP 8.3 con pdo_pgsql e curl; Docker per la build;
 PowerShell 5.1 o 7 per i test Windows.
 
 ```sh
@@ -116,10 +115,12 @@ istruzioni, senza creare tag che puntino a modifiche non salvate.
 
 Estrarre tutto in una cartella Windows locale dedicata e fissa (evitare cartelle
 condivise o sincronizzate). `INSTALLA_UNA_VOLTA.bat` apre il menu: Invio avvia
-il wizard per team, trattamenti e orari, importazione dei tre file privati e
-configurazione CALENDAR_ID/APP_HWID. Non servono JSON manuali o Node/PHP sul PC.
-Il doctor Docker è read-only, senza rete o dipendenze avviate e usa il verificatore
-di produzione prima del bootstrap. Il bootstrap verifica realmente firma e HWID.
+il wizard per team, trattamenti e orari, importazione del solo JSON Google e
+configurazione CALENDAR_ID. Non servono JSON manuali o Node/PHP sul PC.
+Il doctor Docker è read-only, senza rete o dipendenze avviate: verifica
+configurazione, segreti e credenziali Google prima del bootstrap. Il bootstrap
+non richiede licenze; mantiene validazione del setup, import una tantum e controlli
+sui prerequisiti prima delle modifiche DB.
 `deploy/PRIMI_PASSI.md` è incluso nello ZIP e nei percorsi già consentiti dall'updater.
 
 Il menu include diagnostica, finestra password mascherata, report assistenza
@@ -156,7 +157,7 @@ richiede di allargare la allowlist ai dati privati. La guida estesa è in
 `docs/WHATSAPP_MIGRATION.md` nel repository (i documenti `docs/` non sono nello
 ZIP runtime). Collaudare QR, riavvio, revoca, LID se disponibili e presa in carico.
 Un invio dall’esito incerto non va ritentato automaticamente: verificare prima
-WhatsApp. Il passaggio non cambia le verifiche di licenza firmata/HWID.
+WhatsApp. Il vecchio sistema di attivazione è stato rimosso anche dal percorso di avvio del provider.
 
 Le password casuali vengono generate solo per i valori mancanti/dimostrativi,
 mai ruotando alla cieca una password di database esistente:

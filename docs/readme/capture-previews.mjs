@@ -1,6 +1,6 @@
 import {buildOnboardingStatus} from '../../src/services/onboarding-status.js';
 // Documentation-only, read-only frontend rendering. No PHP/Node application server,
-// licensing bypass, real database, account, session, credentials or provider calls.
+// real database, account, session, credentials or provider calls.
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -84,7 +84,7 @@ const server=http.createServer(async(req,res)=>{
     }
     if(url.pathname==='/bridge.php'){
       const bridge=url.searchParams.get('path');
-      const data=bridge==='/api/onboarding'?buildOnboardingStatus({state:{dbOnline:true,licenseStatus:'valid',online:false},catalog:{services:2,professionals:1,assignments:2,opening_days:6,unassigned_services:0},now:Date.parse('2026-11-08T12:00:00Z')}):bridge==='/api/operations'?operations:bridge==='/api/analytics?months=6'?analytics:null;
+      const data=bridge==='/api/onboarding'?buildOnboardingStatus({state:{dbOnline:true,online:false},catalog:{services:2,professionals:1,assignments:2,opening_days:6,unassigned_services:0},now:Date.parse('2026-11-08T12:00:00Z')}):bridge==='/api/operations'?operations:bridge==='/api/analytics?months=6'?analytics:null;
       return json(data?200:404,data||{error:'no_documentation_fixture'});
     }
     if(url.pathname==='/'){
@@ -120,8 +120,8 @@ try {
   await page.goto(origin,{waitUntil:'networkidle0'});
   await page.waitForSelector('#statusCards .card');
   assert.equal(await page.$eval('#pageError',node=>node.hidden),true);
-  assert.equal(await page.$eval('#onboardingList',node=>node.children.length),6);
-  assert.equal(await page.$eval('#onboardingProgress',node=>node.value),3);
+  assert.equal(await page.$eval('#onboardingList',node=>node.children.length),5);
+  assert.equal(await page.$eval('#onboardingProgress',node=>node.value),2);
   await page.screenshot({path:path.join(output,'dashboard-overview.webp'),type:'webp',quality:88});
   await page.evaluate(()=>synkShowPage('appointments'));
   await page.waitForSelector('#appointmentList tbody tr');

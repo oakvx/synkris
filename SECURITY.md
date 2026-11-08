@@ -2,11 +2,11 @@
 
 Repository da mantenere privato, soprattutto durante lo sviluppo e il pilota.
 Non creare issue contenenti log con contatti clienti, numeri, messaggi, token,
-QR o dati di prenotazione. Tratta la chiave privata di firma delle licenze e
-le credenziali Google come materiale altamente sensibile.
+QR o dati di prenotazione. Tratta le credenziali Google, i token e le password come materiale altamente
+sensibile; proteggi anche eventuali vecchi file o chiavi di attivazione.
 
 I file `.env`, `secrets/`, dati PostgreSQL, `bookings.json`, sessioni browser,
-licenze cliente e certificati privati **non devono essere committati**.
+vecchi file di attivazione e certificati privati **non devono essere committati**.
 Lo script `npm run check:repo` intercetta alcune esposizioni accidentali, ma
 non puo riconoscere tutte le credenziali o i dati personali.
 
@@ -29,8 +29,8 @@ non una modifica alle porte del wizard. Conservare backup cifrati separati.
   clic; lo svuotamento condizionale degli appunti non elimina cronologia/cloud
   Windows. Preferire un gestore password; evitare cartelle sincronizzate.
 - Il report assistenza in `runtime/support/` usa una allowlist di metadati/stati,
-  non filtri su log arbitrari. Esclude chat, nomi/contatti, QR, token, HWID,
-  payload licenza e credenziali. Nessun upload automatico: rileggere prima di
+  non filtri su log arbitrari. Esclude chat, nomi/contatti, QR, token,
+  credenziali e dati del precedente sistema di attivazione. Nessun upload automatico: rileggere prima di
   condividere anche un report minimizzato. Non è una scansione forense completa.
 - Il token admin viene usato solo dal worker interno al container bot esistente,
   con richiesta loopback, timeout, limite corpo e redirect vietati. Non viene
@@ -46,17 +46,17 @@ non una modifica alle porte del wizard. Conservare backup cifrati separati.
 
 ## Integrità e responsabilità della distribuzione
 
-synk distribuito con sorgente modificabile non offre DRM inviolabile: chi modifica il codice può aggirare controlli locali. Per gestire una licenza commerciale mantenere il repository privato, custodire fuori dal repository la chiave di firma, distribuire immagini versionate e formalizzare il diritto d'uso. Il controllo del rollback dell'orologio è limitato all'esecuzione corrente e non garantisce revoca remota; i file clienti, le sessioni e i backup richiedono protezione e conservazione locale concordate.
+Distribuire immagini versionate da un commit verificato, controllare manifest e provenienza del pacchetto e formalizzare il diritto d'uso quando richiesto. I file clienti, le sessioni e i backup richiedono protezione e conservazione locale concordate. La rimozione del sistema di attivazione non modifica login, token, sessioni, controlli origin/CSRF, porte loopback o i blocchi di riconciliazione.
 
-## Licenza d’uso e attivazione
+## Diritti d’uso e rimozione dell’attivazione
 
 Il modello è proprietario/source-available: solo l’uso privato non commerciale
 è gratuito; gli altri usi richiedono l’accordo commerciale descritto in LICENSE.md.
-Anche l’attivazione privata gratuita richiede un file firmato rilasciato
-manualmente dal titolare. I verificatori non sono stati disattivati e non
-esiste un selettore anonimo «privato» che aggiri firma/HWID. La firma non
-classifica l’utilizzo concreto e non è un sistema automatico di incasso royalties.
-La chiave privata di firma deve restare separata dai sorgenti e dalle installazioni.
+Il vecchio meccanismo di file firmati/HWID, scadenze e monitor è stato eliminato,
+non sostituito da una verifica sempre valida. Non servono chiavi di licenza o
+rinnovi. Le credenziali Google restano obbligatorie per l’integrazione.
+Gli eventuali vecchi file non sono letti, cancellati o esportati nei report/ZIP;
+le esclusioni e la redazione difensiva restano per non esporre dati legacy.
 
 ## Prerelease ricostruita RC6
 

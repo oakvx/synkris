@@ -1,17 +1,16 @@
 SYNK 1.2 RC6  |  RELEASE CANDIDATA AL COLLAUDO
 ================================================
 
-DIRITTI D'USO E ATTIVAZIONE
+DIRITTI D'USO
   - Licenza proprietaria/source-available: non e' software open source.
   - Solo l'uso privato non commerciale di una persona fisica e' gratuito.
     Ogni altro uso, anche nel proprio salone o per un'organizzazione senza
     utile, richiede prima un accordo commerciale scritto a titolo oneroso,
     salvo diversa autorizzazione scritta del titolare. Leggere LICENSE.md.
   - Non sono fissati prezzi o percentuali automatici sui ricavi.
-  - Il file firmato/HWID e' richiesto anche per uso privato. In tale caso
-    l'attivazione e' gratuita, ma il rilascio va richiesto al titolare ed e'
-    manuale: non esiste ancora un percorso self-service o senza verifica.
-    Il file firmato non sostituisce l'accordo quando l'uso non e' privato.
+  - Nessuna attivazione tecnica: non servono file di licenza, chiavi
+    pubbliche, HWID o rinnovi. Il vecchio sistema e' stato rimosso; i diritti
+    d'uso e le condizioni dei componenti di terzi non cambiano.
 
 USO QUOTIDIANO - SALONE
   1) Accendi il PC e accedi a Windows. Il tecnico deve aver attivato
@@ -34,17 +33,17 @@ PER IL TECNICO (PRIMA INSTALLAZIONE)
     Non avviare i file dentro lo ZIP. Node/PHP sono nei container, non servono
     sul PC. Guida completa: deploy/PRIMI_PASSI.md.
   - Avvia INSTALLA_UNA_VOLTA.bat e premi Invio: wizard per salone, team,
-    trattamenti e orari, senza JSON manuali. Importa i tre file originali:
-      license.txt, license-public.pem, google-service-account.json
-    Puoi trascinarli nella console o incollare il PERCORSO, non il contenuto.
-    Fornisci APP_HWID della tua attivazione e ID del calendario Google.
+    trattamenti e orari, senza JSON manuali. Importa il solo file originale:
+      google-service-account.json
+    Puoi trascinarlo nella console o incollare il PERCORSO, non il contenuto.
+    Fornisci l’ID del calendario Google; nessun HWID viene richiesto.
   - Condividi ogni calendario operativo con il service account. Il doctor
-    offline controlla forma, firma/HWID e chiavi, non la condivisione Google.
+    offline controlla configurazione, segreti e chiave Google, non la condivisione.
   - La password dashboard appare mascherata in una finestra locale: copia e
     rivelazione solo su clic. Non viene stampata o rigenerata. La chiusura non
     cancella la cronologia appunti/cloud Windows. Usa un gestore password.
-  - Segui Primi passi nel Centro operativo: database, attivazione, catalogo,
-    WhatsApp, Calendar e backup. Anche 6/6 non attestano il collaudo reale.
+  - Segui Primi passi nel Centro operativo: database, catalogo,
+    WhatsApp, Calendar e backup. Anche 5/5 non attestano il collaudo reale.
   - Verifica creazione, spostamento, annullamento e sync entrante Calendar.
     Un errore Google deve bloccare la conferma.
   - Associa la sessione WhatsApp col QR, verifica riavvio e riconnessione.

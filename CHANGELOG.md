@@ -2,6 +2,28 @@
 
 ## Non rilasciato
 
+### Rimozione del vecchio sistema di attivazione (8 novembre 2026)
+- Eliminati verificatori Node/PHP, worker firma, HWID, scadenze, import dei file
+  di licenza e monitor periodico; nessun flag di bypass o stato sempre valido.
+- Runtime, dashboard e bootstrap funzionano senza file/chiavi di licenza.
+  Rimangono login, sessioni, origin/CSRF, token, Google, validazione setup,
+  readiness WhatsApp, loopback e protezioni dopo restore.
+- Wizard, avvio e riparazione Windows richiedono solo il JSON Google; invariati
+  permessi, backup atomico, mutex, ownership, conferme e rollback del rifiutato.
+- Doctor e report non espongono più stati di licenza. Onboarding ridotto a cinque
+  controlli: database, catalogo, WhatsApp, Calendar e backup.
+- Nessuna cancellazione di dati legacy; preservate esclusioni e redazione.
+  Compose monta solo il JSON Google dove serve, non tutti i segreti nel PHP.
+  Rimossi requisiti PHP/libsodium e file obsoleti dalla allowlist di rilascio.
+- Test aggiornati: startup e installazione senza attivazione, impostazioni
+  obsolete ignorate, bootstrap/import una tantum su PostgreSQL CI sintetico,
+  accesso PHP con login e protezioni auth/CSRF ancora obbligatorie.
+- Aggiornati guide, termini tecnici obsoleti e anteprime. I diritti d’uso
+  proprietari e le licenze dei terzi non sono stati ampliati o sostituiti.
+
+Le voci successive conservano la cronologia; i riferimenti all’attivazione
+precedente sono superati dalla rimozione sopra.
+
 ### Percorso guidato Windows e checklist (8 novembre 2026)
 - Wizard senza JSON manuali: catalogo/orari iniziali validati prima del DB, nome
   salone inizializzato una volta, import file privati e ambiente riprendibile.

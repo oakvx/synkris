@@ -38,13 +38,13 @@ L'accordo commerciale identifica le parti, gli usi autorizzati, sedi/installazio
 
 Questa licenza **non stabilisce prezzi o percentuali automatici**, non attribuisce implicitamente al titolare una quota di qualsiasi fatturato e non sostituisce l'accordo commerciale. Il pagamento di un importo non concordato o la disponibilità dei sorgenti non autorizzano di per sé gli usi della sezione 3.
 
-## 5. Attivazione tecnica e autorizzazione d'uso
+## 5. Assenza di attivazione tecnica e autorizzazione d'uso
 
-La versione attuale dell'applicazione richiede un file di attivazione firmato e associato all'installazione/HWID **anche per l'uso privato**. Per l'uso che rientra nella sezione 2, tale attivazione è rilasciata senza corrispettivo per il diritto d'uso privato; la richiesta e l'emissione sono attualmente gestite manualmente dal titolare. Non esiste nel software un rilascio automatico o una modalità anonima che aggiri la verifica.
+Il precedente sistema tecnico di attivazione è stato rimosso. Questa versione non richiede file di licenza firmati, chiavi di verifica, HWID, rinnovi o controlli periodici per l'installazione e l'avvio. Le credenziali delle integrazioni e i normali controlli di autenticazione rimangono necessari.
 
-La concessione giuridica di uso privato gratuito non equivale a un'attivazione tecnica già disponibile. Prima di pianificare l'uso occorre ottenere il file necessario tramite i canali ufficiali synk. Il file firmato verifica l'attivazione, ma **non sostituisce l'accordo commerciale** quando richiesto e non prova che l'utilizzo concreto sia privato.
+L'assenza di un blocco tecnico **non modifica i diritti d'uso** delle sezioni precedenti, non concede usi non privati senza l'accordo richiesto e non autorizza automaticamente redistribuzione o sublicenza. L'accesso ai sorgenti e le modifiche al programma non sostituiscono l'autorizzazione d'uso applicabile.
 
-L'accesso ai sorgenti o la modifica del programma non autorizzano ad aggirare i limiti d'uso non privato stabiliti da questi termini. L'attivazione locale non è dichiarata un DRM inviolabile né un sistema automatico di controllo o incasso dei ricavi.
+Il software non classifica automaticamente la natura dell'utilizzo, non calcola royalties e non costituisce un sistema di incasso o rendicontazione. I componenti di terzi rimangono soggetti alle loro condizioni.
 
 ## 6. Componenti di terze parti
 
@@ -68,4 +68,4 @@ Il titolare si riserva di tutelare i propri diritti nelle sedi competenti. Event
 
 Un accordo scritto con il titolare può concedere diritti ulteriori sul codice di synk o disciplinare in modo specifico un utilizzo. Restano autonomi i diritti di terzi e le disposizioni inderogabili di legge. Questi termini accompagnano le copie distribuite con questa licenza e non pretendono di revocare diritti già validamente concessi con altri accordi.
 
-Per ottenere un'attivazione privata o concordare un uso non privato, contattare il titolare tramite i canali ufficiali synk. Prima della distribuzione commerciale vanno verificati con un professionista l'intestazione legale del titolare, i recapiti, il processo di accettazione, i contratti economici e la compatibilità delle dipendenze.
+Per chiarimenti sui diritti d'uso o per concordare un uso non privato, contattare il titolare tramite i canali ufficiali synk. Prima della distribuzione commerciale vanno verificati con un professionista l'intestazione legale del titolare, i recapiti, il processo di accettazione, i contratti economici e la compatibilità delle dipendenze.

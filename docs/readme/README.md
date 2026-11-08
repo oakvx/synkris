@@ -24,11 +24,11 @@ Le anteprime raster derivano da `dashboard/view.html` e dai veri script/CSS del 
 - sostituisce i placeholder di versione e CSRF con metadati documentali, non una sessione applicativa;
 - usa `Cliente esempio NN`, email del dominio riservato `example.com`, date fisse e nessun contatto reale;
 - rende esplicita l’analitica sintetica e usa `+` al posto del carattere full-width quando mancano i font corrispondenti;
-- rende i sei controlli Primi passi tramite il builder effettivo e verifica 3/6 completati nella fixture (non una connessione reale);
+- rende i cinque controlli Primi passi tramite il builder effettivo e verifica 2/5 completati nella fixture (non una connessione reale);
 - serve soltanto file statici autorizzati e risposte GET predefinite; rifiuta le scritture;
 - blocca le richieste del frontend fuori dal server di fixture e chiude browser/server alla fine.
 
-**Non avvia il backend PHP/Node, non legge `.env` o `secrets/`, non modifica la licenza e non introduce una modalità demo/bypass nell’applicazione.** Queste immagini non provano il funzionamento dei provider reali.
+**Non avvia il backend PHP/Node, non legge `.env` o `secrets/`, non modifica i diritti d’uso e non introduce una modalità demo nell’applicazione.** Queste immagini non provano il funzionamento dei provider reali.
 
 ## Rigenerare gli SVG
 

@@ -133,7 +133,7 @@ b += text(119, 245, 'Accesso alla dashboard', 13, MUTED)
 b += rect(365, 184, 282, 105, WHITE, 15, BORDER)
 b += icon('shield', 385, 203, GREEN, 28)
 b += text(430, 215, 'PHP 8.3', 21, INK, 650)
-b += lines(430, 244, ['Sessione, CSRF, licenza', 'Editor e proxy con allowlist'], 13, MUTED, 400, 20)
+b += lines(430, 244, ['Login, sessione e CSRF', 'Editor e proxy con allowlist'], 13, MUTED, 400, 20)
 b += rect(365, 352, 282, 119, WHITE, 15, BORDER)
 b += icon('database', 385, 373, GREEN, 28)
 b += text(430, 386, 'PostgreSQL 16', 21, INK, 650)
@@ -191,10 +191,10 @@ save('booking-flow.svg', 'Il flusso di una prenotazione', 'Scelta dei servizi, v
 # Honest status strip. It is explicitly a dated snapshot, not a live badge.
 b = rect(0, 0, 1280, 328, CREAM, 22)
 b += text(40, 51, 'Verifiche verdi. Nessun via libera automatico.', 29, INK, 650)
-b += text(42, 83, '8 novembre 2026 · milestone 9ff8000 · audit del lockfile migrato · nessun badge live', 14, MUTED)
+b += text(42, 83, '8 novembre 2026 · milestone a7deb3d · audit del lockfile migrato · nessun badge live', 14, MUTED)
 status = [
-    ('check', 'TEST LOCALI', '239 test Node', 'CI 9ff8000: 6/6 · controlla il tuo ref', GREEN, '#e6efe3'),
-    ('lock', 'LICENZA', 'Proprietaria', 'Privato gratuito · altri usi su accordo', AMBER, '#f7ead3'),
+    ('check', 'TEST NODE', '242 test Node', 'CI a7deb3d: 6/6 · controlla il tuo ref', GREEN, '#e6efe3'),
+    ('lock', 'DIRITTI D’USO', 'Proprietari', 'Nessuna attivazione tecnica richiesta', AMBER, '#f7ead3'),
     ('shield', 'DIPENDENZE', '11 rilievi elevati', '19 totali · 0 critici nell’audit', AMBER, '#f7ead3'),
     ('calendar', 'USO REALE', 'Collaudo richiesto', 'Provider, recovery e PC del salone', AMBER, '#f7ead3'),
 ]
@@ -206,6 +206,6 @@ for i, (key, label, value, note, color, fill) in enumerate(status):
     b += text(x + 64, 149, label, 10, MUTED, 650, 'letter-spacing=".8"')
     b += text(x + 19, 198, value, 21, color, 650)
     b += text(x + 19, 238, note, 11, MUTED)
-save('readiness.svg', 'Stato reale della release al 2026-11-08', 'CI del milestone plug-and-play 9ff8000: 6 job verdi, 239 test Node. Doctor Compose effettivo isolato e restore PostgreSQL 16 su dati CI sintetici, non sul PC destinatario. Il modello scelto è proprietario/source-available: uso privato non commerciale gratuito, altri usi su accordo commerciale. Non è open source. OpenWA rimosso; nuovo provider whatsapp-web.js Apache-2.0. Test Node locali: 239, zero skip. Audit: 19 rilievi, 11 elevati, zero critici. La CI del milestone non sostituisce quella dei commit successivi. Restano i collaudi reali. Questi numeri sono uno snapshot, non un controllo live.', 1280, 328, b)
+save('readiness.svg', 'Stato reale della release al 2026-11-08', 'CI del milestone senza attivazione a7deb3d: 6 job verdi, 242 test Node. Bootstrap senza licenza, doctor Compose effettivo isolato e restore PostgreSQL 16 su dati CI sintetici, non sul PC destinatario. Il modello scelto è proprietario/source-available: uso privato non commerciale gratuito, altri usi su accordo commerciale. Non è open source. OpenWA rimosso; nuovo provider whatsapp-web.js Apache-2.0. Test Node locali: 242, zero skip. Audit: 19 rilievi, 11 elevati, zero critici. La CI del milestone non sostituisce quella dei commit successivi. Restano i collaudi reali. Questi numeri sono uno snapshot, non un controllo live.', 1280, 328, b)
 
 print(f'Generated 6 self-contained SVG assets in {OUT}')
