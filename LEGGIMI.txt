@@ -1,6 +1,18 @@
 SYNK 1.2 RC6  |  RELEASE CANDIDATA AL COLLAUDO
 ================================================
 
+DIRITTI D'USO E ATTIVAZIONE
+  - Licenza proprietaria/source-available: non e' software open source.
+  - Solo l'uso privato non commerciale di una persona fisica e' gratuito.
+    Ogni altro uso, anche nel proprio salone o per un'organizzazione senza
+    utile, richiede prima un accordo commerciale scritto a titolo oneroso,
+    salvo diversa autorizzazione scritta del titolare. Leggere LICENSE.md.
+  - Non sono fissati prezzi o percentuali automatici sui ricavi.
+  - Il file firmato/HWID e' richiesto anche per uso privato. In tale caso
+    l'attivazione e' gratuita, ma il rilascio va richiesto al titolare ed e'
+    manuale: non esiste ancora un percorso self-service o senza verifica.
+    Il file firmato non sostituisce l'accordo quando l'uso non e' privato.
+
 USO QUOTIDIANO - SALONE
   1) Accendi il PC e accedi a Windows. Il tecnico deve aver attivato
      l'avvio automatico di Docker Desktop (non parte prima del login).
@@ -35,6 +47,20 @@ PER IL TECNICO (PRIMA INSTALLAZIONE)
   - AI locale Ollama opzionale con ATTIVA_AI_LOCALE.bat.
   - Crittografia del PC (BitLocker) consigliata; imposta una password Windows.
 
+PASSAGGIO DA OPENWA (SOLO TECNICO)
+  - La versione usa whatsapp-web.js 1.34.7 (Apache-2.0), non OpenWA.
+    Ferma la vecchia istanza: non usare due bot sullo stesso account.
+  - Conserva backup e vecchi file di sessione. Non sono convertiti o cancellati:
+    occorre un nuovo QR dalla dashboard dopo la ricostruzione delle immagini.
+  - Nel deploy Compose il profilo e' sotto
+    runtime/session/whatsapp-web.js/session-whatsapp-ai/; la cache e' separata
+    nella sottocartella web-cache/. Il normale arresto NON esegue logout.
+  - Verifica un riavvio senza QR. Un backup DB non salva profilo o segreti.
+    Una revoca dal telefono puo' rendere necessaria una nuova associazione.
+  - Se un invio e' incerto, verifica WhatsApp prima di ripeterlo; nessun retry
+    automatico. I messaggi LID entrano nel core solo con numero verificato.
+  - Leggi RELEASE.md, COLLAUDO.md e deploy/THIRD_PARTY_NOTICES.md.
+
 MANUTENZIONE (SOLO TECNICO)
   - AGGIORNA_SYNK_TECNICO.bat accetta lo ZIP ufficiale piatto e conserva
     .env, setup/config.json, runtime/, secrets/ e volumi Docker.
@@ -63,9 +89,9 @@ ARCHITETTURA E RISCHI
   - Le vecchie prenotazioni eventualmente conservate soltanto nella
     memoria del browser NON sono importate automaticamente ne eliminate:
     vanno confrontate con PostgreSQL prima di utilizzare RC6.
-  - PostgreSQL locale nel volume Docker, dashboard PHP, bot Node/OpenWA,
+  - PostgreSQL locale nel volume Docker, dashboard PHP, bot Node/whatsapp-web.js,
     Google Calendar per le agende; Ollama facoltativo e locale.
-  - Google Calendar e WhatsApp necessitano di Internet. OpenWA e' un client
+  - Google Calendar e WhatsApp necessitano di Internet. whatsapp-web.js e' un client
     non ufficiale e puo' disconnettersi dopo aggiornamenti WhatsApp.
   - Google Calendar non offre una transazione atomica con PostgreSQL:
     i controlli riducono il rischio di conflitti ma non possono azzerarlo.
@@ -75,7 +101,7 @@ ARCHITETTURA E RISCHI
 
 PRIMA DI USARLO CON CLIENTI REALI: esegui l'intero COLLAUDO.md.
 Il codice e i test automatici NON sostituiscono un collaudo Windows/Docker,
-OpenWA reale, Google Calendar, SMTP e restore/recovery su una macchina di prova.
+WhatsApp reale, Google Calendar, SMTP e restore/recovery su una macchina di prova.
 
 RC6: dashboard e strumenti ricostruiti, non recuperati dagli originali.
 Leggi REPORT_RICOSTRUZIONE_RC6.md e RELEASE.md per controlli e limiti aperti.

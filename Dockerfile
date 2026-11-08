@@ -9,6 +9,7 @@ ENV NODE_ENV=production \
 COPY package.json package-lock.json ./
 # Chromium is installed by apt. No dependency lifecycle/download scripts are needed.
 RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund && npm cache clean --force
+COPY LICENSE.md deploy/THIRD_PARTY_NOTICES.md ./
 COPY src ./src
 COPY scripts/db ./scripts/db
 COPY scripts/deploy/bootstrap.mjs ./scripts/deploy/bootstrap.mjs

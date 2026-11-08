@@ -1,5 +1,22 @@
 # synk 1.2 RC6 — ricostruzione dei componenti persi
 
+## Aggiornamento successivo: migrazione WhatsApp
+
+Questo è il **report storico della prima ricostruzione**, non la descrizione del
+provider ora installato. La base `bdee2e5` ha poi superato tutti i 6 job CI con
+92 test Node. Nell’aggiornamento successivo OpenWA è stato sostituito da
+whatsapp-web.js 1.34.7 (Apache-2.0), con LocalAuth separato, nuova associazione QR
+e qrcode 1.5.4 (MIT). L’override parse-url di OpenWA è stato rimosso.
+
+La verifica locale della migrazione conta **139 test Node**; audit **19 rilievi
+(11 elevati, 8 moderati, zero critici)** e SBOM 335 componenti. Controllare la CI
+della relativa PR e completare i test con account/PC reali: questi numeri non
+certificano una stabile. `RELEASE.md`, `COLLAUDO.md` e
+`deploy/THIRD_PARTY_NOTICES.md` descrivono lo stato aggiornato anche nello ZIP.
+Le vecchie sessioni non vengono convertite o cancellate e i verificatori
+firma/HWID rimangono invariati. Le sezioni seguenti conservano le evidenze della
+preparazione iniziale, inclusi i limiti dei runner allora non ancora eseguiti.
+
 ## Provenienza e limiti
 
 Sono stati ricostruiti, non recuperati dagli originali, i percorsi assenti

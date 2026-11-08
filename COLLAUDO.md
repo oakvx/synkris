@@ -11,7 +11,7 @@ WhatsApp del salone.** Non usare dati reali prima di completarla.
 - [ ] Servizi/operatrici/abilitazioni, ordine servizi e buffer per operatrice modificati dalla dashboard.
 - [ ] Una risposta incerta/non disponibile non mostra un salvataggio riuscito; nessun fallback localStorage.
 - [ ] Distinguere salvataggio DB, Calendar in coda e Calendar da verificare; niente modifiche su job pendenti.
-- [ ] Verificare import OpenWA v4, stato CONNECTED, shutdown del browser, QR, sessione persistente e riconnessione con account di prova.
+- [ ] Verificare import whatsapp-web.js 1.34.7, evento ready piu stato CONNECTED, QR, LocalAuth persistente, riconnessione e shutdown con destroy senza logout.
 - [ ] Verificare sandbox Chromium sul PC Docker/WSL2: nessun bypass implicito di sandbox o TLS.
 - [ ] Esaminare npm audit e approvare/correggere le dipendenze prima di dati reali.
 
@@ -52,6 +52,12 @@ WhatsApp del salone.** Non usare dati reali prima di completarla.
 - [ ] Verificare promemoria, ora legale/solare e idempotenza dopo riavvio.
 
 ## WhatsApp e AI
+- [ ] Prima migrazione: vecchio bot OpenWA fermo, file vecchi intatti, nuova associazione QR e nessuna seconda istanza sullo stesso account.
+- [ ] Riavvio sullo stesso host: profilo LocalAuth riutilizzato senza QR; revoca dal telefono e nuova associazione quando necessaria.
+- [ ] Prima di ready, dopo disconnessione e durante arresto: /ready non indica operativita; QR non presente in log o file pubblici.
+- [ ] Messaggi diretti e caption funzionano; gruppi, stati, broadcast e messaggi propri non attivano il bot.
+- [ ] Se disponibile un mittente LID: risoluzione al numero corretto, stesso handoff/privacy/storico; nessun numero ricavato dalle cifre del LID.
+- [ ] Invio incerto: nessun duplicato da retry automatico; dashboard segnala l'incertezza e non cancella il testo.
 - [ ] QR in dashboard, riconnessione, scadenza sessione, avvio da PC acceso dopo spegnimento.
 - [ ] Intervento umano: bot tace soltanto per la conversazione in carico, poi torna attivo.
 - [ ] Per default `MULTI_BOOKING_WHATSAPP_ENABLED=0`: il bot singolo rimane utilizzabile.

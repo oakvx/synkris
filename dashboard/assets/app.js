@@ -36,6 +36,8 @@ function salonLocalInput(value = new Date()) {
   return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}`;
 }
 const ERRORS = {
+  delivery_unknown:'Esito invio WhatsApp incerto. Il messaggio potrebbe essere già partito: verifica in WhatsApp prima di inviarlo di nuovo.',
+  client_not_ready:'WhatsApp non è ancora operativo. Verifica la connessione e il QR prima di inviare.',
   login_required:'Sessione scaduta. Ricarica la pagina e accedi di nuovo.', csrf_invalid:'Sessione non valida. Ricarica la pagina.',
   calendar_unavailable:'Google Calendar non è disponibile. Nessuna conferma: riprova dopo la verifica tecnica.',
   calendar_slot_occupied:'Questo orario è occupato su Google Calendar.', calendar_reconciliation_required:'Prenotazioni sospese: contatta il tecnico per la riconciliazione Calendar.',

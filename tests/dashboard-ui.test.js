@@ -88,3 +88,19 @@ test('failed agenda loads clear the in-memory projection rather than falling bac
     assert.match(ui.$('appointmentList').textContent,/Nessun dato locale sostitutivo/);
   }finally{ui.w.close();}
 });
+
+test('ambiguous WhatsApp delivery warns the operator without clearing or retrying the message',async()=>{
+  const ui=await page(r=>r.bridge==='/api/send'?{status:502,body:{error:'delivery_unknown'}}:
+    r.bridge?.startsWith('/api/messages')?{status:200,body:{messages:[]}}:undefined);
+  try{
+    await ui.eval("selectChat({chatId:'393331234567@c.us',paused:false})");
+    ui.$('chatText').value='Messaggio di prova sintetico';
+    for(let i=0;i<2;i++)ui.$('chatSendForm').dispatchEvent(new ui.w.SubmitEvent('submit',{cancelable:true,submitter:ui.$('chatSend')}));
+    await tick();await tick();
+    assert.equal(ui.requests.filter(r=>r.bridge==='/api/send').length,1);
+    assert.equal(ui.$('chatText').value,'Messaggio di prova sintetico');
+    assert.equal(ui.$('toast').classList.contains('is-error'),true);
+    assert.match(ui.$('toast').textContent,/Esito invio WhatsApp incerto/);
+    assert.match(ui.$('toast').textContent,/verifica in WhatsApp prima/);
+  }finally{ui.w.close();}
+});

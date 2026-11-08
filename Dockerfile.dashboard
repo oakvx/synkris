@@ -11,4 +11,5 @@ COPY deploy/license-guard.php deploy/session.php /var/www/html/deploy/
 COPY dashboard.php bridge.php package.json /var/www/html/
 COPY dashboard /var/www/html/dashboard
 COPY assets /var/www/html/assets
+COPY LICENSE.md deploy/THIRD_PARTY_NOTICES.md /usr/share/doc/synk/
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD php -r "exit(@file_get_contents('http://127.0.0.1/') === false ? 1 : 0);"

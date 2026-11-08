@@ -7,6 +7,15 @@ identifica chiaramente la ricostruzione dei file persi. Non promuove RC5 a
 stabile. Nessuna pubblicazione automatica a ogni push, nessuna pubblicazione npm
 (`private: true`) e nessuna immagine pubblica.
 
+**Diritti d’uso:** la licenza è proprietaria/source-available. Solo l’uso strettamente
+privato non commerciale di una persona fisica è gratuito; ogni altro uso, incluso
+quello interno a un salone, richiede prima un accordo commerciale scritto a titolo
+oneroso, salvo diversa autorizzazione scritta. Prezzi e royalties non sono fissati
+in automatico. Vedi `LICENSE.md` e la revisione legale richiesta prima della
+distribuzione commerciale. Il file firmato/HWID resta necessario anche per il
+privato: l’attivazione privata è gratuita ma va richiesta al titolare, con rilascio
+manuale; non esiste ancora un percorso self-service.
+
 **Blocchi per una stabile:** completare `COLLAUDO.md`, valutare/correggere gli
 avvisi delle dipendenze, verificare distribuzione e licenze di terzi e approvare
 il comportamento dei componenti ricostruiti. Il workflow attuale accetta solo
@@ -52,7 +61,7 @@ Controllare anche `npm audit --omit=dev` e `npm run audit:release`: il report vi
 ma **non è un via libera di sicurezza**. `npm run audit:release` blocca la CI
 se il report manca o contiene vulnerabilità critiche; gli altri rilievi restano
 visibili e richiedono revisione prima di qualsiasi uso reale. Non applicare downgrade/upgrade maggiori automatici a
-OpenWA senza collaudarne il contratto con il bot.
+whatsapp-web.js/Puppeteer senza collaudarne il contratto con il bot.
 
 ## 2. Generare e verificare lo ZIP
 
@@ -106,12 +115,29 @@ Estrarre in una cartella Windows dedicata. `INSTALLA_UNA_VOLTA.bat` crea, se
 assente, `setup/config.json` dall’esempio e si interrompe finché non viene
 personalizzato. Inserire le tre credenziali/licenze solo in `secrets/`. Il tecnico
 configura CALENDAR_ID e APP_HWID; il bootstrap verifica realmente firma e HWID.
-Chromium usa argomenti espliciti, senza i bypass TLS/sandbox predefiniti di
-OpenWA v4. Se la sandbox non parte sullo specifico host Docker/WSL2, fermare il
+Il provider è whatsapp-web.js 1.34.7 con LocalAuth. Chromium usa argomenti
+espliciti, senza bypass TLS/CSP o sandbox impliciti. Se la sandbox non parte sullo specifico host Docker/WSL2, fermare il
 collaudo e far valutare al tecnico l’isolamento del container/VM. Non aggiungere
 privilegi ampi o disabilitare la sandbox automaticamente. L’eventuale
 `CHROME_NO_SANDBOX=1` è un opt-in tecnico che riduce l’isolamento e va valutato
 consapevolmente, mai un’impostazione implicita dell’installazione.
+
+**Aggiornamento da OpenWA:** la nuova libreria non legge il vecchio formato.
+Fermare la vecchia istanza, conservare backup e file preesistenti e associare un
+nuovo QR da Conversazioni. Non avviare due bot sullo stesso account. Il profilo
+LocalAuth è in `runtime/session/whatsapp-web.js/session-whatsapp-ai/` nel deploy
+Compose; la cache è nella sottocartella `web-cache/`. `destroy()` conserva il
+profilo: non usare `logout()` come arresto. I backup PostgreSQL non includono
+questi file o i segreti. Un rollback del codice non garantisce che WhatsApp
+accetti ancora la vecchia sessione.
+
+Il nuovo `deploy/THIRD_PARTY_NOTICES.md` conserva Apache-2.0/MIT dei componenti
+introdotti. Si trova sotto un percorso già ammesso dall’updater Windows: non
+richiede di allargare la allowlist ai dati privati. La guida estesa è in
+`docs/WHATSAPP_MIGRATION.md` nel repository (i documenti `docs/` non sono nello
+ZIP runtime). Collaudare QR, riavvio, revoca, LID se disponibili e presa in carico.
+Un invio dall’esito incerto non va ritentato automaticamente: verificare prima
+WhatsApp. Il passaggio non cambia le verifiche di licenza firmata/HWID.
 
 Le password casuali vengono generate solo alla prima creazione di `.env`:
 conservare la password dashboard nel gestore password del salone. Lo script non

@@ -26,7 +26,7 @@ test('release generation is deterministic for identical source and provenance',(
   assert.deepEqual(again,archive);
 });
 test('private data and generated files are never eligible for packaging',()=>{
-  for(const name of ['.env','.env.production','secrets/license.txt','runtime/session/file.json','setup/config.json','src/config.json','src/customer.json','src/private.pem','node_modules/pg/index.js','../package.json','src/../.env','C:/a','src\\index.js','src/CON.js','src/a.'])assert.equal(isReleasePath(name),false,name);
+  for(const name of ['.env','.env.production','secrets/license.txt','runtime/session/file.json','src/.wwebjs_auth/session-whatsapp-ai/Default/service.js','src/.wwebjs_cache/cache.js','setup/config.json','src/config.json','src/customer.json','src/private.pem','node_modules/pg/index.js','../package.json','src/../.env','C:/a','src\\index.js','src/CON.js','src/a.'])assert.equal(isReleasePath(name),false,name);
   assert.equal(isReleasePath('.env.example'),true);
   assert.equal(isReleasePath('setup/config.example.json'),true);
 });
@@ -52,17 +52,29 @@ test('archive verification rejects path traversal and partial packages',()=>{
   assert.throws(()=>verifyArchive(zipSync({'../.env':strToU8('fixture')})),/Unsafe/);
   assert.throws(()=>verifyArchive(zipSync({'package.json':files['package.json']})),/Manifest missing/);
 });
-test('runtime provider matches the bot create/event API without starting a session',async()=>{
-  const provider=await import('@open-wa/wa-automate');
-  assert.equal(typeof provider.create,'function');
-  assert.equal(typeof provider.ev?.on,'function');
+test('runtime provider imports the pinned Client/LocalAuth/event API without a browser',async()=>{
+  const {default:provider}=await import('whatsapp-web.js');
+  assert.equal(provider.version,'1.34.7');
+  assert.equal(typeof provider.Client,'function');
+  assert.equal(typeof provider.LocalAuth,'function');
+  assert.equal(typeof provider.Client.prototype.initialize,'function');
+  assert.equal(typeof provider.Client.prototype.sendMessage,'function');
+  assert.equal(typeof provider.Client.prototype.getContactLidAndPhone,'function');
+  assert.equal(typeof provider.Client.prototype.destroy,'function');
+  assert.equal(provider.Events.READY,'ready');
+  assert.equal(provider.WAState.CONNECTED,'CONNECTED');
 });
 
-test('patched URL parser preserves the OpenWA Postman builder contract',async()=>{
+test('OpenWA and its obsolete override are absent from the install graph',async()=>{
   const {createRequire}=await import('node:module');const require=createRequire(import.meta.url);
-  const parse=require(require.resolve('parse-url',{paths:[require.resolve('@open-wa/wa-automate')]}));
-  const parsed=parse('https://localhost:8080/api');
-  assert.equal(parsed.resource,'localhost');assert.equal(parsed.pathname,'/api');assert.equal(parsed.protocol,'https');
+  assert.throws(()=>require.resolve('@open-wa/wa-automate'),{code:'MODULE_NOT_FOUND'});
+  const pkg=JSON.parse(files['package.json']);
+  const lock=JSON.parse(files['package-lock.json']);
+  assert.equal(pkg.dependencies['@open-wa/wa-automate'],undefined);
+  assert.equal(pkg.overrides?.['@open-wa/wa-automate'],undefined);
+  assert.equal(Object.keys(lock.packages).some(name=>name.includes('@open-wa/')),false);
+  assert.equal(pkg.dependencies['whatsapp-web.js'],'1.34.7');
+  assert.equal(pkg.dependencies.qrcode,'1.5.4');
 });
 
 test('dependency gate blocks critical findings and missing audit results',async()=>{
@@ -70,6 +82,26 @@ test('dependency gate blocks critical findings and missing audit results',async(
   assert.throws(()=>assessAudit({error:'network unavailable'}),/unavailable/);
   assert.throws(()=>assessAudit({metadata:{vulnerabilities:{low:0,moderate:0,high:0,critical:1,total:1}}}),/blocked/);
   assert.equal(assessAudit({metadata:{vulnerabilities:{low:0,moderate:0,high:2,critical:0,total:2}}}).high,2);
+});
+
+test('release carries the new upstream license texts without relicensing them',()=>{
+  const notices=Buffer.from(files['deploy/THIRD_PARTY_NOTICES.md']).toString('utf8').replace(/\r\n/g,'\n');
+  for(const name of ['whatsapp-web.js/LICENSE','qrcode/license']) {
+    const license=fs.readFileSync(path.join(root,'node_modules',name),'utf8').replace(/\r\n/g,'\n').trim();
+    assert.ok(notices.includes(license),'Missing original upstream notice: '+name);
+  }
+  assert.match(fs.readFileSync(path.join(root,'Dockerfile'),'utf8'),/COPY LICENSE\.md deploy\/THIRD_PARTY_NOTICES\.md/);
+});
+
+test('entrypoint keeps signed activation before provider creation and rechecks it before accepting messages',()=>{
+  const source=Buffer.from(files['src/index.js']).toString('utf8');
+  assert.ok(source.indexOf('await ensureLicense();')<source.indexOf('client = createWhatsAppClient('));
+  assert.ok(source.indexOf('await monitor.check();')<source.indexOf('acceptingMessages = true;'));
+  assert.ok(source.indexOf('await monitor.check();')<source.indexOf('actions.sendText = (to, message)'));
+  assert.match(source,/if \(closing \|\| !acceptingMessages\) return;/);
+  assert.ok(source.indexOf('client?.beginShutdown();')<source.indexOf('Promise.allSettled([...inflightMessages])'));
+  assert.match(Buffer.from(files['compose.yaml']).toString('utf8'),/stop_grace_period: 30s/);
+  assert.match(source,/await monitor\.check\(\);\s*if \(closing\) return;/);
 });
 
 test('Windows updater code allowlist covers every generated package entry',()=>{

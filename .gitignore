@@ -29,3 +29,8 @@ session.data.json
 .cache/
 .DS_Store
 Thumbs.db
+
+# Defensive defaults for standalone whatsapp-web.js tools (runtime is configured separately).
+.wwebjs_auth/
+.wwebjs_cache/
+configs & dashboard/

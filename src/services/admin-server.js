@@ -71,7 +71,8 @@ export function createAdminApp(state, actions, { token = process.env.ADMIN_TOKEN
   app.get('/status', (_req, res) => res.json({ online: Boolean(state.online), hasError: Boolean(state.lastError) }));
   app.get('/metrics', (_req, res) => res.json({ counters: getMetrics(), online: Boolean(state.online) }));
   app.get('/api/session/qr', (_req, res) => {
-    const fresh = Date.now() - Number(state.qrUpdatedAt || 0) < 20_000;
+    const age = Date.now() - Number(state.qrUpdatedAt || 0);
+    const fresh = Number.isFinite(age) && age >= 0 && age < 20_000;
     res.json({ connected: Boolean(state.online), qr: !state.online && fresh ? state.qrDataUrl : null });
   });
   app.get('/diagnostics', (_req, res) => res.json({
@@ -248,7 +249,7 @@ export function createAdminApp(state, actions, { token = process.env.ADMIN_TOKEN
     if (!/^\d{5,20}@c\.us$/i.test(to)) return res.status(400).json({ ok: false, error: 'invalid_to_format' });
     if (!message) return res.status(400).json({ ok: false, error: 'missing_message' });
     if (message.length > 4000) return res.status(413).json({ ok: false, error: 'message_too_long' });
-    if (typeof actions?.sendText !== 'function') return res.status(503).json({ ok: false, error: 'client_not_ready' });
+    if (!state.online || typeof actions?.sendText !== 'function') return res.status(503).json({ ok: false, error: 'client_not_ready' });
     try {
       // Only explicit operator takeover pauses the bot. Booking notifications must not.
       if (req.body?.handoff === true) await setChatPaused(state.dbPool, to, true);
@@ -262,8 +263,9 @@ export function createAdminApp(state, actions, { token = process.env.ADMIN_TOKEN
       } catch { recorded = false; }
       // A delivered message remains delivered even when history recording failed.
       return res.json({ ok: true, recorded });
-    } catch {
-      return res.status(502).json({ ok: false, error: 'send_failed' });
+    } catch (error) {
+      if (error?.code === 'WHATSAPP_NOT_READY') return res.status(503).json({ ok: false, error: 'client_not_ready' });
+      return res.status(502).json({ ok: false, error: error?.outcome === 'unknown' ? 'delivery_unknown' : 'send_failed' });
     }
   });
   app.use((err, _req, res, _next) => {
