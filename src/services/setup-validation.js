@@ -14,7 +14,7 @@ export function validateSalonConfig(config) {
   const issues = [];
   const add = (field, message) => issues.push({field, message});
   if (!record(config)) return [{field:'config', message:'La configurazione deve essere un oggetto JSON.'}];
-  if (config.salonName !== undefined && !text(config.salonName)) add('salonName', 'Inserisci un nome del salone tra 1 e 120 caratteri.');
+  if (config.salonName !== undefined && !text(config.salonName, 80)) add('salonName', 'Inserisci un nome del salone tra 1 e 80 caratteri.');
   const professionals = record(config.professionals) ? Object.entries(config.professionals) : [];
   if (professionals.length < 1 || professionals.length > 100) add('professionals', 'Configura da 1 a 100 persone del team.');
   const seenEmails = new Set();

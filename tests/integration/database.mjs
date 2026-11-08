@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {testPool,resetDatabase,seed} from './helpers.mjs';
 import {enqueueCalendarJob,drainCalendarOutbox} from '../../src/services/calendar-outbox.js';
+import {seedInitialSalonSettings} from '../../src/services/initial-salon-settings.js';
 import {createAndLinkCalendarBooking} from '../../src/services/calendar-outbox-booking.js';
 const pool=testPool();let ids;
 before(async()=>{await resetDatabase(pool);ids=await seed(pool);});
@@ -48,4 +49,13 @@ test('simultaneous writes on two PostgreSQL connections cannot double-book one o
   }finally{
     await first.query('ROLLBACK');await second.query('ROLLBACK');first.release();second.release();
   }
+});
+
+test('initial wizard salon name is imported once and cannot overwrite dashboard preferences',async()=>{
+  await pool.query("DELETE FROM public.salon_settings WHERE setting_key='salon_name'");
+  await seedInitialSalonSettings(pool,{salonName:"Salone d'esempio"});
+  assert.equal((await pool.query("SELECT setting_value FROM public.salon_settings WHERE setting_key='salon_name'")).rows[0].setting_value,"Salone d'esempio");
+  await pool.query("UPDATE public.salon_settings SET setting_value='Modificato dalla dashboard' WHERE setting_key='salon_name'");
+  await seedInitialSalonSettings(pool,{salonName:'Modello precedente'});
+  assert.equal((await pool.query("SELECT setting_value FROM public.salon_settings WHERE setting_key='salon_name'")).rows[0].setting_value,'Modificato dalla dashboard');
 });

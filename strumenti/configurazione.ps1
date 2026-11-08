@@ -52,7 +52,7 @@ function Read-SynkTimePair([string]$Label, [string]$DefaultOpen = '09:00', [stri
 }
 function New-SynkSalonConfiguration {
     Write-Host "`nCONFIGURAZIONE GUIDATA - i dati rimangono su questo PC."
-    $salonName = Read-SynkText 'Nome del salone' 'Salone'
+    $salonName = Read-SynkText 'Nome del salone' 'Salone' '^[^\x00-\x1f\x7f]{1,80}$'
     $professionals = [ordered]@{}
     $emails = New-Object 'System.Collections.Generic.List[string]'
     $count = Read-SynkInteger 'Quante persone nel team?' 1 100 1
