@@ -7,7 +7,7 @@ import json
 import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parents[2]
-DOCUMENTS = [ROOT / 'README.md', ROOT / 'docs/OPEN_SOURCE_READINESS.md', ROOT / 'docs/readme/README.md', ROOT / 'docs/WHATSAPP_MIGRATION.md']
+DOCUMENTS = [ROOT / 'README.md', ROOT / 'docs/OPEN_SOURCE_READINESS.md', ROOT / 'docs/readme/README.md', ROOT / 'docs/WHATSAPP_MIGRATION.md', ROOT / 'deploy/PRIMI_PASSI.md', ROOT / 'docs/PLUG_AND_PLAY.md']
 ASSETS = ROOT / 'docs/assets'
 checks = 0
 
@@ -43,17 +43,17 @@ for document in DOCUMENTS:
 
 svgs = sorted(ASSETS.glob('*.svg'))
 previews = sorted(ASSETS.glob('*.webp'))
-legacy_svgs = {
+expected_legacy = {
     'hero.svg', 'stack.svg', 'features.svg', 'architecture.svg',
     'booking-flow.svg', 'readiness.svg'
 }
-brand_svgs = {
+expected_brand = {
     'synkris-hero.svg', 'synkris-benefits.svg', 'synkris-journey.svg',
     'synkris-architecture.svg', 'synkris-stack.svg', 'synkris-booking-flow.svg'
 }
-actual_svgs = {asset.name for asset in svgs}
-check(legacy_svgs.issubset(actual_svgs), 'Legacy SVG documentation assets missing')
-check(brand_svgs.issubset(actual_svgs), 'SYNKRIS branded SVG documentation assets missing')
+available_svgs = {asset.name for asset in svgs}
+check(expected_legacy.issubset(available_svgs), 'Missing generated legacy SVG assets')
+check(expected_brand.issubset(available_svgs), 'Missing SYNKRIS visual identity SVG assets')
 check(len(previews) == 3, 'Expected 3 rendered frontend previews')
 for asset in svgs:
     content = asset.read_text(encoding='utf-8')
@@ -73,7 +73,7 @@ for asset in previews:
 readme = DOCUMENTS[0].read_text(encoding='utf-8')
 check('synk non è open source' in readme, 'Chosen proprietary licensing status must remain explicit')
 check('fixture sintetiche' in readme, 'Rendered previews must disclose synthetic data')
-check('non un badge live' in readme, 'CI/audit snapshot must not look live')
+check('non un badge live' in readme or 'non è un badge live' in readme, 'CI/audit snapshot must not look live')
 license_text = (ROOT / 'LICENSE.md').read_text(encoding='utf-8')
 check('non è una licenza open source' in license_text, 'Custom license must not be presented as open source')
 check('uso privato non commerciale gratuito' in license_text, 'Private noncommercial permission missing')
@@ -81,6 +81,8 @@ check('persona fisica' in license_text, 'Private-use scope must be explicit')
 check('accordo commerciale scritto' in license_text and 'a titolo oneroso' in license_text, 'Non-private commercial agreement missing')
 check('prezzi o percentuali automatici' in license_text, 'Do not invent royalties/prices')
 check('rilascio è gestito manualmente' in readme, 'Activation limitations must be disclosed')
+check('github/stars/oakvx/synkris' in readme, 'GitHub badges must target this repository')
+check('visitor-badge.laobi.icu' in readme and 'non** equivale' in readme, 'External visit counter must not masquerade as official traffic')
 package = json.loads((ROOT / 'package.json').read_text())
 lock = json.loads((ROOT / 'package-lock.json').read_text())
 check(package.get('license') == 'SEE LICENSE IN LICENSE.md', 'npm metadata must point to the custom license')
