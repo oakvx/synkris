@@ -1,11 +1,28 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 348" width="1280" height="348" role="img" aria-labelledby="t d">
-<title id="t">Tre motivi per scegliere synk</title><desc id="d">Tre card viola e fucsia: meno interruzioni, agenda più chiara, più tempo per le persone.</desc>
-<defs><linearGradient id="b" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#190E31"/><stop offset="1" stop-color="#2B1440"/></linearGradient><linearGradient id="a" x1="0" y1="1" x2="1" y2="0"><stop stop-color="#8759FA"/><stop offset="1" stop-color="#FF43C6"/></linearGradient></defs>
-<rect width="1280" height="348" rx="25" fill="url(#b)"/>
-<g font-family="Inter,Segoe UI,Arial,sans-serif">
-<text x="45" y="55" font-size="28" fill="#FFF" font-weight="780">Tecnologia al servizio di chi lavora.</text>
-<text x="45" y="86" font-size="15" fill="#CDB8E2">Migliora il flusso di lavoro senza rinunciare al controllo delle decisioni.</text>
-<g transform="translate(40 114)"><rect width="382" height="204" rx="19" fill="#2D1A44" stroke="#724497"/><circle cx="44" cy="46" r="24" fill="#5D2784"/><path d="M34 41h19M34 48h14M34 55h10" stroke="#F9C4F4" stroke-width="3" stroke-linecap="round"/><text x="83" y="42" font-size="20" fill="#FFF" font-weight="750">Meno interruzioni</text><text x="83" y="66" font-size="14" fill="#D5BDE8">Richieste e conversazioni organizzate</text><path d="M27 99h326" stroke="#744D89"/><text x="27" y="128" font-size="16" fill="#EADDF6">Meno passaggi ripetitivi.</text><text x="27" y="155" font-size="16" fill="#EADDF6">Più continuità nel lavoro.</text><rect x="27" y="174" width="96" height="4" rx="2" fill="url(#a)"/></g>
-<g transform="translate(450 114)"><rect width="382" height="204" rx="19" fill="#2D1A44" stroke="#724497"/><circle cx="44" cy="46" r="24" fill="#5D2784"/><rect x="32" y="35" width="25" height="24" rx="5" fill="none" stroke="#F9C4F4" stroke-width="2.5"/><path d="M33 43h24M39 31v8M50 31v8" stroke="#F9C4F4" stroke-width="2.5"/><text x="83" y="42" font-size="20" fill="#FFF" font-weight="750">Agenda più chiara</text><text x="83" y="66" font-size="14" fill="#D5BDE8">Servizi, tempi e operatrici coordinati</text><path d="M27 99h326" stroke="#744D89"/><text x="27" y="128" font-size="16" fill="#EADDF6">Disponibilità da verificare.</text><text x="27" y="155" font-size="16" fill="#EADDF6">Stati sempre espliciti.</text><rect x="27" y="174" width="96" height="4" rx="2" fill="url(#a)"/></g>
-<g transform="translate(860 114)"><rect width="382" height="204" rx="19" fill="#2D1A44" stroke="#724497"/><circle cx="44" cy="46" r="24" fill="#5D2784"/><path d="M44 58C26 47 29 35 37 34c4 0 7 3 7 5 0-2 4-5 8-5 9 2 9 13-8 24Z" fill="none" stroke="#F9C4F4" stroke-width="2.4"/><text x="83" y="42" font-size="20" fill="#FFF" font-weight="750">Più tempo umano</text><text x="83" y="66" font-size="14" fill="#D5BDE8">Il team può riprendere ogni conversazione</text><path d="M27 99h326" stroke="#744D89"/><text x="27" y="128" font-size="16" fill="#EADDF6">Automazione quando serve.</text><text x="27" y="155" font-size="16" fill="#EADDF6">Una persona quando conta.</text><rect x="27" y="174" width="96" height="4" rx="2" fill="url(#a)"/></g>
-</g></svg>
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="292" viewBox="0 0 1280 292" role="img" aria-labelledby="t d">
+<title id="t">Tre aree operative di synk</title>
+<desc id="d">Tre colonne editoriali su fondo nero, viola e fucsia: conversazioni, agenda, team. Nessun dato quantitativo o promessa non verificata.</desc>
+<rect width="1280" height="292" fill="#140D20"/>
+<path d="M35 29H1245M35 259H1245" stroke="#846099"/>
+<path d="M432 85V247M838 85V247" stroke="#61446F" stroke-width="1"/>
+<g font-family="Consolas,DejaVu Sans Mono,monospace" font-size="12" letter-spacing="1.5">
+<text x="36" y="52" fill="#E66EC9">SY/NK</text><text x="133" y="52" fill="#C4A7D4">OPERATIVITÀ / TRE AREE</text>
+<text x="1118" y="52" fill="#C4A7D4">01 — 03</text>
+<text x="41" y="110" fill="#D454B9">01 / CHAT</text>
+<text x="449" y="110" fill="#B58AEE">02 / CALENDAR</text>
+<text x="855" y="110" fill="#D454B9">03 / TEAM</text>
+</g>
+<g font-family="Impact,Nimbus Sans Narrow,DejaVu Sans Condensed,sans-serif" font-weight="800" letter-spacing=".1" font-size="42" fill="#F8EFFA">
+<text x="39" y="160">CONVERSAZIONI</text>
+<text x="447" y="160">APPUNTAMENTI</text>
+<text x="853" y="160">SUPERVISIONE</text>
+</g>
+<g font-family="Consolas,DejaVu Sans Mono,monospace" font-size="15" fill="#C7B0D2">
+<text x="40" y="198">Richieste in ingresso.</text>
+<text x="40" y="220">Handoff all'operatore.</text>
+<text x="448" y="198">Durate, servizi, slot.</text>
+<text x="448" y="220">Stati di sync distinti.</text>
+<text x="854" y="198">Orari, pause e assenze.</text>
+<text x="854" y="220">Intervento dove serve.</text>
+</g>
+<rect x="39" y="240" width="100" height="4" fill="#D454B9"/><rect x="447" y="240" width="100" height="4" fill="#8759DA"/><rect x="853" y="240" width="100" height="4" fill="#D454B9"/>
+</svg>
