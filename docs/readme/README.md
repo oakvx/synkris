@@ -77,3 +77,21 @@ Il controllo documentale verifica i riferimenti locali, gli anchor del README, l
 Gli asset documentali seguono **la licenza proprietaria del progetto**, con uso privato non commerciale gratuito e altri usi su accordo commerciale, **non una licenza open source**. Il pacchetto runtime usa una allowlist e non include `docs/`; gli strumenti di cattura e le dipendenze temporanee non sono dipendenze di produzione. Il logo riutilizzato resta in `assets/logo.svg`.
 
 [Licenza e stato della distribuzione](../OPEN_SOURCE_READINESS.md) · [Licenza attuale](../../LICENSE.md)
+
+
+## Refresh visuale SYNKRIS (viola e fucsia)
+
+Il README commerciale utilizza anche **sei nuovi SVG** distinti dai nove asset storici elencati sopra, tutti in `docs/assets/`:
+
+| Nuovo asset | Scopo |
+| --- | --- |
+| `synkris-hero.svg` | Hero originale di presentazione: **mockup concettuale**, non screenshot di un sistema connesso |
+| `synkris-benefits.svg` | Benefici senza statistiche, prezzi o testimonianze inventate |
+| `synkris-journey.svg` | Percorso illustrativo di una richiesta |
+| `synkris-architecture.svg` | Architettura esistente ricolorata |
+| `synkris-stack.svg` | Stack esistente ricolorato |
+| `synkris-booking-flow.svg` | Flusso transazionale esistente ricolorato |
+
+Questi asset **non vengono modificati dallo script storico** `generate-assets.py` e restano editabili come SVG. Gli screenshot WebP continuano a usare fixture sintetiche e colori realmente presenti nell'interfaccia del ramo sorgente: non sono stati alterati per ottenere una finta nuova dashboard viola.
+
+[Linee guida, palette e terminologia SYNKRIS](brand-guide.md).
