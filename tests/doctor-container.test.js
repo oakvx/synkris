@@ -13,6 +13,6 @@ test('offline doctor uses the installed runtime image with no network and read-o
 });
 test('Windows diagnostics do not run provider clients or start dependencies',()=>{
   const source=read('strumenti/preflight.ps1');
-  assert.match(source,/run --rm --no-deps -T --pull never doctor/);
+  assert.match(source,/@\('compose','--profile','tools','run','--rm','--no-deps','-T','--pull','never','doctor'\) -TimeoutMilliseconds 60000/);
   assert.doesNotMatch(source,/compose logs|compose up|compose build|config --format json/);
 });

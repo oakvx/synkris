@@ -2,16 +2,11 @@
 # No raw logs, environment dumps, client records, QR, license payloads or paths
 # are copied into the report. No upload or external notification is performed.
 function Get-SynkRuntimeSummary {
-    Push-Location -LiteralPath $script:SynkRoot
-    $previous = $ErrorActionPreference
-    try {
-        $ErrorActionPreference = 'Continue'
-        $lines = @(& docker compose exec -T bot node scripts/deploy/runtime-summary.mjs 2>$null)
-        $status = $LASTEXITCODE
-        if ($status -ne 0) { return $null }
-        try { return (($lines -join "`n") | ConvertFrom-Json -ErrorAction Stop) } catch { return $null }
-    } finally { $ErrorActionPreference = $previous;Pop-Location }
+    $result = Invoke-DockerProbe -Arguments @('compose','exec','-T','bot','node','scripts/deploy/runtime-summary.mjs') -TimeoutMilliseconds 12000
+    if (-not $result.Success) { return $null }
+    try { return ($result.Value | ConvertFrom-Json -ErrorAction Stop) } catch { return $null }
 }
+
 function Get-SynkSupportReport {
     $version = 'unknown'
     try {

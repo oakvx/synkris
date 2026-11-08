@@ -26,7 +26,7 @@ function Invoke-DockerProbe {
         }
         $output = $stdout.GetAwaiter().GetResult()
         [void]$stderr.GetAwaiter().GetResult()
-        return [pscustomobject]@{Success=($process.ExitCode -eq 0);Value=$output.Trim()}
+        return [pscustomobject]@{Success=($process.ExitCode -eq 0);ExitCode=$process.ExitCode;Value=$output.Trim()}
     } catch { return [pscustomobject]@{Success=$false;Value=''} }
     finally { $process.Dispose() }
 }
@@ -86,20 +86,14 @@ function Test-SynkDatabaseVolume {
     return -not [string]::IsNullOrWhiteSpace($result.Value)
 }
 function Get-SynkOfflineDoctor {
-    Push-Location -LiteralPath $script:SynkRoot
-    try {
-        # No dependency startup, no schema writes, no browser or cloud requests.
-        $previous = $ErrorActionPreference
-        try {
-            $ErrorActionPreference = 'Continue'
-            $lines = @(& docker compose --profile tools run --rm --no-deps -T --pull never doctor 2>$null)
-            $status = $LASTEXITCODE
-        } finally { $ErrorActionPreference = $previous }
-        try { $report = ($lines -join "`n") | ConvertFrom-Json -ErrorAction Stop } catch { throw 'Diagnostica offline non disponibile. Completa la costruzione immagini tramite INSTALLA_UNA_VOLTA.' }
-        if ($null -eq $report -or $report.schema -ne 1 -or $report.scope -ne 'offline' -or $report.productionReady -ne $false -or $status -notin @(0,1)) { throw 'Formato diagnostica non riconosciuto; non viene dichiarata pronta l''installazione.' }
-        return $report
-    } finally { Pop-Location }
+    # No dependency startup, downloads, schema writes, browser or cloud requests.
+    $result = Invoke-DockerProbe -Arguments @('compose','--profile','tools','run','--rm','--no-deps','-T','--pull','never','doctor') -TimeoutMilliseconds 60000
+    try { $report = $result.Value | ConvertFrom-Json -ErrorAction Stop } catch { throw 'Diagnostica offline non disponibile. Completa la costruzione immagini tramite INSTALLA_UNA_VOLTA.' }
+    $exitProperty = $result.PSObject.Properties['ExitCode']
+    if ($null -eq $report -or $report.schema -ne 1 -or $report.scope -ne 'offline' -or $report.productionReady -ne $false -or $report.readyForBootstrap -isnot [bool] -or $null -eq $exitProperty -or $exitProperty.Value -notin @(0,1)) { throw 'Formato diagnostica non riconosciuto; non viene dichiarata pronta l''installazione.' }
+    return $report
 }
+
 function Show-SynkDoctorReport($Report) {
     foreach ($check in $Report.checks) {
         $tag = switch ($check.status) { 'pass' { 'OK' }; 'warn' { 'NOTA' }; default { 'DA COMPLETARE' } }
