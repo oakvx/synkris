@@ -1,13 +1,25 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 306" width="1280" height="306" role="img" aria-labelledby="t d">
-<title id="t">Come funziona synk</title><desc id="d">Quattro passi: richiesta, verifica, conferma e supervisione. Illustrazione di flusso senza account reali.</desc>
-<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#130A28"/><stop offset="1" stop-color="#2B123D"/></linearGradient><linearGradient id="a"><stop stop-color="#9659F3"/><stop offset="1" stop-color="#EC3FBF"/></linearGradient></defs>
-<rect width="1280" height="306" rx="24" fill="url(#g)"/>
-<g font-family="Inter,Segoe UI,Arial,sans-serif">
-<text x="43" y="53" font-size="29" fill="#FFF" font-weight="750">Un percorso semplice, con verifiche reali.</text>
-<text x="43" y="82" font-size="15" fill="#D2BEE1">Esempio di prenotazione: i passaggi effettivi dipendono dalla configurazione del salone.</text>
-<g font-size="12" font-weight="800"><rect x="39" y="116" width="287" height="152" rx="17" fill="#302047" stroke="#9C62C4"/><text x="60" y="146" fill="#F780DB">01 · IL CLIENTE</text><text x="60" y="185" fill="#FFF" font-size="22">Scrive una richiesta</text><text x="60" y="214" fill="#D5BEE7" font-size="14" font-weight="400">Il messaggio arriva al salone</text><text x="60" y="237" fill="#D5BEE7" font-size="14" font-weight="400">attraverso WhatsApp.</text></g>
-<g font-size="12" font-weight="800"><rect x="345" y="116" width="287" height="152" rx="17" fill="#302047" stroke="#9C62C4"/><text x="366" y="146" fill="#F780DB">02 · SYNK</text><text x="366" y="185" fill="#FFF" font-size="22">Verifica il contesto</text><text x="366" y="214" fill="#D5BEE7" font-size="14" font-weight="400">Trattamenti, disponibilità</text><text x="366" y="237" fill="#D5BEE7" font-size="14" font-weight="400">e regole impostate.</text></g>
-<g font-size="12" font-weight="800"><rect x="651" y="116" width="287" height="152" rx="17" fill="#302047" stroke="#9C62C4"/><text x="672" y="146" fill="#F780DB">03 · AGENDA</text><text x="672" y="185" fill="#FFF" font-size="22">Registra e sincronizza</text><text x="672" y="214" fill="#D5BEE7" font-size="14" font-weight="400">Stati separati tra database</text><text x="672" y="237" fill="#D5BEE7" font-size="14" font-weight="400">locale e Google Calendar.</text></g>
-<g font-size="12" font-weight="800"><rect x="957" y="116" width="287" height="152" rx="17" fill="#302047" stroke="#9C62C4"/><text x="978" y="146" fill="#F780DB">04 · IL TEAM</text><text x="978" y="185" fill="#FFF" font-size="22">Mantiene il controllo</text><text x="978" y="214" fill="#D5BEE7" font-size="14" font-weight="400">Interviene dove serve, senza</text><text x="978" y="237" fill="#D5BEE7" font-size="14" font-weight="400">scambiare code per conferme.</text></g>
-<g fill="#F0A5EC" font-size="18" font-weight="800"><text x="324" y="199">›</text><text x="630" y="199">›</text><text x="936" y="199">›</text></g>
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="292" viewBox="0 0 1280 292" role="img" aria-labelledby="t d">
+<title id="t">Flusso operativo di una prenotazione</title>
+<desc id="d">Diagramma editoriale in quattro passaggi: messaggio, verifica, salvataggio con sincronizzazione e supervisione del personale.</desc>
+<rect width="1280" height="292" fill="#180F29"/>
+<path d="M36 27H1244M36 259H1244" stroke="#705380"/>
+<g font-family="Consolas,DejaVu Sans Mono,monospace" fill="#C8B0D7" font-size="13">
+<text x="39" y="54" letter-spacing="1.5" fill="#E572D2">SYNK / FLUSSO PRENOTAZIONE</text><text x="1142" y="54" letter-spacing="1">FIG. 01</text>
+</g>
+<path d="M335 93V244M636 93V244M937 93V244" stroke="#654574"/>
+<g font-family="Impact,Nimbus Sans Narrow,DejaVu Sans Condensed,sans-serif" font-weight="900">
+<text x="41" y="150" fill="#E65BBF" font-size="70">01</text>
+<text x="342" y="150" fill="#9164E1" font-size="70">02</text>
+<text x="643" y="150" fill="#E65BBF" font-size="70">03</text>
+<text x="944" y="150" fill="#9164E1" font-size="70">04</text>
+<text x="42" y="183" fill="#FFFFFF" font-size="25">MESSAGGIO</text>
+<text x="343" y="183" fill="#FFFFFF" font-size="25">VERIFICA</text>
+<text x="644" y="183" fill="#FFFFFF" font-size="25">AGENDA</text>
+<text x="945" y="183" fill="#FFFFFF" font-size="25">OPERATORE</text>
+</g>
+<g font-family="Consolas,DejaVu Sans Mono,monospace" fill="#C9B5D3" font-size="12.5">
+<text x="42" y="215">Richiesta dal cliente</text><text x="42" y="233">su WhatsApp.</text>
+<text x="343" y="215">Trattamenti e slot</text><text x="343" y="233">secondo le regole.</text>
+<text x="644" y="215">Salvataggio locale.</text><text x="644" y="233">Sync con esito distinto.</text>
+<text x="945" y="215">Handoff e decisione</text><text x="945" y="233">quando necessario.</text>
 </g></svg>
