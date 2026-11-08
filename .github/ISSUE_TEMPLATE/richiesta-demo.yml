@@ -1,0 +1,51 @@
+name: Richiesta demo synk
+description: Richiedi informazioni sul progetto o una dimostrazione senza condividere dati riservati
+title: "[Demo] "
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Grazie per l'interesse verso synk di SYNKRIS.
+        **Attenzione:** questo ticket e le sue risposte possono essere pubblici.
+        Non inserire numeri di telefono, email personali, nominativi di clienti, credenziali, dati di prenotazione o altri dati riservati.
+        La versione attuale è una **release candidate in collaudo**, non un servizio già pronto per la produzione.
+  - type: dropdown
+    id: activity
+    attributes:
+      label: Tipo di attività
+      options:
+        - Centro estetico o benessere
+        - Parrucchiere o barber shop
+        - Nail studio
+        - Studio tattoo
+        - Altra attività su appuntamento
+    validations:
+      required: true
+  - type: dropdown
+    id: size
+    attributes:
+      label: Organizzazione
+      options:
+        - Un professionista
+        - Team da 2 a 5 persone
+        - Team da 6 o più persone
+        - Più sedi
+        - Da definire
+    validations:
+      required: true
+  - type: textarea
+    id: needs
+    attributes:
+      label: Cosa vorresti semplificare?
+      description: Descrivi il processo, senza inserire dati di persone reali.
+      placeholder: "Per esempio: richieste frequenti via WhatsApp, assegnazione appuntamenti, disponibilità del team..."
+    validations:
+      required: true
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Conferma
+      options:
+        - label: Ho compreso che questa issue è pubblica e non inserirò dati riservati.
+          required: true
