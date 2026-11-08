@@ -1,12 +1,7 @@
-# Library: requires common.ps1. Import is create-only; signature validation is
-# performed later by the production Node verifier, before any DB migration.
-function Import-SynkCredential {
+# Library: requires common.ps1. Normal import remains create-only.
+# Read and validate only the selected bounded file; never print its contents.
+function Read-SynkCredentialText {
     param([ValidateSet('license.txt','license-public.pem','google-service-account.json')][string]$Name, [string]$Source)
-    $destination = Join-Path $script:SynkRoot ('secrets/' + $Name)
-    if (Test-Path -LiteralPath $destination -PathType Leaf) {
-        Write-Host ('File privato gia presente: secrets/' + $Name + ' (non sovrascritto).')
-        return
-    }
     if ([string]::IsNullOrWhiteSpace($Source)) {
         Write-Host ('Serve ' + $Name + '. Trascina il file originale nella finestra, oppure incolla il suo percorso.')
         Write-Host 'NON incollare il contenuto della licenza o della chiave.'
@@ -33,6 +28,16 @@ function Import-SynkCredential {
             if ($null -eq $google -or 'type' -notin $google.PSObject.Properties.Name -or 'client_email' -notin $google.PSObject.Properties.Name -or 'private_key' -notin $google.PSObject.Properties.Name -or $google.type -ne 'service_account' -or $google.client_email -notmatch '^[^\s@]+@[^\s@]+\.iam\.gserviceaccount\.com$' -or $google.private_key -isnot [string] -or $google.private_key -notmatch '^-----BEGIN (?:RSA )?PRIVATE KEY-----') { throw 'Il file deve essere il JSON di un service account Google con la sua chiave privata. Non usare un client OAuth o una chiave pubblica.' }
         }
     }
+    return $text
+}
+function Import-SynkCredential {
+    param([ValidateSet('license.txt','license-public.pem','google-service-account.json')][string]$Name, [string]$Source)
+    $destination = Join-Path $script:SynkRoot ('secrets/' + $Name)
+    if (Test-Path -LiteralPath $destination -PathType Leaf) {
+        Write-Host ('File privato gia presente: secrets/' + $Name + ' (non sovrascritto).')
+        return
+    }
+    $text = Read-SynkCredentialText -Name $Name -Source $Source
     Write-SynkPrivateFile $destination $text
     Write-Host ('Importato in secrets/' + $Name + '. Contenuto non mostrato; verifica completa durante il preflight.')
 }
@@ -42,4 +47,56 @@ function Initialize-SynkCredentials {
     foreach ($name in @('license.txt','license-public.pem','google-service-account.json')) { Import-SynkCredential -Name $name }
     Write-Host 'Condividi ogni calendario operativo con l''email del service account, autorizzandolo a gestire gli eventi.'
     Write-Host 'Il controllo offline non puo verificare la condivisione: il collaudo Calendar resta necessario.'
+}
+
+# Explicit recovery for an INITIAL setup only. No runtime file/config/DB or
+# signing private key is changed. Containers must already be stopped; validation
+# uses the existing isolated doctor and original production signature verifier.
+function Repair-SynkInitialCredential {
+    param([ValidateSet('license.txt','license-public.pem','google-service-account.json')][string]$Name, [string]$Source)
+    $mutex = Enter-SynkMaintenance
+    $stage = $null; $created = $false; $replaced = $false; $accepted = $false
+    try {
+        if (Test-Path -LiteralPath (Join-Path $script:SynkRoot 'runtime/config/.synkris-bootstrap-ok')) { throw 'Configurazione gia importata: per rinnovi o rotazioni operative serve la procedura del tecnico. Nessun file modificato.' }
+        if ((Get-SynkDockerState) -ne 'ready') { throw 'Avvia Docker Desktop e riprova. Nessun file modificato.' }
+        Assert-SynkProjectOwnership
+        if (@(Get-RunningWorkers).Count -ne 0) { throw 'Servizi in esecuzione: questa correzione e solo per il setup iniziale fermo. Nessun file modificato.' }
+        $destination = Join-Path $script:SynkRoot ('secrets/' + $Name)
+        $original = Get-Item -LiteralPath $destination -Force -ErrorAction Stop
+        if ($original.PSIsContainer -or ($original.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Destinazione privata non adatta alla sostituzione.' }
+        # First confirm the image/checker is available, before replacing anything.
+        Get-SynkOfflineDoctor | Out-Null
+        Write-Host ('Sostituzione iniziale di secrets/' + $Name + '. Originale conservato in un backup privato; nessun avvio servizi.')
+        if ((Read-SynkText 'Conferma SOSTITUISCI / ANNULLA' 'ANNULLA' '^(SOSTITUISCI|ANNULLA)$') -cne 'SOSTITUISCI') { Write-Host 'Annullato: nessun file modificato.'; return }
+        $text = Read-SynkCredentialText -Name $Name -Source $Source
+        $id = [Guid]::NewGuid().ToString('N')
+        $folder = Join-Path $script:SynkRoot ('runtime/private-file-backups/' + $id)
+        New-Item -ItemType Directory -Path $folder -ErrorAction Stop | Out-Null
+        Protect-LocalPath $folder -Directory
+        $backup = Join-Path $folder $Name
+        $stage = Join-Path $script:SynkRoot ('secrets/.credential-pending-' + $id)
+        Write-SynkPrivateFile $stage $text; $created = $true
+        [IO.File]::Replace($stage,$destination,$backup,$false); $replaced = $true
+        Protect-LocalPath $destination; Protect-LocalPath $backup
+        $report = Get-SynkOfflineDoctor
+        $checkId = @{'license.txt'='license';'license-public.pem'='license_key';'google-service-account.json'='google_credentials'}[$Name]
+        $selected = @($report.checks | Where-Object { $_.id -eq $checkId })
+        if ($selected.Count -ne 1 -or $selected[0].status -notin @('pass','warn')) { throw 'Il nuovo file non supera la verifica selezionata. Controlla origine, attivazione/HWID o tipo di credenziale.' }
+        $accepted = $true
+        Show-SynkDoctorReport $report
+        Write-Host 'File selezionato verificato e conservato. Il backup privato e in runtime/private-file-backups/. Rilancia Installazione per gli eventuali altri punti mancanti.'
+    } catch {
+        if ($replaced -and -not $accepted) {
+            try {
+                $rejected = Join-Path $folder ('rejected-' + $Name)
+                [IO.File]::Replace($backup,$destination,$rejected,$false)
+                Protect-LocalPath $destination; Protect-LocalPath $rejected
+                Write-Warning 'File precedente ripristinato. La copia rifiutata resta solo nel backup privato, non in uso.'
+            } catch { throw 'Ripristino file privato non completato: non avviare synk. Il tecnico deve controllare runtime/private-file-backups/; nessun servizio e stato avviato.' }
+        }
+        throw
+    } finally {
+        if ($created -and $null -ne $stage -and (Test-Path -LiteralPath $stage)) { Remove-Item -LiteralPath $stage -Force }
+        Exit-SynkMaintenance $mutex
+    }
 }

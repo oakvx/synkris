@@ -104,6 +104,7 @@ jobs:
             ./tests/windows-scripts.test.ps1
             ./tests/windows-setup.test.ps1
             ./tests/windows-credentials.test.ps1
+            ./tests/windows-credential-repair.test.ps1
             ./tests/windows-environment.test.ps1
             ./tests/windows-preflight.test.ps1
             ./tests/windows-startup.test.ps1
