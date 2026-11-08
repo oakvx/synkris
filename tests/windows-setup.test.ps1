@@ -29,16 +29,15 @@ Check (@($config.services['Manicure'].professionals).Count -eq 1) 'Single assign
 Check (($config.businessHours['6'] -join ',') -eq '09:00,13:00') 'Saturday hours'
 Check (@($config.closedDays).Count -eq 1 -and $config.closedDays[0] -eq 7) 'Closed Sunday'
 $encoded=$config | ConvertTo-Json -Depth 12
-# Exercise the same canonical JS validator used by bootstrap, not just PS shape checks.
-$validator=(Join-Path $root 'src/services/setup-validation.js').Replace('\','/')
-$result=$encoded | & node --input-type=module -e "import {assertSalonConfig} from 'file:///$validator'; let s='';for await(const c of process.stdin)s+=c;assertSalonConfig(JSON.parse(s));"
-Check ($LASTEXITCODE -eq 0) 'Wizard output must satisfy the production validator'
 $temp=Join-Path ([IO.Path]::GetTempPath()) ('synk-setup-' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $temp | Out-Null
 $oldRoot=$script:SynkRoot;$script:SynkRoot=$temp
 try {
     $file=Join-Path $temp 'setup/config.json'
     Write-SynkPrivateFile $file $encoded
+    # Use UTF-8 files: native stdin/inline JS differs between PowerShell 5.1/7.
+    & node (Join-Path $PSScriptRoot 'validate-salon-fixture.mjs') $file
+    Check ($LASTEXITCODE -eq 0) 'Wizard output must satisfy the production validator'
     Check ([IO.File]::ReadAllBytes($file)[0] -eq 123) 'Private JSON must be UTF-8 without BOM'
     $before=[IO.File]::ReadAllText($file)
     $rejected=$false;try{Write-SynkPrivateFile $file 'replacement'}catch{$rejected=$true}
