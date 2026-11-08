@@ -147,7 +147,7 @@ Il sistema distingue la **registrazione transazionale nel database** dall'invio 
 | **Test con provider reali** | Ancora necessari su WhatsApp, Google Calendar, SMTP, Windows e procedure di ripristino |
 | **Disponibilità commerciale** | Richiede valutazione, accordo scritto e collaudo assistito; nessun percorso self-service |
 
-**Non considerare questa RC idonea a gestire appuntamenti e dati di clienti reali senza prima completare gli interventi di sicurezza e la [checklist di collaudo](COLLAUDO.md).** Questa fotografia storica **non è un badge live**: i risultati datati non garantiscono la versione attuale.
+**Non considerare questa RC idonea a gestire appuntamenti e dati di clienti reali senza prima completare gli interventi di sicurezza e la [checklist di collaudo](COLLAUDO.md).** Questa fotografia storica è **un riepilogo datato, non un badge live**: i risultati non garantiscono la versione attuale.
 
 ### Verifiche locali
 
@@ -209,7 +209,7 @@ Per i dettagli: [SECURITY.md](SECURITY.md).
 
 **synk non è open source.** SYNKRIS distribuisce il prodotto come software proprietario con codice consultabile (source-available).
 
-La [licenza attuale](LICENSE.md) permette gratuitamente solo un **uso strettamente privato e non commerciale da parte di una persona fisica**, con attivazione firmata. Anche per la prova privata il rilascio è gestito manualmente. L'uso in saloni, aziende, per clienti, in servizi ospitati, nella rivendita o nel white-label **richiede prima un accordo commerciale scritto**, salvo diversa autorizzazione espressa.
+La [licenza attuale](LICENSE.md) permette gratuitamente solo un **uso strettamente privato e non commerciale da parte di una persona fisica**, con attivazione firmata. Anche per la prova privata il rilascio è gestito manualmente. L'uso in saloni, aziende, per clienti, in servizi ospitati, nella rivendita o nel white-label **richiede prima un accordo commerciale scritto a titolo oneroso**, salvo diversa autorizzazione espressa.
 
 **Non è pubblicato un listino prezzi** e il repository non costituisce un'offerta commerciale vincolante. Le dipendenze di terzi mantengono le rispettive licenze: vedi [THIRD_PARTY_NOTICES.md](deploy/THIRD_PARTY_NOTICES.md).
 
