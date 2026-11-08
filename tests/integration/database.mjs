@@ -1,6 +1,11 @@
 import test,{before,after} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import crypto from 'node:crypto';
+import {spawnSync} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
 import {testPool,resetDatabase,seed} from './helpers.mjs';
 import {enqueueCalendarJob,drainCalendarOutbox} from '../../src/services/calendar-outbox.js';
 import {readOnboardingStatus} from '../../src/services/onboarding-status.js';
@@ -67,4 +72,35 @@ test('onboarding aggregates use the real PostgreSQL schema without exposing clie
   assert.equal(report.steps.find(step=>step.id==='catalog').status,'done');
   assert.equal(report.productionReady,false);assert.equal(report.steps.length,5);
   assert.equal(JSON.stringify(report).includes('Synthetic client'),false);
+});
+
+// The module's testPool/resetDatabase guards already require an explicitly
+// disposable synk_test DB; no salon database or provider account is involved.
+test('real bootstrap imports once without activation files and ignores obsolete settings on restart',async()=>{
+  const folder=fs.mkdtempSync(path.join(os.tmpdir(),'synk-bootstrap-no-activation-'));
+  const marker=path.join(folder,'.synkris-bootstrap-ok');
+  try {
+    const email='bootstrap@synthetic-salon.test';
+    fs.writeFileSync(path.join(folder,'config.json'),JSON.stringify({salonName:'Synthetic bootstrap',professionals:{[email]:{name:'Synthetic bootstrap team'}},services:{'Synthetic bootstrap treatment':{durationMin:30,professionals:[email]}},businessHours:{'1':['09:00','18:00']},closedDays:[7]}));
+    const google=path.join(folder,'google.json');
+    const key=crypto.generateKeyPairSync('rsa',{modulusLength:2048}).privateKey.export({type:'pkcs8',format:'pem'});
+    fs.writeFileSync(google,JSON.stringify({type:'service_account',client_email:'synthetic@ci.iam.gserviceaccount.com',private_key:key}));
+    const env={...process.env,NODE_ENV:'production',DATABASE_URL:process.env.TEST_DATABASE_URL,APP_DATA_DIR:folder,GOOGLE_APPLICATION_CREDENTIALS:google,CALENDAR_ID:'synthetic@group.calendar.google.com',ADMIN_TOKEN:crypto.randomBytes(32).toString('hex')};
+    for(const name of Object.keys(env))if(name.startsWith('LICENSE_')||name==='HWID'||name==='APP_HWID')delete env[name];
+    const run=()=>spawnSync(process.execPath,['scripts/deploy/bootstrap.mjs'],{cwd:fileURLToPath(new URL('../../',import.meta.url)),env,encoding:'utf8',timeout:45000,maxBuffer:1024*1024});
+    const first=run();assert.equal(first.status,0,first.stderr);
+    assert.ok(fs.existsSync(marker),'Bootstrap did not publish its successful import marker');
+    assert.equal(fs.existsSync(path.join(folder,'licenses')),false);
+    const imported=await pool.query("SELECT count(*)::int AS n FROM public.services WHERE service_name='Synthetic bootstrap treatment'");
+    assert.equal(imported.rows[0].n,1);
+    const before=fs.readFileSync(marker,'utf8');
+    // A stale template and deliberately invalid legacy license configuration
+    // must not reimport the catalog or restore the removed activation gate.
+    fs.writeFileSync(path.join(folder,'config.json'),'{}');
+    Object.assign(env,{LICENSE_FILE:path.join(folder,'missing-license.txt'),LICENSE_PUBLIC_KEY_FILE:path.join(folder,'missing-key.pem'),APP_HWID:'obsolete'});
+    const second=run();assert.equal(second.status,0,second.stderr);
+    assert.equal(fs.readFileSync(marker,'utf8'),before);
+    assert.equal((await pool.query("SELECT count(*)::int AS n FROM public.services WHERE service_name='Synthetic bootstrap treatment'")).rows[0].n,1);
+    assert.equal((await pool.query("SELECT setting_value FROM public.salon_settings WHERE setting_key='salon_name'")).rows[0].setting_value,'Modificato dalla dashboard');
+  } finally { fs.rmSync(folder,{recursive:true,force:true}); }
 });
