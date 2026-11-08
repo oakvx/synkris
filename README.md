@@ -63,7 +63,7 @@ Queste sono **capacità implementate nel progetto e oggetto di collaudo**, non u
 L'interfaccia è pensata per mostrare le informazioni utili senza nascondere gli stati operativi.
 
 > [!NOTE]
-> **Anteprime documentali, non dati di clienti reali.** Le schermate seguenti sono state renderizzate dal frontend ricostruito con dati sintetici. Non certificano un collegamento WhatsApp o Google Calendar effettivamente funzionante.
+> **Anteprime documentali, non dati di clienti reali.** Le schermate seguenti sono state renderizzate dal frontend ricostruito con **fixture sintetiche** e dati dimostrativi. Non certificano un collegamento WhatsApp o Google Calendar effettivamente funzionante.
 
 <p align="center"><a href="docs/assets/dashboard-overview.webp"><img src="docs/assets/dashboard-overview.webp" width="100%" alt="Dashboard synk dimostrativa con dati sintetici e stati operativi."></a></p>
 
@@ -128,7 +128,7 @@ Questa sezione descrive **quello che il repository contiene oggi** e i limiti de
 | **Ambiente locale** | Docker Compose e, su Windows, Docker Desktop / WSL2 |
 
 > [!IMPORTANT]
-> **WhatsApp non usa l'API ufficiale WhatsApp Business Cloud.** L'integrazione si basa su `whatsapp-web.js` / WhatsApp Web. Compatibilità, possibili restrizioni e conformità ai termini del provider devono essere valutate prima dell'uso. La migrazione da OpenWA non è stata convalidata su una sessione WhatsApp reale.
+> **WhatsApp non usa l'API ufficiale WhatsApp Business Cloud.** L'integrazione si basa su `whatsapp-web.js` / WhatsApp Web. Compatibilità, possibili restrizioni e conformità ai termini del provider devono essere valutate prima dell'uso. La migrazione del codice è eseguita; il collaudo WhatsApp reale resta da fare. L'adapter migrato non è stato convalidato su una sessione WhatsApp reale.
 
 ### Una prenotazione non è soltanto un «Salva»
 
@@ -147,7 +147,7 @@ Il sistema distingue la **registrazione transazionale nel database** dall'invio 
 | **Test con provider reali** | Ancora necessari su WhatsApp, Google Calendar, SMTP, Windows e procedure di ripristino |
 | **Disponibilità commerciale** | Richiede valutazione, accordo scritto e collaudo assistito; nessun percorso self-service |
 
-**Non considerare questa RC idonea a gestire appuntamenti e dati di clienti reali senza prima completare gli interventi di sicurezza e la [checklist di collaudo](COLLAUDO.md).** I risultati datati non sono badge di stato live.
+**Non considerare questa RC idonea a gestire appuntamenti e dati di clienti reali senza prima completare gli interventi di sicurezza e la [checklist di collaudo](COLLAUDO.md).** Questa fotografia storica **non è un badge live**: i risultati datati non garantiscono la versione attuale.
 
 ### Verifiche locali
 
@@ -207,9 +207,9 @@ Per i dettagli: [SECURITY.md](SECURITY.md).
 
 ### Licenza e utilizzo commerciale
 
-synk / SYNKRIS è **software proprietario con codice consultabile (source-available): non è open source**.
+**synk non è open source.** SYNKRIS distribuisce il prodotto come software proprietario con codice consultabile (source-available).
 
-La [licenza attuale](LICENSE.md) permette gratuitamente solo un **uso strettamente privato e non commerciale da parte di una persona fisica**, con attivazione firmata rilasciata manualmente. L'uso in saloni, aziende, per clienti, in servizi ospitati, nella rivendita o nel white-label **richiede prima un accordo commerciale scritto**, salvo diversa autorizzazione espressa.
+La [licenza attuale](LICENSE.md) permette gratuitamente solo un **uso strettamente privato e non commerciale da parte di una persona fisica**, con attivazione firmata. Anche per la prova privata il rilascio è gestito manualmente. L'uso in saloni, aziende, per clienti, in servizi ospitati, nella rivendita o nel white-label **richiede prima un accordo commerciale scritto**, salvo diversa autorizzazione espressa.
 
 **Non è pubblicato un listino prezzi** e il repository non costituisce un'offerta commerciale vincolante. Le dipendenze di terzi mantengono le rispettive licenze: vedi [THIRD_PARTY_NOTICES.md](deploy/THIRD_PARTY_NOTICES.md).
 
@@ -234,7 +234,7 @@ La [licenza attuale](LICENSE.md) permette gratuitamente solo un **uso strettamen
 
 **SYNKRIS** · *Automazione con criterio. Persone al centro.*
 
-**[Richiedi informazioni](https://github.com/oakvx/synkris/issues/new?template=richiesta-demo.yml)** · **[Torna all'inizio](#synkris--synk)**
+**[Richiedi informazioni](https://github.com/oakvx/synkris/issues/new?template=richiesta-demo.yml)** · **[Torna all'inizio](#synkris-synk)**
 
 <sub>Illustrazioni SVG originali; anteprime con dati sintetici. Nessuna statistica commerciale o recensione inventata.</sub>
 
