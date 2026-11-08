@@ -11,6 +11,7 @@ try {
     Write-Host '[1/6] Verifica Docker Desktop e motore Linux...'
     Wait-SynkDocker -StartDesktop
     $mutex = Enter-SynkMaintenance
+    Assert-SynkProjectOwnership
     $maintenance = Join-Path $script:SynkRoot 'runtime/config/calendar-reconciliation-required.flag'
     if (Test-Path -LiteralPath $maintenance) { throw 'Ripristino o aggiornamento da riconciliare: non avvio servizi o migrazioni. Usa la procedura tecnica Calendar.' }
     foreach ($dir in @('secrets','setup','runtime/config','runtime/session','runtime/backups')) { New-Item -ItemType Directory -Force -Path (Join-Path $script:SynkRoot $dir) | Out-Null }

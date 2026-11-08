@@ -8,6 +8,7 @@ function Start-SynkServices {
     $mutex = $null
     try {
         $mutex = Enter-SynkMaintenance
+        Assert-SynkProjectOwnership
         if (Test-Path -LiteralPath (Join-Path $script:SynkRoot 'runtime/config/calendar-reconciliation-required.flag')) { throw 'Ripristino o aggiornamento da riconciliare: avvio automatico bloccato. Richiedi il controllo tecnico Calendar.' }
         Invoke-Compose -Arguments @('config','--quiet') | Out-Null
         $report = Get-SynkOfflineDoctor

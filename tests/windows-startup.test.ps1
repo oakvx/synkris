@@ -7,6 +7,7 @@ $root=Split-Path -Parent $PSScriptRoot
 $count=0;$script:calls=New-Object 'System.Collections.Generic.List[string]';$script:doctorOk=$true
 function Check([bool]$Condition,[string]$Message) { if (-not $Condition) { throw $Message }; $script:count++ }
 function Wait-SynkDocker { param([switch]$StartDesktop) $script:calls.Add('docker') }
+function Assert-SynkProjectOwnership { $script:calls.Add('ownership') }
 function Enter-SynkMaintenance { $script:calls.Add('lock');return 'mock-lock' }
 function Exit-SynkMaintenance($Mutex) { if ($null -ne $Mutex) {$script:calls.Add('unlock')} }
 function Invoke-Compose { param([string[]]$Arguments) $script:calls.Add(($Arguments -join ' ')) }
@@ -23,7 +24,7 @@ try {
         $file=Join-Path $temp $name;New-Item -ItemType Directory -Force -Path (Split-Path -Parent $file) | Out-Null;Write-Utf8File $file 'synthetic fixture'
     }
     Start-SynkServices -NoBrowser
-    Check (($script:calls -join '|') -eq 'docker|lock|config --quiet|doctor|up -d --no-build --pull never|health|unlock') 'Startup ordering/no-pull/bounded-health/lock'
+    Check (($script:calls -join '|') -eq 'docker|lock|ownership|config --quiet|doctor|up -d --no-build --pull never|health|unlock') 'Startup ordering/no-pull/bounded-health/lock'
     $script:calls.Clear();Start-SynkServices
     Check ($script:calls.Contains('browser')) 'Foreground startup must open browser after health'
     Check ($script:calls.IndexOf('browser') -gt $script:calls.IndexOf('health')) 'Browser opened too early'

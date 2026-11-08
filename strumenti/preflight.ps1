@@ -5,12 +5,15 @@ function Invoke-DockerProbe {
     $command = Get-Command docker -CommandType Application -ErrorAction SilentlyContinue
     if ($null -eq $command) { return [pscustomobject]@{Success=$false;Value=''} }
     # These probes accept only fixed flags, templates and validated project names.
-    if (@($Arguments | Where-Object { $_ -notmatch '^[A-Za-z0-9_./:=,{}^$-]+$' }).Count -gt 0) { throw 'Argomenti diagnostica Docker non ammessi.' }
+    if (@($Arguments | Where-Object { $_ -notmatch '^[A-Za-z0-9_./:=,{}^$-]+$' -and $_ -cne '{{json .Config.Labels}}' }).Count -gt 0) { throw 'Argomenti diagnostica Docker non ammessi.' }
     $info = New-Object Diagnostics.ProcessStartInfo
-    $info.FileName = $command.Source; $info.Arguments = $Arguments -join ' '
+    $info.FileName = $command.Source
+    $info.Arguments = ($Arguments | ForEach-Object { if ($_ -ceq '{{json .Config.Labels}}') { '"' + $_ + '"' } else { $_ } }) -join ' '
     $info.WorkingDirectory = $script:SynkRoot
     $info.UseShellExecute = $false; $info.CreateNoWindow = $true
     $info.RedirectStandardOutput = $true; $info.RedirectStandardError = $true
+    $info.StandardOutputEncoding = New-Object Text.UTF8Encoding($false)
+    $info.StandardErrorEncoding = New-Object Text.UTF8Encoding($false)
     $process = New-Object Diagnostics.Process
     $process.StartInfo = $info
     try {
@@ -70,10 +73,14 @@ function Wait-SynkDocker {
     } while ([DateTime]::UtcNow -lt $deadline)
     throw 'Docker non e pronto entro il tempo previsto. Verifica WSL2 e virtualizzazione, poi rilancia: i file gia configurati restano intatti.'
 }
-function Test-SynkDatabaseVolume {
+function Get-SynkProjectName {
     $project = Get-EnvValue 'COMPOSE_PROJECT_NAME'
     if (-not $project) { $project = if ($env:COMPOSE_PROJECT_NAME) { $env:COMPOSE_PROJECT_NAME } else { 'synk' } }
     if ($project -notmatch '^[a-z0-9][a-z0-9_-]{0,62}$') { throw 'Nome progetto Compose non valido: non posso verificare il volume database in sicurezza.' }
+    return $project
+}
+function Test-SynkDatabaseVolume {
+    $project = Get-SynkProjectName
     $result = Invoke-DockerProbe -Arguments @('volume','ls','--filter',('name=^' + $project + '_postgres_data$'),'--format','{{.Name}}')
     if (-not $result.Success) { throw 'Non posso verificare i volumi: non genero o sostituisco password database.' }
     return -not [string]::IsNullOrWhiteSpace($result.Value)
@@ -100,4 +107,23 @@ function Show-SynkDoctorReport($Report) {
         Write-Host ('  ' + $check.help)
     }
     Write-Host 'Controlli OFFLINE: WhatsApp, Calendar e ripristino reale non sono certificati.'
+}
+
+function Assert-SynkProjectOwnership {
+    $project = Get-SynkProjectName
+    $containers = Invoke-DockerProbe -Arguments @('ps','--all','--quiet','--filter',('label=com.docker.compose.project=' + $project))
+    if (-not $containers.Success) { throw 'Impossibile verificare l''installazione Docker esistente. Non avvio o sostituisco container.' }
+    foreach ($id in @($containers.Value -split '\r?\n' | Where-Object { $_ })) {
+        if ($id -notmatch '^[a-f0-9]{12,64}$') { throw 'Identificativo container non riconosciuto.' }
+        $result = Invoke-DockerProbe -Arguments @('inspect','--format','{{json .Config.Labels}}',$id)
+        if (-not $result.Success) { throw 'Metadati installazione non leggibili. Non sostituisco container esistenti.' }
+        try {
+            $labels = $result.Value | ConvertFrom-Json -ErrorAction Stop
+            $property = $labels.PSObject.Properties['com.docker.compose.project.working_dir']
+            if ($null -eq $property -or [string]::IsNullOrWhiteSpace([string]$property.Value)) { throw 'unknown_directory' }
+            $owner = [IO.Path]::GetFullPath([string]$property.Value).TrimEnd('\','/')
+            $expected = [IO.Path]::GetFullPath($script:SynkRoot).TrimEnd('\','/')
+            if (-not $owner.Equals($expected,[StringComparison]::OrdinalIgnoreCase)) { throw 'different_installation' }
+        } catch { throw 'Il progetto Docker appartiene a un''altra cartella o non e riconoscibile. Non lo sovrascrivo: usa una sola installazione per PC e chiedi assistenza per il trasferimento.' }
+    }
 }
