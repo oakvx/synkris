@@ -4,7 +4,7 @@ import path from 'node:path';
 export const releaseDirectories = ['src','dashboard','deploy','assets','strumenti','scripts'];
 export const releaseFiles = [
   'package.json','package-lock.json','dashboard.php','bridge.php','Dockerfile','Dockerfile.dashboard','compose.yaml','.dockerignore','.env.example',
-  'LEGGIMI.txt','LICENSE.md','SECURITY.md','COLLAUDO.md','RELEASE.md','CHANGELOG.md','REPORT_BUGFIX_RC4.md','REPORT_BUGFIX_RC5.md','REPORT_RICOSTRUZIONE_RC6.md',
+  'LEGGIMI.txt','LICENSE.md','deploy/THIRD_PARTY_NOTICES.md','SECURITY.md','COLLAUDO.md','RELEASE.md','CHANGELOG.md','REPORT_BUGFIX_RC4.md','REPORT_BUGFIX_RC5.md','REPORT_RICOSTRUZIONE_RC6.md',
   'AGGIORNA_SYNK_TECNICO.bat','APRI_SYNK.bat','ATTIVA_AI_LOCALE.bat','AVVIA_SYNK.bat','ESPORTA_BACKUP_CIFRATO_TECNICO.bat','INSTALLA_UNA_VOLTA.bat','RIATTIVA_CALENDAR_TECNICO.bat','RIPRISTINA_BACKUP.bat',
   'setup/config.example.json',
 ];
@@ -21,7 +21,7 @@ export function isReleasePath(name) {
   const segments = name.split('/');
   if (segments.some(s=>!s||s==='.'||s==='..'||/[. ]$/.test(s)||/^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/i.test(s))) return false;
   if (sensitiveBasenames.has(segments.at(-1).toLowerCase()) || /\.(pem|key|dump|zip|log)$/i.test(name)) return false;
-  if (segments.some(s=>['node_modules','.git','runtime','secrets','.cache','artifacts'].includes(s.toLowerCase()))) return false;
+  if (segments.some(s=>['node_modules','.git','runtime','secrets','.cache','artifacts','.wwebjs_auth','.wwebjs_cache'].includes(s.toLowerCase()))) return false;
   if (name.includes('/.env') || (segments.at(-1).startsWith('.') && name!=='.env.example' && name!=='.dockerignore')) return false;
   if (releaseFiles.includes(name)) return true;
   const extensions = {src:/\.(js|mjs|cjs)$/,dashboard:/\.(js|css|html|php)$/,deploy:/\.(conf|php)$/,assets:/\.(svg|png|jpg|jpeg|webp|woff2?)$/,strumenti:/\.ps1$/,scripts:/\.(js|mjs|cjs|sql)$/};

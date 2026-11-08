@@ -59,7 +59,7 @@ async function safeSend(client, chatId, text, opts = {}) {
       break; // Successo, esci dal loop
     } catch (e) {
       if (e?.outcome === 'unknown') {
-        // v5 may fail after submitting the message. Retrying can send it twice.
+        // A provider may fail after submitting the message. Retrying can send it twice.
         __dedupRemember(chatId, t);
         log('warn', 'Esito invio WhatsApp non confermato; nessun retry automatico');
         return t;

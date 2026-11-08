@@ -1,5 +1,26 @@
 # Changelog
 
+## Non rilasciato
+
+- Definito il modello proprietario/source-available: uso privato non commerciale
+  gratuito per persone fisiche; ogni altro uso su accordo commerciale scritto,
+  senza fissare prezzi o royalties e senza affermare conseguenze penali automatiche.
+- Allineati metadati, README, asset e istruzioni alla licenza personalizzata.
+  Firma/HWID restano richiesti anche per l’attivazione privata gratuita, con
+  emissione manuale; nessun bypass o sistema automatico di incasso introdotto.
+- Migrato il runtime da OpenWA a whatsapp-web.js 1.34.7 (Apache-2.0), con
+  LocalAuth isolato e QR PNG soltanto in RAM tramite qrcode 1.5.4 (MIT).
+  Rimossi OpenWA e l’override parse-url dal lockfile; vecchie sessioni intatte,
+  nuova associazione richiesta e arresto senza logout.
+- Introdotto adapter per ready/stato, invio singolo, esito incerto senza retry,
+  normalizzazione di messaggi e LID, coda limitata e chiusura anche di un browser
+  avviato in ritardo. Conservati dispatcher/inbox e verifica firma/HWID.
+- Estesa la suite a 139 test Node; contratto nuovo SDK nel job Docker e verifica
+  documentazione offline in CI. Aggiornate guide, asset e avvisi di terzi.
+- Audit produzione migrato: 19 rilievi (8 moderati, 11 elevati, zero critici),
+  contro 57 precedenti; SBOM locale di 335 componenti. Nessun via libera produzione
+  o collaudo WhatsApp reale implicito, nessuna release pubblicata.
+
 ## 1.2.0-rc.6 — ricostruzione per collaudo
 
 - Riscritti i componenti mancanti `dashboard/`, `deploy/`, `assets/`, `strumenti/`

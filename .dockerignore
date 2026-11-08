@@ -27,3 +27,7 @@ coverage
 .github
 setup/config.json
 README.md
+
+# Defensive defaults for standalone whatsapp-web.js tools (runtime is configured separately).
+.wwebjs_auth/
+.wwebjs_cache/

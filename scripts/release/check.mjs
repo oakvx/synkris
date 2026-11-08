@@ -27,7 +27,7 @@ const dockerSource=fs.readFileSync(path.join(root,'Dockerfile'),'utf8');
 if(!dockerSource.includes('npm ci')||!dockerSource.includes('package-lock.json'))throw new Error('Docker must use npm ci with the lockfile.');
 const files=execFileSync('git',['ls-files','--cached','--others','--exclude-standard','-z'],{cwd:root,encoding:'utf8'}).split('\0').filter(Boolean);
 for(const name of files) {
-  if ((/^(?:\.env(?:\.|$)|runtime\/|secrets\/|setup\/config\.json$|node_modules\/|artifacts\/|\.cache\/)/.test(name)&&!['.env.example','secrets/LEGGIMI.txt'].includes(name)) || /\.(pem|key|dump|zip)$/i.test(name)) throw new Error('Private/generated file must not be tracked: '+name);
+  if ((/^(?:\.env(?:\.|$)|runtime\/|secrets\/|setup\/config\.json$|node_modules\/|artifacts\/|\.cache\/)/.test(name)&&!['.env.example','secrets/LEGGIMI.txt'].includes(name)) || /(?:^|\/)\.wwebjs_(?:auth|cache)(?:\/|$)/.test(name) || name.startsWith('configs & dashboard/') || /\.(pem|key|dump|zip)$/i.test(name)) throw new Error('Private/generated file must not be tracked: '+name);
   const filename=path.join(root,name);
   if(fs.existsSync(filename)&&fs.statSync(filename).isFile()&&fs.statSync(filename).size<5*1024*1024) {
     const text=fs.readFileSync(filename,'utf8');

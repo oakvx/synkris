@@ -1,4 +1,4 @@
-/** In-process serialization and replay suppression for OpenWA message callbacks.
+/** In-process serialization and replay suppression for normalized WhatsApp message callbacks.
  * The provider is not an exactly-once source. This protects live conversations;
  * persistence across restarts requires a provider-id inbox table in PostgreSQL.
  */

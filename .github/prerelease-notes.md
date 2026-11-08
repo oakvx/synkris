@@ -12,14 +12,29 @@ corruzioni ma non è una firma digitale di autenticità. Il manifest contiene
 commit sorgente e hash di ogni file. Non sono incluse credenziali, sessioni o dati
 cliente: configurarli solo sul PC del salone.
 
+### Licenza e attivazione
+
+Licenza proprietaria/source-available: solo uso privato non commerciale gratuito;
+ogni altro uso richiede un accordo commerciale scritto a titolo oneroso, salvo
+diversa autorizzazione scritta. Prezzi e royalties vanno concordati, non sono
+automatici. Il file di attivazione firmato/HWID serve anche al privato: il suo
+rilascio è gratuito ma manuale, da richiedere al titolare prima della prova.
+Non è una release open source. Leggere `LICENSE.md`.
+
 ### Limiti da non ignorare
 
 - **Non usare con clienti reali prima di completare e firmare `COLLAUDO.md`.**
 - CI e provider simulati non sostituiscono Windows/Docker Desktop, Google,
   WhatsApp, SMTP e recovery reali.
-- OpenWA è allineato alla API v4 del bot; dipendenze legacy e vulnerabilità npm
-  richiedono revisione. I critici bloccano la procedura; gli altri rilievi non
-  costituiscono approvazione produzione. Verificare anche sandbox Chromium su WSL2.
+- Provider migrato a whatsapp-web.js 1.34.7 (Apache-2.0), QR in RAM con qrcode
+  (MIT). **Serve una nuova associazione**: fermare OpenWA, conservare i vecchi
+  file e non avviare due bot sullo stesso account. Leggere RELEASE.md.
+- LocalAuth persistente separato; destroy non esegue logout. QR reale,
+  riconnessione, revoca e messaggi richiedono collaudo con account dedicato.
+  Verificare anche sandbox Chromium sul PC Docker/WSL2, senza bypass impliciti.
+- Audit migrato: 19 rilievi, 11 elevati, zero critici all’8 novembre 2026.
+  I critici bloccano la procedura; gli altri non sono approvazione produzione.
+  I testi dei nuovi componenti sono in deploy/THIRD_PARTY_NOTICES.md.
 - Un rollback del codice non annulla migrazioni del database; un restore richiede
   riconciliazione manuale Calendar prima della riattivazione.
 - Repository e release restano privati; licenza proprietaria e obblighi dei

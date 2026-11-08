@@ -24,6 +24,9 @@ jobs:
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npm run check
       - run: npm test
+      - name: Offline documentation, assets and licensing consistency
+        if: matrix.node == 22
+        run: python3 docs/readme/check-assets.py
       - name: Dependency audit (critical blocks; other findings require review)
         if: matrix.node == 22
         run: npm run audit:release
@@ -109,7 +112,7 @@ jobs:
       - name: Production dependency import contract
         run: >-
           docker run --rm --entrypoint node synk-ci-bot --input-type=module -e
-          "import assert from 'node:assert/strict'; const w=await import('@open-wa/wa-automate'); assert.equal(typeof w.create,'function'); assert.equal(typeof w.ev.on,'function');"
+          "import assert from 'node:assert/strict'; const {default:w}=await import('whatsapp-web.js'); const {default:q}=await import('qrcode'); assert.equal(w.version,'1.34.7'); assert.equal(typeof w.Client,'function'); assert.equal(typeof w.LocalAuth,'function'); assert.equal(w.Events.READY,'ready'); assert.equal(w.WAState.CONNECTED,'CONNECTED'); assert.equal(typeof w.Client.prototype.getContactLidAndPhone,'function'); assert.equal(typeof w.Client.prototype.destroy,'function'); assert.equal(typeof q.toDataURL,'function');"
       - name: PHP image prerequisites
         run: >-
           docker run --rm synk-ci-dashboard php -r

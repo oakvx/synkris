@@ -4,7 +4,8 @@ import path from 'node:path';
 import { DATA_DIR } from './storage/data-paths.js';
 import { loadAndVerifyLicense, storeLicense, verifyLicenseText } from './licensing/license-utils.js';
 import { startAdminServer } from './services/admin-server.js';
-import { whatsappOptions, isWhatsAppConnectedState, stopWhatsAppClient } from './services/whatsapp-options.js';
+import { stopWhatsAppClient } from './services/whatsapp-options.js';
+import { createWhatsAppClient } from './services/whatsapp-provider.js';
 import { log } from './core/util/logger.js';
 import { createPgPool } from './storage/postgres.js';
 import { reconcileCalendarSagas } from './services/calendar-saga.js';
@@ -87,19 +88,13 @@ async function main() {
     handleMessage, remind24hTick, resetState, safeSend, getPrivacyText,
     startReviewFollowupsLoop, confirmAppointmentsTick, warmModels, refreshBookingsCache, refreshServicesCache,
   } = await import('./core/util.js');
-  const { create, ev } = await import('@open-wa/wa-automate');
-  const clientOptions = whatsappOptions();
-  fs.mkdirSync(clientOptions.sessionDataPath, { recursive: true, mode: 0o700 });
-  if (clientOptions.executablePath && !fs.existsSync(clientOptions.executablePath)) {
-    throw new Error('Eseguibile Chrome configurato non trovato');
-  }
-
   const status = { startedAt:Date.now(), online: false, qrDataUrl: null, qrUpdatedAt: 0, dbOnline: false, lastError: null, lastCalendarRecoveryAt: null, lastInboundSyncAt: null, lastInboundSyncStatus: 'disabled', queueSnapshot: null };
   const actions = { sendText: null };
   const server = await startAdminServer(status, actions);
   let client;
   const timers = [];
   let closing = false;
+  let acceptingMessages = false; // Enabled only after the post-pairing license recheck.
   const inflightMessages = new Set();
   let stopReviewLoop = () => {};
   const recoveryPool = createPgPool();
@@ -182,6 +177,7 @@ async function main() {
   const shutdown = async (exitCode = 0) => {
     if (closing) return;
     closing = true;
+    client?.beginShutdown();
     status.online = false;
     actions.sendText = null;
     timers.forEach(clearInterval);
@@ -210,114 +206,19 @@ async function main() {
     void shutdown(1);
   });
 
-  // OpenWA emette il QR prima che create() completi l'associazione. Solo RAM,
-  // niente QR/sessioni su disco o log. L'API amministrativa richiede il token.
-  ev.on('qr.**', (qr) => {
-    const value = typeof qr === 'string' ? qr : '';
-    if (/^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(value) && value.length < 200000) {
-      status.qrDataUrl = value;
-      status.qrUpdatedAt = Date.now();
-    }
-  });
-  ev.on('client.ready', () => { status.qrDataUrl = null; status.qrUpdatedAt = 0; });
-
   try {
     // Warm-up is optional and should not prevent QR authentication or health checks.
     void warmModels().catch(() => log('warn', 'Warm-up modelli AI non disponibile'));
-    client = await create(clientOptions);
+    client = createWhatsAppClient({ status, logger: log, onFatal: error => {
+      count('whatsapp_connection_failed');
+      log('warn', 'WhatsApp non operativo', { code: error.code });
+      void shutdown(1);
+    } });
     const sendText = (to, message) => safeSend(client, to, message);
     const multiBooking = createMultiBookingConversation({db:recoveryPool,send:sendText,
       calendarClient:getCalendarClient,privacyText:getPrivacyText});
-    actions.sendText = (to, message) => client.sendText(to, message);
-    status.online = true;
-    status.qrDataUrl = null;
-    log('info', 'WhatsApp pronto');
-    void recoverCalendar();
-    void inboundSync();
-    timers.push(setInterval(() => { void inboundSync(); }, 2 * 60_000));
-    timers.push(setInterval(() => { void pruneWaitlist(recoveryPool).catch(() => count('waitlist_prune_failed')); }, 60*60_000));
-    const retentionDays=Number(process.env.CHAT_RETENTION_DAYS||90);
-    if(!Number.isInteger(retentionDays)||retentionDays<7||retentionDays>730)
-      throw new Error('CHAT_RETENTION_DAYS deve essere compreso tra 7 e 730');
-    const pruneChats=()=>pruneOldChatMessages(recoveryPool,retentionDays)
-      .catch(error=>log('warn','chat_retention_failed',{code:error.code||'unavailable'}));
-    void pruneChats();
-    timers.push(setInterval(()=>void pruneChats(),24*60*60_000));
-    if (process.env.CALENDAR_OUTBOX_ENABLED === '1') {
-      const offerReleasedSlot = async ({start,end,professionalId,serviceId}) => {
-        if (!status.online || !actions.sendText || Date.parse(start) <= Date.now()) return;
-        const result=await recoveryPool.query(`SELECT email FROM public.professional_emails
-          WHERE professional_id=$1 ORDER BY email LIMIT 1`,[professionalId]);
-        const email=result.rows[0]?.email;
-        if (!email)return;
-        await offerVerifiedSlot({db:recoveryPool,start,end,professionalId,serviceId,
-          verifyAvailability:()=>verifyReleasedSlot({db:recoveryPool,start,end,professionalId,professionalEmail:email}),
-          notify:(to,message)=>actions.sendText(to,message)});
-      };
-      const workOutbox = () => isCalendarPaused() ? Promise.resolve({processed:0,done:0,attention:0}) : drainCalendarOutbox({ pool: recoveryPool, cancel: cancelCalendarEvent,
-        update: job => job.payload?.appointmentId ?
-        updateCalendarBookingSummary({pool:recoveryPool,job,getCalendarClient}) :
-        updateCalendarEvent({...job.payload,eventId:job.event_id,calendarId:job.calendar_id}),
-        reschedule: patchCalendarSchedule,
-        create: job => createAndLinkCalendarBooking({ pool: recoveryPool, job, createEvent: createCalendarEvent }),
-        onCancelled:offerReleasedSlot,logger: log }).then(result => { if(result.done) count('calendar_outbox_done',result.done); })
-        .catch(error => log('warn','calendar_outbox_failed',{code:error.code||'unavailable'}));
-      void workOutbox();
-      timers.push(setInterval(() => { void workOutbox(); }, 60_000));
-    }
-    timers.push(setInterval(() => { void recoverCalendar(); }, 2 * 60_000));
-
-    timers.push(setInterval(() => {
-      // Alcune versioni di OpenWA espongono getState() asincrono.
-      Promise.resolve(client.getState())
-        .then(state => { status.online = isWhatsAppConnectedState(state); })
-        .catch(() => { status.online = false; });
-    }, 15_000));
-    const licenseCheckMinutes = Number(process.env.LICENSE_CHECK_INTERVAL_MINUTES || 15);
-    if (!Number.isFinite(licenseCheckMinutes) || licenseCheckMinutes < 1 || licenseCheckMinutes > 1440) {
-      throw new Error('LICENSE_CHECK_INTERVAL_MINUTES deve essere compreso tra 1 e 1440');
-    }
-    const monitor = createLicenseMonitor({
-      readLicense: async () => {
-        const configured = process.env.LICENSE_TEXT || process.env.LICENSE_CODE;
-        if (configured) return configured;
-        if (process.env.LICENSE_FILE) return fs.readFileSync(process.env.LICENSE_FILE, 'utf8');
-        const saved = await loadAndVerifyLicense();
-        return fs.readFileSync(saved.file, 'utf8');
-      },
-      verify: verifyLicenseText,
-      outageGraceMs: Number(process.env.LICENSE_READ_GRACE_MINUTES || 10) * 60_000,
-    });
-    await monitor.check();
-    status.licenseStatus = monitor.snapshot().status;
-    timers.push(setInterval(() => {
-      monitor.check().then(result => {
-        status.licenseStatus = monitor.snapshot().status;
-        if (result.degraded) log('warn', 'license_storage_temporarily_unavailable');
-      }).catch(error => {
-        count('license_verification_failed');
-        log('error', 'Licenza non valida durante il funzionamento', { code: error?.code || 'invalid_license' });
-        void shutdown(1);
-      });
-    }, licenseCheckMinutes * 60_000));
-    timers.push(setInterval(() => {
-      if (isCalendarPaused()) return;
-      remind24hTick(sendText, { graceMinutes: 10, batchLimit: 200 })
-        .catch(error => log('warn', 'Promemoria 24h fallito', { error: error.message }));
-    }, 60_000));
-    stopReviewLoop = startReviewFollowupsLoop(client, {
-      intervalMinutes: 30, lookbackDays: 3, minAfterEndMinutes: 15,
-      batchLimit: 20, alignToHalfHour: true, isSuspended:isCalendarPaused,
-    });
-    const confirmOpts = {
-      leadMinutes: Number(process.env.CONFIRM_LEAD_MINUTES || 180),
-      windowMinutes: 15, batchLimit: 50,
-    };
-    const confirm = () => isCalendarPaused() ? Promise.resolve(0) : confirmAppointmentsTick(sendText, confirmOpts)
-      .catch(error => log('warn', 'Promemoria conferma fallito', { error: error.message }));
-    void confirm();
-    timers.push(setInterval(confirm, 15 * 60_000));
-
+    // Register inbound handling before initialize: initialize() alone is not a
+    // readiness signal in whatsapp-web.js; only its native ready event is.
     const dispatcher = createMessageDispatcher({ inbox: messageInbox, handle: message => withTrace(async () => {
       try {
         count('whatsapp_messages_received');
@@ -371,7 +272,7 @@ async function main() {
         log('warn', 'message_inbox_prune_failed', { code: error?.code || 'unavailable' }));
     }, 24 * 60 * 60_000));
     client.onMessage(message => {
-      if (closing) return;
+      if (closing || !acceptingMessages) return;
       const task = dispatcher.submit(message);
       inflightMessages.add(task);
       void task.then(result => {
@@ -382,8 +283,97 @@ async function main() {
         }
       }).catch(error => log('error', 'whatsapp_dispatch_error', { code: error?.code || 'unknown' }))
         .finally(() => inflightMessages.delete(task));
-      return task;
     });
+    await client.initialize();
+    if (closing) return;
+    const licenseCheckMinutes = Number(process.env.LICENSE_CHECK_INTERVAL_MINUTES || 15);
+    if (!Number.isFinite(licenseCheckMinutes) || licenseCheckMinutes < 1 || licenseCheckMinutes > 1440) {
+      throw new Error('LICENSE_CHECK_INTERVAL_MINUTES deve essere compreso tra 1 e 1440');
+    }
+    const monitor = createLicenseMonitor({
+      readLicense: async () => {
+        const configured = process.env.LICENSE_TEXT || process.env.LICENSE_CODE;
+        if (configured) return configured;
+        if (process.env.LICENSE_FILE) return fs.readFileSync(process.env.LICENSE_FILE, 'utf8');
+        const saved = await loadAndVerifyLicense();
+        return fs.readFileSync(saved.file, 'utf8');
+      },
+      verify: verifyLicenseText,
+      outageGraceMs: Number(process.env.LICENSE_READ_GRACE_MINUTES || 10) * 60_000,
+    });
+    await monitor.check();
+    if (closing) return;
+    status.licenseStatus = monitor.snapshot().status;
+    timers.push(setInterval(() => {
+      monitor.check().then(result => {
+        status.licenseStatus = monitor.snapshot().status;
+        if (result.degraded) log('warn', 'license_storage_temporarily_unavailable');
+      }).catch(error => {
+        count('license_verification_failed');
+        log('error', 'Licenza non valida durante il funzionamento', { code: error?.code || 'invalid_license' });
+        void shutdown(1);
+      });
+    }, licenseCheckMinutes * 60_000));
+    log('info', 'WhatsApp pronto');
+    void recoverCalendar();
+    void inboundSync();
+    timers.push(setInterval(() => { void inboundSync(); }, 2 * 60_000));
+    timers.push(setInterval(() => { void pruneWaitlist(recoveryPool).catch(() => count('waitlist_prune_failed')); }, 60*60_000));
+    const retentionDays=Number(process.env.CHAT_RETENTION_DAYS||90);
+    if(!Number.isInteger(retentionDays)||retentionDays<7||retentionDays>730)
+      throw new Error('CHAT_RETENTION_DAYS deve essere compreso tra 7 e 730');
+    const pruneChats=()=>pruneOldChatMessages(recoveryPool,retentionDays)
+      .catch(error=>log('warn','chat_retention_failed',{code:error.code||'unavailable'}));
+    void pruneChats();
+    timers.push(setInterval(()=>void pruneChats(),24*60*60_000));
+    if (process.env.CALENDAR_OUTBOX_ENABLED === '1') {
+      const offerReleasedSlot = async ({start,end,professionalId,serviceId}) => {
+        if (!status.online || !actions.sendText || Date.parse(start) <= Date.now()) return;
+        const result=await recoveryPool.query(`SELECT email FROM public.professional_emails
+          WHERE professional_id=$1 ORDER BY email LIMIT 1`,[professionalId]);
+        const email=result.rows[0]?.email;
+        if (!email)return;
+        await offerVerifiedSlot({db:recoveryPool,start,end,professionalId,serviceId,
+          verifyAvailability:()=>verifyReleasedSlot({db:recoveryPool,start,end,professionalId,professionalEmail:email}),
+          notify:(to,message)=>actions.sendText(to,message)});
+      };
+      const workOutbox = () => isCalendarPaused() ? Promise.resolve({processed:0,done:0,attention:0}) : drainCalendarOutbox({ pool: recoveryPool, cancel: cancelCalendarEvent,
+        update: job => job.payload?.appointmentId ?
+        updateCalendarBookingSummary({pool:recoveryPool,job,getCalendarClient}) :
+        updateCalendarEvent({...job.payload,eventId:job.event_id,calendarId:job.calendar_id}),
+        reschedule: patchCalendarSchedule,
+        create: job => createAndLinkCalendarBooking({ pool: recoveryPool, job, createEvent: createCalendarEvent }),
+        onCancelled:offerReleasedSlot,logger: log }).then(result => { if(result.done) count('calendar_outbox_done',result.done); })
+        .catch(error => log('warn','calendar_outbox_failed',{code:error.code||'unavailable'}));
+      void workOutbox();
+      timers.push(setInterval(() => { void workOutbox(); }, 60_000));
+    }
+    timers.push(setInterval(() => { void recoverCalendar(); }, 2 * 60_000));
+
+    timers.push(setInterval(() => {
+      // The adapter owns readiness, including stale-poll/disconnect races.
+      void client.getState().catch(() => log('warn', 'whatsapp_state_unavailable'));
+    }, 15_000));
+    timers.push(setInterval(() => {
+      if (isCalendarPaused()) return;
+      remind24hTick(sendText, { graceMinutes: 10, batchLimit: 200 })
+        .catch(error => log('warn', 'Promemoria 24h fallito', { error: error.message }));
+    }, 60_000));
+    stopReviewLoop = startReviewFollowupsLoop(client, {
+      intervalMinutes: 30, lookbackDays: 3, minAfterEndMinutes: 15,
+      batchLimit: 20, alignToHalfHour: true, isSuspended:isCalendarPaused,
+    });
+    const confirmOpts = {
+      leadMinutes: Number(process.env.CONFIRM_LEAD_MINUTES || 180),
+      windowMinutes: 15, batchLimit: 50,
+    };
+    const confirm = () => isCalendarPaused() ? Promise.resolve(0) : confirmAppointmentsTick(sendText, confirmOpts)
+      .catch(error => log('warn', 'Promemoria conferma fallito', { error: error.message }));
+    void confirm();
+    timers.push(setInterval(confirm, 15 * 60_000));
+    actions.sendText = (to, message) => client.sendText(to, message);
+    acceptingMessages = true;
+
   } catch (error) {
     log('error', 'Avvio WhatsApp fallito', { error: error.message });
     await shutdown(1);
