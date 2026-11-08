@@ -125,6 +125,8 @@ function Copy-SynkCode([string]$Source, [string]$Destination, [switch]$Replace) 
     }
 }
 function Expand-SynkRelease([string]$Archive, [string]$Destination) {
+    # Windows PowerShell 5.1 does not automatically load the ZIP enum/types assembly.
+    Add-Type -AssemblyName System.IO.Compression
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $zip = [IO.Compression.ZipFile]::OpenRead($Archive)
     try {

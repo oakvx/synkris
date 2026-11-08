@@ -36,6 +36,7 @@ try {
         Assert-Rejected { Set-EnvValue 'ADMIN_TOKEN' ('unsafe' + [char]10 + 'OTHER=1') } 'Env newline injection accepted'
         Assert-Rejected { Set-EnvValue 'ADMIN_TOKEN' '$INJECT' } 'Compose interpolation accepted'
     } finally { $script:SynkRoot=$oldRoot }
+    Add-Type -AssemblyName System.IO.Compression
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $archive=Join-Path $temp 'traversal.zip'
     $zip=[IO.Compression.ZipFile]::Open($archive,[IO.Compression.ZipArchiveMode]::Create)
