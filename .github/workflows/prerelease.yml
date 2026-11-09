@@ -142,8 +142,23 @@ jobs:
                 --argjson pre "$EXPECT_PRERELEASE" --arg filename "synk-$VERSION.zip" \
                 '.targetCommitish == $sha and .isDraft == $draft and .isPrerelease == $pre and
                  ([.assets[].name] | sort) == ([$filename, ($filename + ".sha256"), "RELEASE-MANIFEST.json"] | sort)'
-            echo "Publication already exists and matches: $TAG"
+            # Compare the published checksum with the package just rebuilt
+            # from that same commit; never silently accept altered assets.
+            mkdir -p "$RUNNER_TEMP/synk-existing-release"
+            gh release download "$TAG"               --pattern "synk-$VERSION.zip.sha256"               --dir "$RUNNER_TEMP/synk-existing-release"
+            cmp -s "$ZIP.sha256" "$RUNNER_TEMP/synk-existing-release/synk-$VERSION.zip.sha256" || {
+              echo "Existing release checksum does not match rebuilt package: $TAG" >&2
+              exit 1
+            }
+            echo "Publication already exists with matching commit, state, assets and SHA256: $TAG"
             exit 0
+          fi
+
+          # A pre-existing tag with no Release would make --target ineffective;
+          # fail closed instead of attaching source bytes to the wrong tag.
+          if gh api "repos/$GH_REPO/git/ref/tags/$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG exists without a verified Release; refusing to publish" >&2
+            exit 1
           fi
 
           NOTE="$RUNNER_TEMP/synk-publication-notes.md"
