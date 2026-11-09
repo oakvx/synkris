@@ -7,7 +7,8 @@ stabile e NON va usata con clienti reali prima del collaudo completo.
 COSA STAI INSTALLANDO
   - Bot Node.js + dashboard PHP + database PostgreSQL, avviati con Docker.
   - Integrazione WhatsApp Web non ufficiale (whatsapp-web.js) e Google Calendar.
-  - Nessun EXE autonomo: il punto di ingresso e' INSTALLA_SYNK.bat.
+  - Nessun EXE autonomo: due punti di ingresso, INSTALLA_SYNK.bat per
+    installare e AVVIA_SYNK.bat per gli avvii quotidiani.
   - AI locale Ollama facoltativa e disattivata per impostazione predefinita.
 
 PREREQUISITI
@@ -28,6 +29,7 @@ PRIMA INSTALLAZIONE
      cartelle condivise e percorsi pubblici. Non avviare file dentro lo ZIP.
   3. Controlla che nella stessa cartella siano presenti:
        INSTALLA_SYNK.bat
+       AVVIA_SYNK.bat
        compose.yaml
        strumenti\
        LEGGIMI.txt
