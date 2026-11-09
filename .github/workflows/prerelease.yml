@@ -1,84 +1,160 @@
-name: Prerelease
+name: Prerelease and Weekly Release
+
 on:
-  # Monday at 06:17 UTC: latest commit on the default branch (master).
-  # GitHub may start scheduled jobs later than their nominal cron time.
+  # Each new commit reaching master gets a public, immutable prerelease.
+  push:
+    branches:
+      - master
+  # One published weekly Release from the latest default-branch commit.
+  # GitHub may delay scheduled jobs beyond their nominal start.
   schedule:
     - cron: '17 6 * * 1'
   workflow_dispatch:
     inputs:
-      create_draft:
-        description: 'Create a DRAFT prerelease after checks (not published)'
-        type: boolean
+      publication:
+        description: 'Choose whether to publish or only upload a CI artifact'
+        type: choice
         required: true
-        default: false
+        default: artifacts-only
+        options:
+          - artifacts-only
+          - commit-prerelease
+          - weekly-release
+          - draft-rc
+
 permissions:
   contents: read
-concurrency:
-  group: prerelease-${{ github.ref }}
-  cancel-in-progress: false
+
+# Do not set workflow concurrency: GitHub can replace an older pending run
+# even with cancel-in-progress=false, losing releases for rapid commits.
+# Every commit tag is unique; weekly tags are guarded against collisions.
 jobs:
   checks:
     uses: ./.github/workflows/ci.yml
     permissions:
       contents: read
-  package:
+
+  package-and-publish:
     needs: checks
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
+      - name: Reject manual publication outside master
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publication != 'artifacts-only' }}
+        run: |
+          if [[ "$GITHUB_REF" != 'refs/heads/master' ]]; then
+            echo 'Publications require master; build-only works on other refs.' >&2
+            exit 1
+          fi
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npm run release:package
-      - name: Verify packaged ZIP and SHA256 before upload
+      - name: Verify the packaged ZIP and SHA256 before publication
         run: |
           VERSION="$(node -p "require('./package.json').version")"
           node scripts/release/archive.mjs "artifacts/synk-$VERSION.zip"
           (cd artifacts && sha256sum --check "synk-$VERSION.zip.sha256")
-      - name: Check clean provenance
+      - name: Enforce exact clean source provenance
         run: |
           node --input-type=module -e "import fs from 'node:fs'; const m=JSON.parse(fs.readFileSync('artifacts/RELEASE-MANIFEST.json')); if(m.sourceDirty || m.sourceCommit!==process.env.GITHUB_SHA) throw new Error('Unclean release source');"
       - uses: actions/upload-artifact@v4
         with:
-          name: synk-prerelease
+          name: synk-build
           path: |
             artifacts/synk-*.zip
             artifacts/synk-*.zip.sha256
             artifacts/RELEASE-MANIFEST.json
           if-no-files-found: error
           retention-days: 30
-      - name: Create DRAFT prerelease (manual RC or scheduled snapshot)
-        # Scheduled builds create a distinct DRAFT even when master has not changed.
-        # They never publish downloads to the public Releases page automatically.
-        if: ${{ github.event_name == 'schedule' || inputs.create_draft }}
+      - name: Publish per-commit prerelease or weekly Release
+        if: ${{ github.event_name == 'push' || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.publication != 'artifacts-only') }}
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          REQUESTED_PUBLICATION: ${{ inputs.publication }}
+        shell: bash
         run: |
           set -euo pipefail
+          [[ "$GITHUB_REF" == 'refs/heads/master' ]] || { echo 'Publishing requires master' >&2; exit 1; }
           VERSION="$(node -p "require('./package.json').version")"
           [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$ ]]
-          if [[ "$GITHUB_EVENT_NAME" == "schedule" ]]; then
-            UTC_DATE="$(date -u '+%Y-%m-%d')"
-            TAG="$(node scripts/release/snapshot-tag.mjs "$VERSION" "$UTC_DATE" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT")"
-            TITLE="synk $VERSION — snapshot $UTC_DATE (${GITHUB_SHA:0:8})"
-          else
-            TAG="v$VERSION"
-            TITLE="synk $VERSION — ricostruzione per collaudo"
+          ZIP="artifacts/synk-$VERSION.zip"
+
+          case "$GITHUB_EVENT_NAME" in
+            push) MODE=commit ;;
+            schedule) MODE=weekly ;;
+            workflow_dispatch)
+              case "$REQUESTED_PUBLICATION" in
+                commit-prerelease) MODE=commit ;;
+                weekly-release) MODE=weekly ;;
+                draft-rc) MODE=draft ;;
+                *) echo 'Invalid manual publication mode' >&2; exit 1 ;;
+              esac ;;
+            *) echo 'Unknown publication event' >&2; exit 1 ;;
+          esac
+
+          UTC_DATE="$(date -u +'%Y-%m-%d')"
+          case "$MODE" in
+            commit)
+              TAG="$(node scripts/release/release-tags.mjs commit "$VERSION" "$GITHUB_SHA")"
+              SHA_SHORT="$(git rev-parse --short=12 HEAD)"
+              TITLE="synk $VERSION — commit $SHA_SHORT (prerelease)"
+              NOTE_FILE='.github/prerelease-notes.md'
+              EXPECT_DRAFT=false
+              EXPECT_PRERELEASE=true
+              FLAGS=(--prerelease --latest=false)
+              ;;
+            weekly)
+              TAG="$(node scripts/release/release-tags.mjs weekly "$VERSION" "$UTC_DATE")"
+              TITLE="synk $VERSION — weekly $UTC_DATE (SOLO COLLAUDO)"
+              NOTE_FILE='.github/weekly-release-notes.md'
+              EXPECT_DRAFT=false
+              EXPECT_PRERELEASE=false
+              FLAGS=(--latest=false)
+              ;;
+            draft)
+              TAG="v$VERSION"
+              TITLE="synk $VERSION — bozza RC per collaudo"
+              NOTE_FILE='.github/prerelease-notes.md'
+              EXPECT_DRAFT=true
+              EXPECT_PRERELEASE=true
+              FLAGS=(--draft --prerelease --latest=false)
+              ;;
+          esac
+
+          # An existing tag is never moved or overwritten. This also makes
+          # reruns idempotent if the publication matches exactly.
+          if gh release view "$TAG" --json tagName >/dev/null 2>&1; then
+            TAG_SHA="$(gh api "repos/$GH_REPO/git/ref/tags/$TAG" --jq '.object.sha')"
+            if [[ "$TAG_SHA" != "$GITHUB_SHA" ]]; then
+              echo "Tag $TAG points to $TAG_SHA, not $GITHUB_SHA" >&2
+              exit 1
+            fi
+            gh release view "$TAG" --json isDraft,isPrerelease,targetCommitish,assets |
+              jq -e --arg sha "$GITHUB_SHA" --argjson draft "$EXPECT_DRAFT" \
+                --argjson pre "$EXPECT_PRERELEASE" --arg filename "synk-$VERSION.zip" \
+                '.targetCommitish == $sha and .isDraft == $draft and .isPrerelease == $pre and
+                 ([.assets[].name] | sort) == ([$filename, ($filename + ".sha256"), "RELEASE-MANIFEST.json"] | sort)'
+            echo "Publication already exists and matches: $TAG"
+            exit 0
           fi
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Release already exists: $TAG. Refusing to overwrite."
-            exit 1
-          fi
+
+          NOTE="$RUNNER_TEMP/synk-publication-notes.md"
+          cp "$NOTE_FILE" "$NOTE"
+          printf '\n**Sorgente verificato:** [%s](https://github.com/%s/commit/%s)\n' \
+            "$GITHUB_SHA" "$GH_REPO" "$GITHUB_SHA" >> "$NOTE"
           gh release create "$TAG" \
-            "artifacts/synk-$VERSION.zip" \
-            "artifacts/synk-$VERSION.zip.sha256" \
-            "artifacts/RELEASE-MANIFEST.json" \
-            --target "$GITHUB_SHA" --draft --prerelease \
-            --title "$TITLE" \
-            --notes-file .github/prerelease-notes.md
-          echo "Draft $TAG created for $GITHUB_SHA. No public release was published."
+            "$ZIP" "$ZIP.sha256" "artifacts/RELEASE-MANIFEST.json" \
+            --target "$GITHUB_SHA" \
+            --title "$TITLE" --notes-file "$NOTE" \
+            "${FLAGS[@]}"
+          echo "Published $MODE: https://github.com/$GH_REPO/releases/tag/$TAG"
+          printf '### %s\n[GitHub Release](https://github.com/%s/releases/tag/%s) — %s\n' \
+            "$TITLE" "$GH_REPO" "$TAG" "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
