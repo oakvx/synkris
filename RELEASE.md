@@ -208,6 +208,26 @@ conservare la password dashboard nel gestore password del salone. Lo script non
 rimpiazza una configurazione privata esistente. Docker Desktop deve essere
 attivo, con motore Linux/WSL2 e avvio dopo il login Windows.
 
+**Cambio launcher rispetto alle RC precedenti:** la nuova distribuzione espone
+soltanto `INSTALLA_SYNK.bat` (setup e strumenti) e `AVVIA_SYNK.bat` (uso
+quotidiano). Il motore PowerShell di avvio e' uno solo:
+`strumenti/avvio.ps1`. Non ci sono piu' `INSTALLA_UNA_VOLTA.bat`,
+`APRI_SYNK.bat` o `strumenti/avvia.ps1` nel nuovo ZIP.
+Un collegamento di autostart creato dalla precedente versione e' riconosciuto
+come `legacy`: dal menu l'opzione 6 permette di aggiornarlo con consenso e
+l'opzione 7 di disabilitarlo. Collegamenti sconosciuti non sono modificati.
+
+**Attenzione agli aggiornamenti in-place dalle RC precedenti:** il vecchio
+updater ha una allowlist che non riconosce `INSTALLA_SYNK.bat` e puo'
+rifiutare questo ZIP prima di effettuare modifiche. Inoltre la copia
+incrementale non cancella i vecchi launcher di una installazione esistente.
+Non eliminare cartelle, volumi o dati e non aggirare il controllo manifest:
+una installazione gia' configurata richiede una **migrazione tecnica assistita**
+con backup e verifica di runtime/credenziali, PostgreSQL, sessione WhatsApp e
+collegamenti Windows. Il pacchetto con i due nuovi file e' destinato anzitutto
+alle **nuove installazioni di collaudo**; per le precedenti serve un rilascio
+di transizione o una procedura di migrazione testata.
+
 Per aggiornare: avviare `AGGIORNA_SYNK_TECNICO.bat`, indicare ZIP e SHA256 ottenuto
 dal canale ufficiale e confermare. Lo script convalida il manifest prima di
 fermare i servizi, crea un backup PostgreSQL e una copia del codice, conserva
