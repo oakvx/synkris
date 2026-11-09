@@ -98,6 +98,11 @@ function Get-SynkOfflineDoctor {
     try { $report = $result.Value | ConvertFrom-Json -ErrorAction Stop } catch { throw 'Diagnostica offline non disponibile. Completa la costruzione immagini tramite INSTALLA_SYNK.' }
     $exitProperty = $result.PSObject.Properties['ExitCode']
     if ($null -eq $report -or $report.schema -ne 1 -or $report.scope -ne 'offline' -or $report.productionReady -ne $false -or $report.readyForBootstrap -isnot [bool] -or $null -eq $exitProperty -or $exitProperty.Value -notin @(0,1)) { throw 'Formato diagnostica non riconosciuto; non viene dichiarata pronta l''installazione.' }
+    # The doctor contract is strict: zero means ready; one means incomplete.
+    # A contradictory exit code must never authorize database/bootstrap startup.
+    if ($report.readyForBootstrap -ne ($exitProperty.Value -eq 0)) {
+        throw 'Diagnostica offline incoerente: stato Docker e risultato non corrispondono. Nessun avvio consentito.'
+    }
     return $report
 }
 
