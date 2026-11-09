@@ -35,7 +35,7 @@ test('package triage shows direct and transitive dependencies with suggested fix
   };
   const summary = auditSummary(input);
   assert.ok(summary.indexOf('a-direct | high') < summary.indexOf('z-transitive | moderate'));
-  assert.match(summary, /a-direct \| high \| Direct \| a-direct@3\.0\.0 \(major upgrade\)/);
+  assert.match(summary, /a-direct \| high \| Direct \| a-direct@3\.0\.0 \(outside allowed SemVer range\)/);
   assert.match(summary, /z-transitive \| moderate \| Transitive \| Fix reported/);
   assert.doesNotMatch(summary, /sensitive advisory content/);
 });
