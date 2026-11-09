@@ -5,7 +5,7 @@ export const releaseDirectories = ['src','dashboard','deploy','assets','strument
 export const releaseFiles = [
   'package.json','package-lock.json','dashboard.php','bridge.php','Dockerfile','Dockerfile.dashboard','compose.yaml','.dockerignore','.env.example',
   'PRIMO_AVVIO.txt','LEGGIMI.txt','LICENSE.md','deploy/THIRD_PARTY_NOTICES.md','deploy/PRIMI_PASSI.md','SECURITY.md','COLLAUDO.md','RELEASE.md','CHANGELOG.md',
-  'AGGIORNA_SYNK_TECNICO.bat','APRI_SYNK.bat','ATTIVA_AI_LOCALE.bat','AVVIA_SYNK.bat','ESPORTA_BACKUP_CIFRATO_TECNICO.bat','INSTALLA_UNA_VOLTA.bat','RIATTIVA_CALENDAR_TECNICO.bat','RIPRISTINA_BACKUP.bat',
+  'AGGIORNA_SYNK_TECNICO.bat','ATTIVA_AI_LOCALE.bat','AVVIA_SYNK.bat','ESPORTA_BACKUP_CIFRATO_TECNICO.bat','INSTALLA_SYNK.bat','RIATTIVA_CALENDAR_TECNICO.bat','RIPRISTINA_BACKUP.bat',
   'setup/config.example.json',
 ];
 export const requiredFiles = [
@@ -13,7 +13,7 @@ export const requiredFiles = [
   'dashboard.php','bridge.php','dashboard/view.html','dashboard/assets/app.js','dashboard/assets/onboarding.js','dashboard/assets/app.css',
   ...['bootstrap','datetime','queries','mutations','router','calendar-outbox'].map(name=>'dashboard/api/'+name+'.php'),
   ...['apache.conf','session.php','license-guard.php'].map(name=>'deploy/'+name),
-  ...['common','installa','configurazione','credenziali','ambiente','preflight','diagnostica','avvio','avvia','accesso','avvio-automatico','supporto','menu','aggiorna','ripristina','riattiva-calendar','attiva-ai','esporta-backup'].map(name=>'strumenti/'+name+'.ps1'),
+  ...['common','installa','configurazione','credenziali','ambiente','preflight','diagnostica','avvio','accesso','avvio-automatico','supporto','menu','aggiorna','ripristina','riattiva-calendar','attiva-ai','esporta-backup'].map(name=>'strumenti/'+name+'.ps1'),
 ];
 const sensitiveBasenames = new Set(['.env','config.json','bookings.json','chatdb.json','session.data.json','license.txt','google-service-account.json']);
 export function isReleasePath(name) {
