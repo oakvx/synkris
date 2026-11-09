@@ -33,7 +33,7 @@ async function loadOnboarding() {
     if (generation !== onboardingGeneration) return;
     $('onboardingSummary').textContent = 'Stato dei controlli non disponibile';
     $('onboardingProgress').value = 0;$('onboardingProgress').textContent = '0/6';
-    $('onboardingMessage').textContent = 'Non posso confermare lo stato attuale. Premi Ricontrolla o apri la diagnostica da INSTALLA_UNA_VOLTA. Nessun controllo precedente viene considerato ancora valido.';
+    $('onboardingMessage').textContent = 'Non posso confermare lo stato attuale. Premi Ricontrolla o apri la diagnostica da INSTALLA_SYNK. Nessun controllo precedente viene considerato ancora valido.';
     $('onboardingActions').replaceChildren();
     $('onboardingList').replaceChildren(empty('Nessun via libera: attendi una verifica riuscita.'));
     card.classList.add('checklist-unavailable');
