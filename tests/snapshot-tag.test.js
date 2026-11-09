@@ -31,3 +31,14 @@ test('the tag generator rejects invalid versions, dates and run metadata', () =>
   }
   assert.throws(()=>makeSnapshotTag({...defaults,runAttempt:0}),/positive integers/);
 });
+
+test('workflow runs weekly on default branch and never auto-publishes a release', async () => {
+  const {readFileSync} = await import('node:fs');
+  const yml=readFileSync(new URL('../.github/workflows/prerelease.yml',import.meta.url),'utf8');
+  assert.match(yml,/schedule:\s*\n\s*- cron: '17 6 \* \* 1'/);
+  assert.match(yml,/github\.event_name == 'schedule' \|\| inputs\.create_draft/);
+  assert.match(yml,/scripts\/release\/snapshot-tag\.mjs/);
+  assert.match(yml,/--target "\$GITHUB_SHA" --draft --prerelease/);
+  assert.doesNotMatch(yml,/--latest\b/);
+  assert.match(yml,/sha256sum --check/);
+});
