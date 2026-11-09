@@ -176,7 +176,7 @@ Il sistema distingue la **registrazione transazionale nel database** dall'invio 
 | Aspetto | Stato verificato / limite |
 | --- | --- |
 | **Versione** | `1.2.0-rc.6` — prerelease ricostruita, destinata al collaudo |
-| **Pacchetti automatici** | Ogni lunedì GitHub Actions crea una **bozza di prerelease** dell'ultimo commit di `master`, anche senza modifiche; non la pubblica automaticamente. [Procedura](docs/PRIMO_RILASCIO.md) |
+| **Pacchetti automatici** | **Ogni commit su `master`** pubblica una GitHub Prerelease; **ogni lunedì** pubblica una GitHub Release settimanale, anche senza nuovi commit. **Entrambe sono RC di collaudo, non stabili.** [Releases](https://github.com/oakvx/synkris/releases) · [Procedura](docs/PRIMO_RILASCIO.md) |
 | **Milestone plug-and-play** | Al commit `9ff8000` dell'8 novembre 2026: **239/239 test Node** e **6 job CI** superati; non è un test reale sul PC del salone |
 | **Test aggiuntivi** | Copertura di setup Windows, checklist, diagnosi offline e backup/restore su database sintetico; risultati e limiti in [PLUG_AND_PLAY.md](docs/PLUG_AND_PLAY.md) |
 | **Audit dipendenze** | 19 rilievi noti alla verifica dell'8 novembre 2026: **11 elevati, 8 moderati, 0 critici** |
