@@ -71,3 +71,14 @@ test('manual publication defaults to artifact-only; non-master publication is re
   for(const mode of ['commit-prerelease','weekly-release','draft-rc']) assert.ok(workflow.includes(mode));
   assert.match(workflow,/refs\/heads\/master/);
 });
+
+
+test('reusable CI does not cancel earlier release gates for rapid commits',()=>{
+  const ci=fs.readFileSync(new URL('../.github/workflows/ci.yml',import.meta.url),'utf8');
+  const release=fs.readFileSync(new URL('../.github/workflows/prerelease.yml',import.meta.url),'utf8');
+  assert.match(ci,/release_pipeline:\s*\n\s*description:/);
+  assert.match(ci,/github\.run_id/);
+  assert.match(ci,/cancel-in-progress: \$\{\{ !inputs\.release_pipeline \}\}/);
+  assert.match(release,/with:\s*\n\s*release_pipeline: true/);
+  assert.doesNotMatch(release,/^\s*concurrency:/m);
+});
