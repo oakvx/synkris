@@ -4,7 +4,7 @@ import path from 'node:path';
 export const releaseDirectories = ['src','dashboard','deploy','assets','strumenti','scripts'];
 export const releaseFiles = [
   'package.json','package-lock.json','dashboard.php','bridge.php','Dockerfile','Dockerfile.dashboard','compose.yaml','.dockerignore','.env.example',
-  'PRIMO_AVVIO.txt','LEGGIMI.txt','LICENSE.md','deploy/THIRD_PARTY_NOTICES.md','deploy/PRIMI_PASSI.md','SECURITY.md','COLLAUDO.md','RELEASE.md','CHANGELOG.md','REPORT_BUGFIX_RC4.md','REPORT_BUGFIX_RC5.md','REPORT_RICOSTRUZIONE_RC6.md',
+  'PRIMO_AVVIO.txt','LEGGIMI.txt','LICENSE.md','deploy/THIRD_PARTY_NOTICES.md','deploy/PRIMI_PASSI.md','SECURITY.md','COLLAUDO.md','RELEASE.md','CHANGELOG.md',
   'AGGIORNA_SYNK_TECNICO.bat','APRI_SYNK.bat','ATTIVA_AI_LOCALE.bat','AVVIA_SYNK.bat','ESPORTA_BACKUP_CIFRATO_TECNICO.bat','INSTALLA_UNA_VOLTA.bat','RIATTIVA_CALENDAR_TECNICO.bat','RIPRISTINA_BACKUP.bat',
   'setup/config.example.json',
 ];
