@@ -219,8 +219,8 @@ L'attuale percorso è **guidato da un wizard Windows**, ma rimane una installazi
 
 | Operazione | Entrypoint |
 | --- | --- |
-| Prima installazione / menu strumenti | `INSTALLA_UNA_VOLTA.bat` |
-| Avvio e dashboard | `AVVIA_SYNK.bat` / `APRI_SYNK.bat` |
+| Prima installazione / menu strumenti | `INSTALLA_SYNK.bat` |
+| Avvio e dashboard | `AVVIA_SYNK.bat` |
 | Aggiornamento tecnico | `AGGIORNA_SYNK_TECNICO.bat` |
 | Ripristino sospeso | `RIPRISTINA_BACKUP.bat` |
 | Riconciliazione Calendar | `RIATTIVA_CALENDAR_TECNICO.bat` |
