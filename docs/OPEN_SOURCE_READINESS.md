@@ -2,6 +2,13 @@
 
 **Valutazione dell’8 novembre 2026.** Il milestone plug-and-play `9ff8000` ha 6 job CI verdi e 239 test Node; audit e SBOM mantengono il lockfile migrato a whatsapp-web.js. Verificare la CI del commit effettivo, non solo lo snapshot storico. [Guida e confini delle prove](PLUG_AND_PLAY.md).
 
+**Nota successiva (9 novembre 2026):** la valutazione sottostante è uno
+snapshot storico. Il repository è pubblico e la pipeline di distribuzione
+[descritta in RELEASE.md](../RELEASE.md) pubblica prerelease su ogni
+commit di `master` e GitHub Releases di collaudo ogni settimana. Le
+pubblicazioni automatiche non equivalgono a conformità o pronti per la
+produzione. Consultare la CI del relativo commit e `COLLAUDO.md`.
+
 ## Risposta breve
 
 **Il modello scelto dal titolare è proprietario/source-available, non open source:** diritto d’uso gratuito soltanto per una persona fisica nella propria sfera privata e non commerciale; **ogni altro uso richiede un accordo commerciale scritto a titolo oneroso**, salvo diversa autorizzazione scritta.
@@ -90,7 +97,7 @@ Prima di cambiare visibilità:
 - [ ] Verificare copyright, provenienza degli asset e diritti sui contributi.
 - [ ] Stabilire un canale privato per le segnalazioni di vulnerabilità e regole di contribuzione coerenti con la licenza.
 
-Il repository risulta attualmente **privato** e GitHub classifica la licenza come **Other**. Non è stata effettuata un’apertura pubblica.
+Il repository è attualmente **pubblico** e GitHub classifica la licenza come **Other**. La precedente indicazione di repository privato è superata; i tag automatici pubblicano anche ZIP e manifest nel canale GitHub Releases.
 
 ## 3. Sicurezza e produzione: un piano distinto
 
