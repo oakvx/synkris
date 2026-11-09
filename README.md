@@ -255,7 +255,7 @@ La [licenza attuale](LICENSE.md) permette gratuitamente solo un **uso strettamen
 
 | Hai bisogno di… | Consulta |
 | --- | --- |
-| Panoramica della ricostruzione e limiti RC6 | [Report di ricostruzione](REPORT_RICOSTRUZIONE_RC6.md) |
+| Panoramica della ricostruzione e limiti RC6 | [Report di ricostruzione](docs/history/REPORT_RICOSTRUZIONE_RC6.md) |
 | Procedura di installazione | [LEGGIMI.txt](LEGGIMI.txt) |
 | Preparazione di una release | [RELEASE.md](RELEASE.md) |
 | Test su PC e provider reali | [COLLAUDO.md](COLLAUDO.md) |
