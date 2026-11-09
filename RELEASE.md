@@ -1,160 +1,125 @@
-# Preparare una prerelease di synk
+# Releases automatiche di synk (versione RC)
 
-## Stato e decisione
+## Stato
 
-Questa procedura produce **`v1.2.0-rc.6`**, una nuova candidata di collaudo che
-identifica chiaramente la ricostruzione dei file persi. Non promuove RC5 a
-stabile. Nessuna pubblicazione automatica a ogni push, nessuna pubblicazione npm
-(`private: true`) e nessuna immagine pubblica.
+Il repository `oakvx/synkris` è **pubblico** e il workflow
+[Prerelease and Weekly Release](.github/workflows/prerelease.yml) pubblica
+ora **due tipologie di pacchetti**, sempre dopo la suite CI completa:
 
-**Diritti d’uso:** la licenza è proprietaria/source-available. Solo l’uso strettamente
-privato non commerciale di una persona fisica è gratuito; ogni altro uso, incluso
-quello interno a un salone, richiede prima un accordo commerciale scritto a titolo
-oneroso, salvo diversa autorizzazione scritta. Prezzi e royalties non sono fissati
-in automatico. Vedi `LICENSE.md` e la revisione legale richiesta prima della
-distribuzione commerciale. Il file firmato/HWID resta necessario anche per il
-privato: l’attivazione privata è gratuita ma va richiesta al titolare, con rilascio
-manuale; non esiste ancora un percorso self-service.
+1. **Ogni commit che arriva a `master`:** una **GitHub Prerelease pubblica**,
+   con tag univoco `v1.2.0-rc.6-commit.<SHA40>`. Ogni commit rimane
+   identificabile e i tag **non vengono spostati**. Le PR non pubblicano
+   release: la pubblicazione avviene dopo il merge, con il push su `master`.
+2. **Ogni lunedì alle 06:17 UTC:** una **GitHub Release settimanale pubblica**
+   con tag `v1.2.0-rc.6-weekly.AAAAwSS` (settimana ISO, per esempio
+   `2026w46`). Funziona **anche senza commit nuovi**: prende l'ultimo
+   commit del branch predefinito al momento dello schedule. Un tentativo
+   successivo nella stessa settimana non crea duplicati o sposta il tag.
 
-**Blocchi per una stabile:** completare `COLLAUDO.md`, valutare/correggere gli
-avvisi delle dipendenze, verificare distribuzione e licenze di terzi e approvare
-il comportamento dei componenti ricostruiti. Il workflow attuale accetta solo
-versioni `-rc.N` e crea esclusivamente **bozze di prerelease non pubblicate**,
-con avvio manuale oppure con snapshot programmata settimanale. I test con provider simulato non sono un test Google o
-WhatsApp reale.
+Le pubblicazioni avvengono automaticamente; **non** sono semplici bozze.
+La settimana è calcolata in UTC/ISO per evitare doppioni anche quando
+GitHub ritarda una run oltre la mezzanotte. GitHub può ritardare o omettere
+esecuzioni `schedule` per carico o disattivarle dopo 60 giorni di inattività
+di un repository pubblico.
 
-## 1. Verificare il codice
+**La release settimanale non è una versione stabile:** il software resta
+`1.2.0-rc.6` e non ha completato il collaudo su Windows reale con
+WhatsApp/Google Calendar, né la revisione di tutte le dipendenze.
+La release settimanale viene pubblicata come GitHub Release normale,
+ma il titolo e le note riportano *SOLO COLLAUDO* e `--latest=false`
+impedisce di indicarla come "Latest". L'automazione **non incrementa**
+`package.json`, non pubblica npm, non genera EXE o immagini Docker
+distribuite e non rilascia file di attivazione.
 
-Prerequisiti: Node 22/24; PHP 8.3 con pdo_pgsql, curl, sodium; Docker per la build;
-PowerShell 5.1 o 7 per i test Windows.
+## Regole prima della pubblicazione
+
+Il job di pubblicazione dipende da `checks`, che richiama
+`.github/workflows/ci.yml`. Deve concludersi con successo **tutta** la CI:
+
+- Node.js 22/24 (sintassi,  test, compatibilità del provider).
+- PHP 8.3 e PostgreSQL 16, test di integrazione e backup/restore sintetici.
+- Windows PowerShell 5.1/7, ZIP, preflight e protezione dei file privati.
+- Build Docker bot/dashboard, test Apache, doctor offline e guardrail.
+- Audit delle dipendenze: blocca il rilascio per risultati assenti o rilievi
+  **critici**. Rilievi elevati/moderati rimangono aperti e **non**
+  sono autorizzazione all'uso reale.
+
+Solo se la CI passa, il job:
+
+1. Esegue `npm ci` e `npm run release:package` sul commit dell'evento.
+2. Verifica struttura dell'archivio, SHA256 e `RELEASE-MANIFEST.json`.
+3. Impone `sourceCommit === GITHUB_SHA` e `sourceDirty === false`.
+4. Carica gli artifact temporanei dell'esecuzione (30 giorni).
+5. Crea una GitHub Prerelease o una Release settimanale **pubblica**.
+   ZIP, checksum e manifest sono gli unici allegati pubblicati;
+   un tag esistente con commit/stato differenti blocca la procedura.
+
+La workflow non usa `concurrency` con cancellazione o sostituzione dei
+job in attesa: commit ravvicinati devono poter pubblicare ciascuno la
+propria prerelease. I tag sono immutabili e gli eventuali rerun
+identici sono idempotenti; il workflow non usa `--clobber` o
+`git push --force` per sostituire asset precedenti.
+
+**Non è un deployment automatico sui PC dei saloni:** viene prodotto
+un download pubblico, non viene modificata alcuna installazione locale.
+
+## Esecuzione manuale
+
+Aprire **GitHub → Actions → Prerelease and Weekly Release → Run workflow**,
+selezionando `master`. Il parametro `publication` offre:
+
+| Modalità | Risultato |
+| --- | --- |
+| `artifacts-only` (predefinita) | Esegue i test e genera solo l'artifact CI, senza release |
+| `commit-prerelease` | Pubblica una prerelease del commit scelto, se non esiste già |
+| `weekly-release` | Pubblica la Release della settimana ISO corrente, se non esiste già |
+| `draft-rc` | Crea la bozza non pubblica del tag canonico `v1.2.0-rc.6` |
+
+La pubblicazione manuale è permessa **solo da `master`**; una build
+`artifacts-only` può essere eseguita anche da un branch diverso.
+Se si ripete la pubblicazione di un tag già esistente con un commit
+diverso, l'operazione fallisce senza cambiare il tag originario.
+
+## Artifact e checksum
+
+Gli allegati sono:
+
+- `synk-1.2.0-rc.6.zip` — ZIP piatto, con
+  `INSTALLA_SYNK.bat`, `AVVIA_SYNK.bat`, dashboard,
+  Docker/Compose, `PRIMO_AVVIO.txt` e documenti di collaudo.
+- `synk-1.2.0-rc.6.zip.sha256` — checksum dell'archivio.
+- `RELEASE-MANIFEST.json` — file, hash, commit e stato sorgenti.
+
+Il checksum controlla l'integrità, **non costituisce una firma
+di autenticità**. Il pacchetto segue una allowlist che esclude
+`.git`, `.env`, `setup/config.json`, `runtime/`, `secrets/`,
+sessioni, database, file di clienti e dipendenze di sviluppo.
+
+Per generare localmente un pacchetto di prova:
 
 ```sh
 npm ci --ignore-scripts
 npm run check
 npm test
-npm run check:php
-npm run test:php
 npm run audit:release
-```
-
-In PowerShell:
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/windows-scripts.test.ps1
-```
-
-I test di integrazione richiedono un database **dedicato e cancellabile** chiamato
-`synk_test`. Non usare mai il database del salone. `TEST_DATABASE_URL` è separata
-da `DATABASE_URL`; è obbligatorio autorizzare esplicitamente il reset:
-
-```sh
-# Credenziali sintetiche del solo database di test; non usare dati del salone.
-TEST_DATABASE_URL=postgresql://synk_test:synk_test@127.0.0.1:5432/synk_test \
-SYNK_TEST_DB_ALLOW_RESET=1 npm run test:integration
-```
-
-La suite resetta lo schema `public`, usa firme effimere e un gate Calendar
-simulato. Verifica transazioni e comportamento HTTP, non la disponibilità dei
-servizi esterni. La CI esegue inoltre un doctor Compose reale senza rete/startup
-dipendenze e un roundtrip pg_dump/list/SHA256/pg_restore con PostgreSQL 16 su un
-nuovo database sintetico cancellabile. I test autostart COM scrivono solo in TEMP,
-mai nella cartella Esecuzione automatica reale. Non sono un collaudo Desktop/WSL2.
-
-Controllare anche `npm audit --omit=dev` e `npm run audit:release`: il report viene conservato dalla CI,
-ma **non è un via libera di sicurezza**. `npm run audit:release` blocca la CI
-se il report manca o contiene vulnerabilità critiche; gli altri rilievi restano
-visibili e richiedono revisione prima di qualsiasi uso reale. Non applicare downgrade/upgrade maggiori automatici a
-whatsapp-web.js/Puppeteer senza collaudarne il contratto con il bot.
-
-## 2. Generare e verificare lo ZIP
-
-```sh
 npm run release:package
 node scripts/release/archive.mjs artifacts/synk-1.2.0-rc.6.zip
+(cd artifacts && sha256sum --check synk-1.2.0-rc.6.zip.sha256)
 ```
 
-Output:
+Per gli aggiornamenti di versione, sincronizzare il lockfile e verificare
+i test prima del merge. Una nuova RC può essere preparata con
+`npm version 1.2.0-rc.7 --no-git-tag-version --ignore-scripts`, poi
+revisionando changelog, licenze e codice. La pubblicazione settimanale
+non sostituisce una promozione stabile dopo collaudo.
 
-- `artifacts/synk-1.2.0-rc.6.zip` — ZIP piatto: `src/`, Dockerfile e BAT alla radice;
-- `artifacts/synk-1.2.0-rc.6.zip.sha256` — integrità dell’intero archivio;
-- `artifacts/RELEASE-MANIFEST.json` — anche dentro lo ZIP, versione/provenienza e
-  SHA256 di ciascun file.
+**Licenza:** software proprietario/source-available. L'uso privato
+non commerciale è consentito nei termini di `LICENSE.md`, mentre l'uso
+commerciale e nei saloni richiede un accordo scritto salvo diversa
+autorizzazione. Pubblicare pacchetti non concede diritti commerciali
+automatici. Le chiavi e i file di licenza firmati vanno sempre
+gestiti fuori dal repository e dalla release.
 
-Il file **`PRIMO_AVVIO.txt`** è presente alla radice dello ZIP e contiene
-la guida breve per l'installazione di prova. Lo ZIP include script Windows
-ma **non è un eseguibile `.exe` indipendente**: richiede Docker Desktop,
-WSL2 e gli elementi di attivazione indicati nella guida.
-
-Il pacchetto è costruito da una allowlist e rifiuta symlink, percorsi non sicuri,
-file privati nei percorsi del codice e componenti richiesti mancanti. Non include
-`.git`, `.env`, `setup/config.json`, `runtime/`, `secrets/`, dipendenze installate,
-test o dati cliente. Include solo `.env.example` e `setup/config.example.json`.
-Il checksum **non è una firma di autenticità**: confrontarlo con il valore
-proveniente dal canale ufficiale fidato.
-
-Un archivio locale con `sourceDirty: true` contiene modifiche non committate:
-serve per la prova locale, **non deve essere pubblicato con un tag sul vecchio
-commit**. Revisionare e salvare le modifiche sul branch di lavoro prima di
-preparare una bozza associata a un commit esatto.
-
-## 3. Preparare la bozza sul repository
-
-1. Revisionare i cambiamenti e portarli sul repository tramite il branch di
-   lavoro e una PR; non includere gli output di `artifacts/`.
-2. Attendere tutti i job di `CI` (Node, PHP/PostgreSQL, PowerShell e Docker).
-3. Per il primo utilizzo, il workflow deve essere presente sul branch predefinito
-   per comparire in **Actions → Prerelease → Run workflow**.
-4. Selezionare il ref revisionato. Lasciare `create_draft` disattivato per
-   ottenere solo gli artifact; attivarlo solo se si vuole creare la bozza.
-5. Il workflow riesegue la CI, prepara il pacchetto da checkout pulito e, solo se
-   richiesto, crea `v<versione package.json>` in stato **Draft + Prerelease** sul
-   commit esatto con ZIP, checksum e manifest.
-6. Esaminare manualmente note, artifact e audit. La bozza NON viene pubblicata
-   automaticamente. **Il repository attuale è pubblico**: una bozza non è
-   visibile ai visitatori, ma pubblicarla rende disponibili ZIP e allegati
-   attraverso GitHub Releases. Non allegare licenze emesse, segreti, dati
-   cliente o archivi runtime.
-
-Non esiste un percorso automatico di pubblicazione stabile in questi workflow.
-Per una successiva RC aggiornare versione/lockfile con
-`npm version 1.2.0-rc.7 --no-git-tag-version --ignore-scripts`, poi changelog e
-istruzioni, senza creare tag che puntino a modifiche non salvate.
-
-## 3-bis. Snapshot settimanale automatica
-
-Ogni **lunedì alle 06:17 UTC**, GitHub Actions esegue automaticamente
-`.github/workflows/prerelease.yml` sul commit più recente del branch
-predefinito **`master`**. L'orario effettivo può slittare a causa della coda di
-GitHub. Per questo non esistono processi server o agenti permanenti.
-
-- Esegue di nuovo **tutta la CI** (Node, PHP/PostgreSQL, Windows, Docker);
-  un controllo fallito impedisce la creazione della bozza.
-- Genera lo ZIP dalla revisione verificata, controlla il manifest con
-  `sourceCommit = GITHUB_SHA`, `sourceDirty = false`, verifica l'archivio e
-  il file SHA256. Il gate audit impedisce i rilievi **critici**, ma un audit con
-  altre vulnerabilità **non significa** che il programma sia pronto.
-- Crea sempre una **Draft + Prerelease**, anche se rispetto alla settimana
-  precedente nessun file è cambiato.
-- Il tag è univoco per ogni esecuzione:
-  `v1.2.0-rc.6-snapshot.AAAAMMGG.RUN_ID.TENTATIVO`. La versione interna allo
-  ZIP rimane quella di `package.json` finché non viene aggiornata da un commit.
-- Gli allegati restano lo ZIP, `.zip.sha256` e `RELEASE-MANIFEST.json`.
-  Il nome del tag non implica modifiche al codice né una nuova versione stabile.
-- Ogni snapshot punta a **uno specifico commit**. Un tag esistente non viene
-  mai sovrascritto. Le bozze si accumulano finché il maintainer non decide di
-  esaminarle/gestirle.
-- Nessuna snapshot viene pubblicata automaticamente: nel repository pubblico
-  la visibilità dei download richiede ancora **Publish release** da parte del
-  maintainer. Scegliere la pubblicazione solo dopo i collaudi e le revisioni.
-
-Le esecuzioni manuali in **Actions → Prerelease** sono indipendenti: con
-`create_draft=false` generano soltanto artifact; con `true` preparano la
-bozza del tag canonico `v<versione>`. Lo schedule non modifica il sorgente,
-non incrementa `package.json` e non attiva Google/WhatsApp.
-
-**GitHub può disattivare i workflow schedulati dei repository pubblici dopo
-60 giorni senza attività**; in quel caso occorre riabilitare il workflow.
-La schedulazione è configurabile modificando la riga `cron` nel workflow.
 
 ## 4. Installazione e aggiornamento di prova
 
