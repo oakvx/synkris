@@ -3,11 +3,19 @@ on:
   push:
   pull_request:
   workflow_call:
+    inputs:
+      release_pipeline:
+        description: 'Run as a release gate without cancelling earlier commits'
+        type: boolean
+        required: false
+        default: false
 permissions:
   contents: read
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Standalone CI cancels redundant branch runs. Release builds must never
+  # cancel one another: each caller run_id receives its own concurrency slot.
+  group: ci-${{ github.workflow }}-${{ github.ref }}-${{ inputs.release_pipeline && github.run_id || 'branch' }}
+  cancel-in-progress: ${{ !inputs.release_pipeline }}
 jobs:
   node:
     name: Node ${{ matrix.node }}
