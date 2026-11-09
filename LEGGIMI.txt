@@ -133,5 +133,6 @@ Il codice e i test automatici NON sostituiscono un collaudo Windows/Docker,
 WhatsApp reale, Google Calendar, SMTP e restore/recovery su una macchina di prova.
 
 RC6: dashboard e strumenti ricostruiti, non recuperati dagli originali.
-Leggi REPORT_RICOSTRUZIONE_RC6.md e RELEASE.md per controlli e limiti aperti.
+Leggi RELEASE.md e COLLAUDO.md. Il report storico RC6 e' disponibile
+nel repository: docs/history/REPORT_RICOSTRUZIONE_RC6.md (non nello ZIP).
 Le dipendenze hanno avvisi di sicurezza da valutare prima di un uso reale.
