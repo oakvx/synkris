@@ -1,6 +1,9 @@
 SYNK 1.2 RC6  |  RELEASE CANDIDATA AL COLLAUDO
 ================================================
 
+PRIMA DI TUTTO: leggi PRIMO_AVVIO.txt per la guida rapida di installazione.
+
+
 DIRITTI D'USO E ATTIVAZIONE
   - Licenza proprietaria/source-available: non e' software open source.
   - Solo l'uso privato non commerciale di una persona fisica e' gratuito.
