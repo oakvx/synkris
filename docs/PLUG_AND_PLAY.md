@@ -45,4 +45,4 @@ I report locali in `artifacts/`, pacchetti e strumenti temporanei non sono commi
 5. Provare aggiornamento, rollback codice, restore su macchina di prova, riconciliazione Google e USB BitLocker; non riavviare automaticamente vecchi job.
 6. Valutare/correggere vulnerabilità e completare le verifiche legali/di distribuzione. Il modello resta proprietario/source-available e non sono stati fissati prezzi o royalties.
 
-La [checklist operativa](../COLLAUDO.md) resta **da firmare sul PC reale**, non precompilata dai test. I risultati storici della migrazione sono separati nel [report di ricostruzione](../REPORT_RICOSTRUZIONE_RC6.md) e nella [readiness](OPEN_SOURCE_READINESS.md).
+La [checklist operativa](../COLLAUDO.md) resta **da firmare sul PC reale**, non precompilata dai test. I risultati storici della migrazione sono separati nel [report di ricostruzione](history/REPORT_RICOSTRUZIONE_RC6.md) e nella [readiness](OPEN_SOURCE_READINESS.md).
