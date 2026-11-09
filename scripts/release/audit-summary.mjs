@@ -4,6 +4,42 @@ import {pathToFileURL} from 'node:url';
 
 const severities = ['critical', 'high', 'moderate', 'low', 'info'];
 
+// Render only package metadata from npm audit; never dump advisory payloads or local paths.
+const safeCell = value => String(value ?? '').replace(/[\r\n|`]/g, ' ').slice(0, 120);
+function packageDetails(report) {
+  const vulnerabilities = report?.vulnerabilities;
+  if (!vulnerabilities || typeof vulnerabilities !== 'object' || Array.isArray(vulnerabilities)) return [];
+  const items = Object.entries(vulnerabilities)
+    .filter(([, info]) => info && typeof info === 'object' && !Array.isArray(info))
+    .sort(([nameA, infoA], [nameB, infoB]) =>
+      (severities.indexOf(infoA.severity) === -1 ? 99 : severities.indexOf(infoA.severity)) -
+      (severities.indexOf(infoB.severity) === -1 ? 99 : severities.indexOf(infoB.severity)) ||
+      nameA.localeCompare(nameB));
+  if (!items.length) return [];
+  const rows = items.slice(0, 40).map(([name, info]) => {
+    const scope = info.isDirect === true ? 'Direct' : info.isDirect === false ? 'Transitive' : 'Unknown';
+    const fix = info.fixAvailable;
+    let resolution = 'Not reported';
+    if (fix === false) resolution = 'No fix reported';
+    else if (fix === true) resolution = 'Fix reported';
+    else if (fix && typeof fix === 'object' && typeof fix.name === 'string' && typeof fix.version === 'string') {
+      resolution = safeCell(fix.name + '@' + fix.version) + (fix.isSemVerMajor ? ' (major upgrade)' : '');
+    }
+    return `| ${safeCell(name)} | ${safeCell(info.severity || 'unknown')} | ${scope} | ${resolution} |`;
+  });
+  return [
+    '#### Affected packages (triage)',
+    '',
+    '| Package | Severity | Dependency | npm fixAvailable |',
+    '| --- | --- | --- | --- |',
+    ...rows,
+    ...(items.length > 40 ? [`... and ${items.length - 40} more packages in the artifact.`] : []),
+    '',
+    'A reported fix is not automatically safe: validate compatibility, lockfile changes and CI before upgrading.',
+    ''
+  ];
+}
+
 export function auditSummary(report) {
   const counts = report?.metadata?.vulnerabilities;
   if (!counts || !severities.every(key => Number.isInteger(counts[key]) && counts[key] >= 0)) {
@@ -29,6 +65,7 @@ export function auditSummary(report) {
     rows,
     `| **Total** | **${counts.total}** |`,
     '',
+    ...packageDetails(report),
     'Scope: `npm audit --omit=dev`. Full machine-readable report: `dependency-audit` workflow artifact.',
     ''
   ].join('\n');
