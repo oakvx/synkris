@@ -5,7 +5,7 @@ try {
     Assert-Docker
     $mutex=Enter-SynkMaintenance
     if ($Model -notmatch '^[a-zA-Z0-9][a-zA-Z0-9_.:/-]{0,120}$') { throw 'Nome modello non valido.' }
-    if (-not (Test-Path -LiteralPath (Join-Path $script:SynkRoot '.env'))) { throw 'Completa prima INSTALLA_UNA_VOLTA.' }
+    if (-not (Test-Path -LiteralPath (Join-Path $script:SynkRoot '.env'))) { throw 'Completa prima INSTALLA_SYNK.' }
     Write-Host ('Scaricamento del modello locale ' + $Model + '. Richiede Internet, RAM e spazio disco; nessun dato cliente viene inviato al registro modelli.')
     if ((Read-Host 'Digita ATTIVA per procedere') -cne 'ATTIVA') { throw 'Attivazione annullata.' }
     Invoke-Compose -Arguments @('--profile','ai','up','-d','ollama')

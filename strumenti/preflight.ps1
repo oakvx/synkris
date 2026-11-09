@@ -61,7 +61,14 @@ function Wait-SynkDocker {
             'missing_compose' { throw 'Serve Docker Compose v2 o successivo: aggiorna Docker Desktop.' }
             'remote_context' { throw 'Il percorso guidato richiede Docker Desktop LOCALE su named pipe. Seleziona il contesto locale; nessun deploy su server remoti viene avviato.' }
             'windows_engine' { throw 'Seleziona i container LINUX nelle impostazioni Docker Desktop; non cambio automaticamente il motore.' }
-            'context_unavailable' { throw 'Contesto Docker non leggibile. Apri Docker Desktop e verifica il contesto locale.' }
+            'context_unavailable' {
+                # Durante il setup Docker Desktop potrebbe non avere ancora creato
+                # il contesto locale. Solo il percorso esplicitamente autorizzato
+                # a tentare l'avvio puo' attendere e riprovare.
+                if (-not $StartDesktop) {
+                    throw 'Contesto Docker non leggibile. Apri Docker Desktop e verifica il contesto locale.'
+                }
+            }
         }
         if ($StartDesktop -and -not $requested) {
             $requested = $true
@@ -88,7 +95,7 @@ function Test-SynkDatabaseVolume {
 function Get-SynkOfflineDoctor {
     # No dependency startup, downloads, schema writes, browser or cloud requests.
     $result = Invoke-DockerProbe -Arguments @('compose','--profile','tools','run','--rm','--no-deps','-T','--pull','never','doctor') -TimeoutMilliseconds 60000
-    try { $report = $result.Value | ConvertFrom-Json -ErrorAction Stop } catch { throw 'Diagnostica offline non disponibile. Completa la costruzione immagini tramite INSTALLA_UNA_VOLTA.' }
+    try { $report = $result.Value | ConvertFrom-Json -ErrorAction Stop } catch { throw 'Diagnostica offline non disponibile. Completa la costruzione immagini tramite INSTALLA_SYNK.' }
     $exitProperty = $result.PSObject.Properties['ExitCode']
     if ($null -eq $report -or $report.schema -ne 1 -or $report.scope -ne 'offline' -or $report.productionReady -ne $false -or $report.readyForBootstrap -isnot [bool] -or $null -eq $exitProperty -or $exitProperty.Value -notin @(0,1)) { throw 'Formato diagnostica non riconosciuto; non viene dichiarata pronta l''installazione.' }
     return $report

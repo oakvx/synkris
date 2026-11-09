@@ -4,7 +4,7 @@
 
 ## 1. Prepara una cartella fissa
 
-Estrai **tutto** lo ZIP in una cartella locale dedicata: devi vedere insieme `compose.yaml`, `INSTALLA_UNA_VOLTA.bat` e `strumenti/`. Non eseguire i BAT dall'interno dello ZIP. Evita cartelle condivise, pubbliche o sincronizzate con OneDrive/Dropbox: contengono anche segreti e dati personali. Non è implementato un rilevatore universale delle cartelle cloud.
+Estrai **tutto** lo ZIP in una cartella locale dedicata: devi vedere insieme `compose.yaml`, `INSTALLA_SYNK.bat` e `strumenti/`. Non eseguire i BAT dall'interno dello ZIP. Evita cartelle condivise, pubbliche o sincronizzate con OneDrive/Dropbox: contengono anche segreti e dati personali. Non è implementato un rilevatore universale delle cartelle cloud.
 
 Non spostare la cartella dopo l'installazione. Un'altra cartella che tenta di usare lo stesso progetto Docker viene bloccata, non sostituisce silenziosamente i container esistenti.
 
@@ -17,9 +17,11 @@ Non spostare la cartella dopo l'installazione. Un'altra cartella che tenta di us
 
 La licenza è proprietaria/source-available: solo uso privato personale non commerciale gratuito; ogni altro uso richiede prima un accordo commerciale scritto, salvo diversa autorizzazione scritta. Anche l'attivazione privata gratuita richiede firma/HWID, con emissione manuale: il wizard non rilascia licenze né sceglie automaticamente la gratuità.
 
-## 3. Un solo launcher
+## 3. Due soli launcher principali: installazione e avvio
 
-Apri `INSTALLA_UNA_VOLTA.bat`; premi **Invio** per **1 — Installa/riprendi**. Il wizard:
+Per configurare il programma usa soltanto **`INSTALLA_SYNK.bat`**. Per gli avvii successivi usa soltanto **`AVVIA_SYNK.bat`**. Gli altri BAT con suffisso `_TECNICO` riguardano esclusivamente la manutenzione.
+
+Apri `INSTALLA_SYNK.bat`; premi **Invio** per **1 — Installa/riprendi**. Il wizard:
 
 1. controlla Docker locale, Compose e motore Linux; può avviare Docker Desktop e attende che sia pronto;
 2. chiede nome salone, operatrici, trattamenti, abilitazioni e orari, senza farti modificare JSON;
@@ -74,7 +76,7 @@ Il report **non viene caricato o inviato automaticamente**. Rileggilo e condivid
 
 ## 6. Ogni giorno e manutenzione
 
-- Apri `APRI_SYNK.bat` / `AVVIA_SYNK.bat`: avvio senza build o download delle immagini. Se mancano, riprendi l'installazione guidata.
+- Apri `AVVIA_SYNK.bat`: avvio senza build o download delle immagini. Se mancano, riprendi l'installazione guidata.
 - Non aprire porte sulla LAN e non usare un Docker remoto. Dashboard e API restano sul PC.
 - I backup automatici sono dump PostgreSQL locali, circa ogni 24 ore con retention 14 giorni. Staging, verifica strutturale e SHA256 evitano di pubblicare come finale una copia interrotta; non sostituiscono restore e copia esterna cifrata. Non comprendono segreti o profili WhatsApp.
 - Per export, aggiornamento e restore usa gli entrypoint tecnici descritti in `LEGGIMI.txt` e `RELEASE.md`. Dopo un restore non rimuovere il blocco Calendar e non ripetere automaticamente vecchi job.

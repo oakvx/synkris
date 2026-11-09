@@ -1,7 +1,7 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $script:SynkRoot = Split-Path -Parent $PSScriptRoot
-$script:CodePaths = @('src','dashboard','deploy','assets','strumenti','scripts','dashboard.php','bridge.php','Dockerfile','Dockerfile.dashboard','compose.yaml','package.json','package-lock.json','.dockerignore','.env.example','RELEASE-MANIFEST.json','PRIMO_AVVIO.txt','LEGGIMI.txt','LICENSE.md','SECURITY.md','COLLAUDO.md','RELEASE.md','CHANGELOG.md','AGGIORNA_SYNK_TECNICO.bat','APRI_SYNK.bat','ATTIVA_AI_LOCALE.bat','AVVIA_SYNK.bat','ESPORTA_BACKUP_CIFRATO_TECNICO.bat','INSTALLA_UNA_VOLTA.bat','RIATTIVA_CALENDAR_TECNICO.bat','RIPRISTINA_BACKUP.bat','setup/config.example.json')
+$script:CodePaths = @('src','dashboard','deploy','assets','strumenti','scripts','dashboard.php','bridge.php','Dockerfile','Dockerfile.dashboard','compose.yaml','package.json','package-lock.json','.dockerignore','.env.example','RELEASE-MANIFEST.json','PRIMO_AVVIO.txt','LEGGIMI.txt','LICENSE.md','SECURITY.md','COLLAUDO.md','RELEASE.md','CHANGELOG.md','AGGIORNA_SYNK_TECNICO.bat','ATTIVA_AI_LOCALE.bat','AVVIA_SYNK.bat','ESPORTA_BACKUP_CIFRATO_TECNICO.bat','INSTALLA_SYNK.bat','RIATTIVA_CALENDAR_TECNICO.bat','RIPRISTINA_BACKUP.bat','setup/config.example.json')
 
 function Write-Utf8File([string]$Path, [string]$Text) {
     [System.IO.File]::WriteAllText($Path, $Text, (New-Object System.Text.UTF8Encoding($false)))
@@ -35,7 +35,7 @@ function Assert-Docker {
     # Apply the same local-daemon and project-folder safety to legacy technical
     # entrypoints (update, restore, export, reconciliation, optional AI), not only
     # the new installation/daily-start flow. Never fall back to a remote daemon.
-    if ((Get-SynkDockerState) -ne 'ready') { throw 'Serve Docker locale, pronto, con Compose v2 e motore Linux. Apri INSTALLA_UNA_VOLTA > Diagnostica. Nessuna operazione tecnica avviata.' }
+    if ((Get-SynkDockerState) -ne 'ready') { throw 'Serve Docker locale, pronto, con Compose v2 e motore Linux. Apri INSTALLA_SYNK > Diagnostica. Nessuna operazione tecnica avviata.' }
     Assert-SynkProjectOwnership
 }
 

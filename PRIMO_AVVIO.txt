@@ -7,7 +7,8 @@ stabile e NON va usata con clienti reali prima del collaudo completo.
 COSA STAI INSTALLANDO
   - Bot Node.js + dashboard PHP + database PostgreSQL, avviati con Docker.
   - Integrazione WhatsApp Web non ufficiale (whatsapp-web.js) e Google Calendar.
-  - Nessun EXE autonomo: il punto di ingresso e' INSTALLA_UNA_VOLTA.bat.
+  - Nessun EXE autonomo: due punti di ingresso, INSTALLA_SYNK.bat per
+    installare e AVVIA_SYNK.bat per gli avvii quotidiani.
   - AI locale Ollama facoltativa e disattivata per impostazione predefinita.
 
 PREREQUISITI
@@ -27,11 +28,12 @@ PRIMA INSTALLAZIONE
   2. Estrai TUTTO lo ZIP in una cartella Windows locale fissa. Evita OneDrive,
      cartelle condivise e percorsi pubblici. Non avviare file dentro lo ZIP.
   3. Controlla che nella stessa cartella siano presenti:
-       INSTALLA_UNA_VOLTA.bat
+       INSTALLA_SYNK.bat
+       AVVIA_SYNK.bat
        compose.yaml
        strumenti\
        LEGGIMI.txt
-  4. Avvia INSTALLA_UNA_VOLTA.bat e premi Invio (Installa/riprendi).
+  4. Avvia INSTALLA_SYNK.bat e premi Invio (Installa/riprendi).
   5. Configura salone, operatrici, servizi e orari; indica il PERCORSO dei
      tre file privati. Non incollarne il contenuto nella chat o nei log.
   6. Completa il wizard. Accedi alla dashboard locale:
@@ -41,7 +43,7 @@ PRIMA INSTALLAZIONE
   8. Esegui COLLAUDO.md prima di qualsiasi uso operativo.
 
 AVVIO SUCCESSIVO
-  - Usa APRI_SYNK.bat oppure AVVIA_SYNK.bat.
+  - Usa AVVIA_SYNK.bat.
   - Se le immagini Docker non sono presenti, riprendi l'installazione
     guidata; l'avvio quotidiano non scarica o compila le immagini.
   - L'autostart e' facoltativo, dopo login Windows: non parte a PC spento.

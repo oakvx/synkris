@@ -2,7 +2,7 @@
 
 Questa cartella contiene il materiale di **sviluppo, progettazione e audit**.
 Non entra nel pacchetto runtime per Windows. Per avviare il bot utilizzare
-i documenti della radice del repository e il wizard `INSTALLA_UNA_VOLTA.bat`.
+i documenti della radice del repository e il wizard `INSTALLA_SYNK.bat`.
 
 ## Percorsi
 

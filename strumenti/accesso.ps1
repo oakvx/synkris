@@ -3,7 +3,7 @@
 function Show-SynkAccess {
     if ([Threading.Thread]::CurrentThread.ApartmentState -ne 'STA') { throw 'Apri lo strumento dal launcher Windows PowerShell, non da una sessione MTA.' }
     $password = Get-EnvValue 'DASHBOARD_PASSWORD'
-    if ($password.Length -lt 12 -or $password.Length -gt 512 -or $password -match '^SOSTITUISCI') { throw 'Password dashboard non configurata: completa INSTALLA_UNA_VOLTA.' }
+    if ($password.Length -lt 12 -or $password.Length -gt 512 -or $password -match '^SOSTITUISCI') { throw 'Password dashboard non configurata: completa INSTALLA_SYNK.' }
     Add-Type -AssemblyName System.Windows.Forms
     Add-Type -AssemblyName System.Drawing
     $window = New-Object Windows.Forms.Form
