@@ -2,6 +2,14 @@
 
 ## Non rilasciato
 
+### Automazione delle GitHub Releases (9 novembre 2026)
+- Il workflow Prerelease pubblica una prerelease verificata per ogni commit di `master`, con tag legato allo SHA completo.
+- Ogni lunedi alle 06:17 UTC crea una GitHub Release settimanale pubblica con tag ISO-week univoco, anche senza modifiche.
+- Le release settimanali restano **RC di collaudo**, non sono etichettate Latest e non indicano conformita o prontezza produzione.
+- CI completa, SHA256 e manifest verificato sul commit esatto; i tag non vengono mai spostati e i rerun non sostituiscono asset precedenti.
+- Modalita manuali: solo artifact, prerelease per commit, weekly Release e bozza RC.
+
+
 ### Percorso guidato Windows e checklist (8 novembre 2026)
 - Wizard senza JSON manuali: catalogo/orari iniziali validati prima del DB, nome
   salone inizializzato una volta, import file privati e ambiente riprendibile.

@@ -268,7 +268,7 @@ Le schermate sono renderizzate da fixture sintetiche; non certificano un collega
 | Aspetto | Stato |
 | --- | --- |
 | Versione | `1.2.0-rc.6`, prerelease ricostruita per collaudo |
-| Pacchetti | Ogni lunedì GitHub Actions crea una **bozza** di prerelease dall'ultimo commit di `master`; non la pubblica. [Procedura](docs/PRIMO_RILASCIO.md) |
+| Pacchetti | **Ogni commit su `master`** pubblica una Prerelease; **ogni lunedì** pubblica una GitHub Release settimanale, anche senza commit nuovi. **Sono RC di collaudo, non stabili né Latest.** [GitHub Releases](https://github.com/oakvx/synkris/releases) · [Procedura](docs/PRIMO_RILASCIO.md) |
 | Test (snapshot datato, commit `9ff8000`, 8 novembre 2026) | 239/239 test Node e 6 job CI superati. Non è un test sul PC di un salone |
 | Copertura aggiuntiva | Setup Windows, checklist, diagnosi offline, backup/restore su DB sintetico ([PLUG_AND_PLAY.md](docs/PLUG_AND_PLAY.md)) |
 | Ancora da fare | Collaudo con WhatsApp, Google Calendar, SMTP, Windows e procedure di ripristino reali |
