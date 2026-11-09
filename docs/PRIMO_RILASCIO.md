@@ -6,7 +6,7 @@ Snapshot del **9 novembre 2026**, basato sulla revisione dei file del branch `ma
 
 **Prima uscita: `v1.2.0-rc.6`, esclusivamente come Draft + Prerelease di collaudo tecnico.**
 
-- **Sì:** generare ZIP, checksum e manifest da un commit revisionato, farli scaricare al tecnico e testarli su un PC Windows di prova, con credenziali/account non reali.
+- **Sì:** generare ZIP, checksum e manifest da un commit revisionato, farli scaricare al tecnico e testarli su un PC Windows di prova, con account dedicati al test e dati fittizi, usando credenziali valide solo per l'ambiente di prova.
 - **Non ancora:** pubblicare una release stabile, fornire il pacchetto ai saloni per gestire clienti veri o promettere un installer `.exe` autonomo.
 - **La prima release pubblica:** richiede una decisione separata, dopo collaudo reale, revisione delle dipendenze e verifica delle condizioni commerciali.
 
