@@ -79,5 +79,5 @@ pubblicazione stabile rimane fuori da questa procedura.
 
 ## 1.2.0-rc.5 — versione precedente importata
 
-Vedi `REPORT_BUGFIX_RC5.md` e `REPORT_BUGFIX_RC4.md`. Quei report sono storici:
+Vedi [`RC5`](docs/history/REPORT_BUGFIX_RC5.md) e [`RC4`](docs/history/REPORT_BUGFIX_RC4.md). Quei report sono storici:
 i risultati dichiarati non attestano automaticamente la ricostruzione RC6.

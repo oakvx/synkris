@@ -1,6 +1,6 @@
 # synk 1.2 RC6 — ricostruzione dei componenti persi
 
-> Report storico della ricostruzione. I successivi miglioramenti di setup, menu e checklist sono descritti in [Primi passi Windows](deploy/PRIMI_PASSI.md); per gli esiti aggiornati consultare la CI del commit effettivo, non solo i conteggi di questa baseline.
+> Report storico della ricostruzione. I successivi miglioramenti di setup, menu e checklist sono descritti in [Primi passi Windows](../../deploy/PRIMI_PASSI.md); per gli esiti aggiornati consultare la CI del commit effettivo, non solo i conteggi di questa baseline.
 
 ## Aggiornamento successivo: migrazione WhatsApp
 

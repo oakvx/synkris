@@ -31,7 +31,7 @@ La palette serve a creare un'identità riconoscibile. Non usare il solo colore p
 - `synkris-stack.svg`: versione cromatica dello stack esistente.
 - `synkris-booking-flow.svg`: versione cromatica del percorso transazionale esistente.
 
-Gli SVG del refresh sono sorgenti versionati: vengono serviti dal repository senza script o riferimenti a CDN. Mantengono descrizioni testuali con `title`/`desc` e fallback di carattere di sistema. Sono **distinti** dai nove asset storici prodotti da `docs/readme/generate-assets.py`. Rigenerare gli asset storici non rigenera o sovrascrive questi sei file.
+I sei SVG sono gli **unici diagrammi di presentazione mantenuti** in `docs/assets/`: vengono serviti dal repository senza script o riferimenti a CDN e hanno descrizioni testuali `title`/`desc`. I vecchi SVG della palette verde e il generatore corrispondente sono stati eliminati dal branch attivo perché sostituiti dal refresh e non utilizzati dal README; restano recuperabili nella cronologia Git.
 
 Le screenshot `dashboard-*.webp` rimangono quelle derivate dal frontend con **fixture sintetiche**, come descritto in [README degli asset](README.md). Non sono screenshot di un'installazione reale.
 

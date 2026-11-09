@@ -7,7 +7,7 @@ import json
 import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parents[2]
-DOCUMENTS = [ROOT / 'README.md', ROOT / 'docs/OPEN_SOURCE_READINESS.md', ROOT / 'docs/readme/README.md', ROOT / 'docs/WHATSAPP_MIGRATION.md', ROOT / 'deploy/PRIMI_PASSI.md', ROOT / 'docs/PLUG_AND_PLAY.md']
+DOCUMENTS = [ROOT / 'README.md', ROOT / 'docs/OPEN_SOURCE_READINESS.md', ROOT / 'docs/readme/README.md', ROOT / 'docs/WHATSAPP_MIGRATION.md', ROOT / 'deploy/PRIMI_PASSI.md', ROOT / 'docs/PLUG_AND_PLAY.md', ROOT / 'docs/README.md', ROOT / 'docs/history/README.md', ROOT / 'docs/history/REPORT_RICOSTRUZIONE_RC6.md']
 ASSETS = ROOT / 'docs/assets'
 checks = 0
 
@@ -43,16 +43,11 @@ for document in DOCUMENTS:
 
 svgs = sorted(ASSETS.glob('*.svg'))
 previews = sorted(ASSETS.glob('*.webp'))
-expected_legacy = {
-    'hero.svg', 'stack.svg', 'features.svg', 'architecture.svg',
-    'booking-flow.svg', 'readiness.svg'
-}
 expected_brand = {
     'synkris-hero.svg', 'synkris-benefits.svg', 'synkris-journey.svg',
     'synkris-architecture.svg', 'synkris-stack.svg', 'synkris-booking-flow.svg'
 }
 available_svgs = {asset.name for asset in svgs}
-check(expected_legacy.issubset(available_svgs), 'Missing generated legacy SVG assets')
 check(expected_brand.issubset(available_svgs), 'Missing SYNKRIS visual identity SVG assets')
 check(len(previews) == 3, 'Expected 3 rendered frontend previews')
 for asset in svgs:

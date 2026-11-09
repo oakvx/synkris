@@ -1,48 +1,49 @@
-# Asset del README
+# Asset del README — SYNKRIS
 
-Il [README principale](../../README.md) usa **9 asset nuovi, ospitati nel repository**, più il logo già presente. Non dipende da badge esterni, CDN, immagini stock o URL che contengono token.
+Il [README principale](../../README.md) mostra **sei SVG con identità viola/fucsia**
+e **tre screenshot WebP con dati sintetici**, oltre al logo del prodotto.
+I vecchi diagrammi verdi non sono più distribuiti: erano duplicati
+dell'identità precedente e non comparivano nel README.
 
-## Inventario
+## Inventario attuale
 
-| File in `docs/assets/` | Origine / contenuto |
+| Asset in `docs/assets/` | Contenuto |
 | --- | --- |
-| `hero.svg` | Banner vettoriale originale; la mini-agenda è un’illustrazione, non una sessione reale. |
-| `stack.svg` | Tecnologie e versioni dichiarate dal progetto. |
-| `features.svg` | Capacità dell’interfaccia e della manutenzione. |
-| `architecture.svg` | Schema semplificato, con confine fra core locale e provider esterni. |
-| `booking-flow.svg` | Verifica, transazione locale/outbox e sincronizzazione asincrona. |
-| `readiness.svg` | Snapshot datato di CI, audit, licenza e collaudo; **non è un badge live**. |
-| `dashboard-overview.webp` | Frontend ricostruito: centro operativo e checklist Primi passi con fixture sintetiche. |
-| `dashboard-agenda.webp` | Frontend ricostruito: sei appuntamenti interamente sintetici. |
-| `dashboard-editor.webp` | Frontend ricostruito: due trattamenti e totale di 100 minuti, buffer inclusi. |
+| `synkris-hero.svg` | Copertina concettuale, con wordmark vettoriale |
+| `synkris-benefits.svg` | Funzioni operative e carattere con legatura tipografica reale |
+| `synkris-journey.svg` | Percorso illustrativo della richiesta del cliente |
+| `synkris-architecture.svg` | Componenti locali, calendario e servizi esterni |
+| `synkris-stack.svg` | Stack applicativo dichiarato dal codice |
+| `synkris-booking-flow.svg` | Transazioni e sincronizzazione con Google Calendar |
+| `dashboard-overview.webp` | Dashboard e Centro operativo, fixture sintetiche |
+| `dashboard-agenda.webp` | Agenda con appuntamenti fittizi |
+| `dashboard-editor.webp` | Editor con trattamenti e durate di esempio |
 
-Gli SVG sono generati con soli strumenti standard Python: testo accessibile con `title`/`desc`, nessuno script, nessun `foreignObject`, font incorporato o riferimento a immagini esterne. I font sono normali fallback del visualizzatore.
+Gli SVG sono **sorgenti versionati**. Non contengono script, font binari,
+`foreignObject`, richieste a CDN né immagini esterne: i tracciati principali
+rimangono identici su GitHub, mentre il testo secondario usa un font stack
+di fallback. Per palette, tipografia e attribuzioni vedere
+[brand-guide.md](brand-guide.md).
 
-Le anteprime raster derivano da `dashboard/view.html` e dai veri script/CSS del frontend. Il renderer:
+## Provenienza degli screenshot
 
-- aggiunge una fascia **ANTEPRIMA DOCUMENTALE · DATI SINTETICI · NESSUN PROVIDER REALE COLLEGATO**;
-- sostituisce i placeholder di versione e CSRF con metadati documentali, non una sessione applicativa;
-- usa `Cliente esempio NN`, email del dominio riservato `example.com`, date fisse e nessun contatto reale;
-- rende esplicita l’analitica sintetica e usa `+` al posto del carattere full-width quando mancano i font corrispondenti;
-- rende i sei controlli Primi passi tramite il builder effettivo e verifica 3/6 completati nella fixture (non una connessione reale);
-- serve soltanto file statici autorizzati e risposte GET predefinite; rifiuta le scritture;
-- blocca le richieste del frontend fuori dal server di fixture e chiude browser/server alla fine.
+Le anteprime raster provengono da `dashboard/view.html` e dagli script/CSS
+effettivi del frontend. Il renderer:
 
-**Non avvia il backend PHP/Node, non legge `.env` o `secrets/`, non modifica la licenza e non introduce una modalità demo/bypass nell’applicazione.** Queste immagini non provano il funzionamento dei provider reali.
+- mostra la dicitura **ANTEPRIMA DOCUMENTALE · DATI SINTETICI · NESSUN PROVIDER REALE COLLEGATO**;
+- usa nomi, recapiti e calendari fittizi, non credenziali o dati di salone;
+- verifica che il frontend non generi errori e controlla i dati attesi;
+- accetta soltanto richieste statiche e GET sintetiche, rifiutando scritture;
+- chiude browser e server di fixture alla fine della cattura.
 
-## Rigenerare gli SVG
+Non avvia il backend PHP/Node, non legge `.env`/`secrets/` e non introduce
+bypass di licenza o modalità demo nel codice applicativo. Non sono prove
+di funzionamento reale di WhatsApp o Google Calendar.
 
-Dalla radice del repository, con Python 3:
+## Rigenerare le anteprime WebP
 
-```sh
-python3 docs/readme/generate-assets.py
-```
-
-Colori, composizione e testo sono in `generate-assets.py`. Per aggiornare numeri, versione o stato legale occorre prima verificarli e poi cambiare generatore e documentazione: non cambiare solo il badge.
-
-## Rigenerare le anteprime
-
-Il renderer fornito usa **Linux x64 e Node.js 22/24**, un browser headless isolato e dipendenze temporanee fuori dal manifest applicativo:
+Il renderer utilizza Linux x64, Node.js 22/24, Chromium headless isolato
+e dipendenze temporanee **non incluse nell'applicazione**:
 
 ```sh
 npm install --prefix .cache/readme-tools --no-save --ignore-scripts --no-audit --no-fund \
@@ -50,20 +51,13 @@ npm install --prefix .cache/readme-tools --no-save --ignore-scripts --no-audit -
 node docs/readme/capture-previews.mjs
 ```
 
-Su un ambiente minimale che non ha `libnss3`, si possono estrarre le librerie già incluse nel pacchetto npm, senza installarle globalmente:
+Su un sistema minimale privo di `libnss3`, possono servire le librerie
+del pacchetto Chromium; vedere i requisiti di `@sparticuz/chromium`.
+I parametri di cattura **non** sono una configurazione del bot sul PC
+Windows. Le immagini di lavoro vengono salvate in `.cache/readme-qa/`,
+che è ignorata da Git.
 
-```sh
-node --input-type=module -e "import fs from 'node:fs'; import zlib from 'node:zlib'; fs.writeFileSync('.cache/readme-tools/al2023.tar', zlib.brotliDecompressSync(fs.readFileSync('.cache/readme-tools/node_modules/@sparticuz/chromium/bin/al2023.tar.br')));"
-mkdir -p .cache/readme-tools/runtime
-tar -xf .cache/readme-tools/al2023.tar -C .cache/readme-tools/runtime
-node docs/readme/capture-previews.mjs
-```
-
-Il renderer usa le librerie soltanto nel processo di cattura. I parametri del browser di documentazione **non sono una configurazione per il bot** e non attestano la sandbox sul PC Docker/WSL2 del salone.
-
-La cattura verifica anche l’assenza di errori del frontend, il totale dell’editor, il numero di righe dell’agenda e il testo fuori dal canvas degli SVG. Le immagini PNG intermedie per il controllo visivo finiscono in `.cache/readme-qa/`, non in Git.
-
-## Verificare collegamenti e asset
+## Controlli automatici
 
 ```sh
 python3 docs/readme/check-assets.py
@@ -71,27 +65,20 @@ npm run check
 npm test
 ```
 
-Il controllo documentale verifica i riferimenti locali, gli anchor del README, la validità XML e l’assenza di contenuti attivi/remoti negli SVG, e le intestazioni WebP. Non sostituisce una revisione visiva o una verifica legale degli asset.
+`check-assets.py` valida i riferimenti locali, gli anchor Markdown, gli SVG
+(accessibilità, sintassi XML e assenza di contenuti attivi/remoti), gli
+header WebP e la coerenza delle indicazioni su licenza, test e limiti
+di collaudo.
 
-## Distribuzione e licenza
+I **badge dinamici** del README (CI, stelle, fork, ultimo commit)
+utilizzano servizi esterni; il contatore visite di terze parti non è
+una statistica ufficiale GitHub e non indica visitatori unici.
 
-Gli asset documentali seguono **la licenza proprietaria del progetto**, con uso privato non commerciale gratuito e altri usi su accordo commerciale, **non una licenza open source**. Il pacchetto runtime usa una allowlist e non include `docs/`; gli strumenti di cattura e le dipendenze temporanee non sono dipendenze di produzione. Il logo riutilizzato resta in `assets/logo.svg`.
+## Distribuzione
 
-[Licenza e stato della distribuzione](../OPEN_SOURCE_READINESS.md) · [Licenza attuale](../../LICENSE.md)
-
-## Refresh visuale SYNKRIS (viola e fucsia)
-
-Il README commerciale utilizza anche **sei nuovi SVG** distinti dai nove asset storici elencati sopra, tutti in `docs/assets/`:
-
-| Nuovo asset | Scopo |
-| --- | --- |
-| `synkris-hero.svg` | Hero originale di presentazione: **mockup concettuale**, non screenshot di un sistema connesso |
-| `synkris-benefits.svg` | Benefici senza statistiche, prezzi o testimonianze inventate |
-| `synkris-journey.svg` | Percorso illustrativo di una richiesta |
-| `synkris-architecture.svg` | Architettura esistente ricolorata |
-| `synkris-stack.svg` | Stack esistente ricolorato |
-| `synkris-booking-flow.svg` | Flusso transazionale esistente ricolorato |
-
-Questi asset **non vengono modificati dallo script storico** `generate-assets.py` e restano editabili come SVG. Gli screenshot WebP continuano a usare fixture sintetiche e colori realmente presenti nell'interfaccia del ramo sorgente: non sono stati alterati per ottenere una finta nuova dashboard viola.
-
-[Linee guida, palette e terminologia SYNKRIS](brand-guide.md).
+Il pacchetto installabile usa una allowlist e **non include `docs/`**
+né gli script di cattura. Gli asset applicativi, fra cui `assets/logo.svg`,
+restano separati dalle immagini di presentazione. La licenza del
+progetto è proprietaria/source-available: leggere
+[LICENSE.md](../../LICENSE.md) e
+[stato della distribuzione](../OPEN_SOURCE_READINESS.md).
