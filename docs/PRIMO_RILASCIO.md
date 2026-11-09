@@ -43,7 +43,7 @@ Non sono inclusi Docker Desktop, immagini precompilate, dipendenze installate, l
 2. Aprire **Actions → Prerelease → Run workflow** sul branch predefinito, lasciare `create_draft=false` e lanciare la build.
 3. Scaricare l'artifact `synk-prerelease`; controllare che contenga i tre file, il nuovo `PRIMO_AVVIO.txt` nello ZIP, la versione, il commit e `sourceDirty=false` nel manifest.
 4. Verificare il checksum con `sha256sum -c` oppure con un equivalente Windows affidabile, confrontando i valori con il canale ufficiale.
-5. Provare `INSTALLA_UNA_VOLTA.bat` su un **PC Windows dedicato** con Docker Desktop/WSL2, account e calendari di prova; completare `COLLAUDO.md`.
+5. Provare `INSTALLA_SYNK.bat` su un **PC Windows dedicato** con Docker Desktop/WSL2, account e calendari di prova; completare `COLLAUDO.md`.
 6. Solo se il test del pacchetto è accettabile, ripetere il workflow con `create_draft=true` per creare `v1.2.0-rc.6` come **Draft + Prerelease**. Esaminare i file e le note prima di qualsiasi pubblicazione.
 
 **Il repository sorgente è pubblico.** La bozza GitHub Release non è visibile ai visitatori, ma il comando *Publish release* renderebbe gli allegati disponibili pubblicamente. Non allegare mai dati del salone, credenziali, licenze cliente, dump, sessioni o log.
