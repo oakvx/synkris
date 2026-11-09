@@ -21,7 +21,7 @@ function Get-SynkAutostartStatus {
             if ($shortcut.Arguments -ceq $definition.Arguments) { return 'enabled' }
             # Recognize only the exact legacy launcher of this same installation.
             # Never modify shortcuts with user-supplied arguments or other targets.
-            $legacy = Join-Path $script:SynkRoot 'strumenti/avvio.ps1'
+            $legacy = Join-Path $script:SynkRoot 'strumenti/avvia.ps1'
             $oldArguments = '-NoProfile -STA -ExecutionPolicy Bypass -File "' + $legacy + '" -NoBrowser -Quiet'
             if ($shortcut.Arguments -ceq $oldArguments) { return 'legacy' }
         }
@@ -42,7 +42,7 @@ function Set-SynkAutostart {
         Write-Host 'Rimosso soltanto l''avvio automatico creato da questo strumento per questa installazione.'
         return
     }
-    if (-not (Test-Path -LiteralPath (Join-Path $script:SynkRoot 'strumenti/avvia.ps1') -PathType Leaf)) { throw 'File di avvio mancante: ripristina il pacchetto ufficiale.' }
+    if (-not (Test-Path -LiteralPath (Join-Path $script:SynkRoot 'strumenti/avvio.ps1') -PathType Leaf)) { throw 'File di avvio mancante: ripristina il pacchetto ufficiale.' }
     New-Item -ItemType Directory -Force -Path $StartupFolder | Out-Null
     $others = @(Get-ChildItem -LiteralPath $StartupFolder -Filter 'Synk-*.lnk' | Where-Object { $_.FullName -ine $definition.Path })
     if ($others.Count -gt 0) { throw 'Esiste un altro avvio automatico synk: usa una sola installazione per PC e verifica con il tecnico prima di aggiungerne un''altra.' }
