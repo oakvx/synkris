@@ -23,7 +23,7 @@ function packageDetails(report) {
     if (fix === false) resolution = 'No fix reported';
     else if (fix === true) resolution = 'Fix reported';
     else if (fix && typeof fix === 'object' && typeof fix.name === 'string' && typeof fix.version === 'string') {
-      resolution = safeCell(fix.name + '@' + fix.version) + (fix.isSemVerMajor ? ' (major upgrade)' : '');
+      resolution = safeCell(fix.name + '@' + fix.version) + (fix.isSemVerMajor ? ' (outside allowed SemVer range)' : '');
     }
     return `| ${safeCell(name)} | ${safeCell(info.severity || 'unknown')} | ${scope} | ${resolution} |`;
   });
