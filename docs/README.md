@@ -9,7 +9,7 @@ i documenti della radice del repository e il wizard `INSTALLA_SYNK.bat`.
 | Area | Dove | Funzione |
 | --- | --- | --- |
 | Prima installazione e uso | [PRIMO_AVVIO.txt](../PRIMO_AVVIO.txt), [LEGGIMI.txt](../LEGGIMI.txt), [deploy/PRIMI_PASSI.md](../deploy/PRIMI_PASSI.md) | Guide incluse nello ZIP |
-| Releases e aggiornamenti | [RELEASE.md](../RELEASE.md), [PRIMO_RILASCIO.md](PRIMO_RILASCIO.md) | Packaging, prerelease, snapshot settimanali |
+| Releases e aggiornamenti | [RELEASE.md](../RELEASE.md), [PRIMO_RILASCIO.md](PRIMO_RILASCIO.md) | Packaging, prerelease a ogni commit e Release pubblica settimanale |
 | Collaudo e sicurezza | [COLLAUDO.md](../COLLAUDO.md), [SECURITY.md](../SECURITY.md) | Vincoli di utilizzo e dati |
 | Distribuzione/licenza | [OPEN_SOURCE_READINESS.md](OPEN_SOURCE_READINESS.md) | Situazione legale e limiti |
 | Windows plug-and-play | [PLUG_AND_PLAY.md](PLUG_AND_PLAY.md) | Contratti e test del wizard |
@@ -27,7 +27,7 @@ i documenti della radice del repository e il wizard `INSTALLA_SYNK.bat`.
 - `assets/` — risorse usate dal runtime. **Non** confondere con `docs/assets/`.
 - `docs/assets/` — sei SVG viola/fucsia e tre anteprime WebP documentali.
 - `tests/` — test automatici e regressioni di versioni precedenti.
-- `.github/workflows/` — CI e generazione periodica delle bozze di prerelease.
+- `.github/workflows/` — CI, prerelease pubbliche per commit e Release settimanale di collaudo.
 
 **Da non eliminare solo per il nome:** `src/legacy/` e i moduli
 `dashboard/assets/bookings-*.js` contengono compatibilità o blocchi
