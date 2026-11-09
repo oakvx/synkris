@@ -43,16 +43,11 @@ for document in DOCUMENTS:
 
 svgs = sorted(ASSETS.glob('*.svg'))
 previews = sorted(ASSETS.glob('*.webp'))
-expected_legacy = {
-    'hero.svg', 'stack.svg', 'features.svg', 'architecture.svg',
-    'booking-flow.svg', 'readiness.svg'
-}
 expected_brand = {
     'synkris-hero.svg', 'synkris-benefits.svg', 'synkris-journey.svg',
     'synkris-architecture.svg', 'synkris-stack.svg', 'synkris-booking-flow.svg'
 }
 available_svgs = {asset.name for asset in svgs}
-check(expected_legacy.issubset(available_svgs), 'Missing generated legacy SVG assets')
 check(expected_brand.issubset(available_svgs), 'Missing SYNKRIS visual identity SVG assets')
 check(len(previews) == 3, 'Expected 3 rendered frontend previews')
 for asset in svgs:
