@@ -20,7 +20,7 @@ manuale; non esiste ancora un percorso self-service.
 avvisi delle dipendenze, verificare distribuzione e licenze di terzi e approvare
 il comportamento dei componenti ricostruiti. Il workflow attuale accetta solo
 versioni `-rc.N` e, su richiesta esplicita, crea esclusivamente una **bozza di
-prerelease privata**. I test con provider simulato non sono un test Google o
+prerelease non pubblicata**. I test con provider simulato non sono un test Google o
 WhatsApp reale.
 
 ## 1. Verificare il codice
@@ -80,6 +80,11 @@ Output:
 - `artifacts/RELEASE-MANIFEST.json` — anche dentro lo ZIP, versione/provenienza e
   SHA256 di ciascun file.
 
+Il file **`PRIMO_AVVIO.txt`** è presente alla radice dello ZIP e contiene
+la guida breve per l'installazione di prova. Lo ZIP include script Windows
+ma **non è un eseguibile `.exe` indipendente**: richiede Docker Desktop,
+WSL2 e gli elementi di attivazione indicati nella guida.
+
 Il pacchetto è costruito da una allowlist e rifiuta symlink, percorsi non sicuri,
 file privati nei percorsi del codice e componenti richiesti mancanti. Non include
 `.git`, `.env`, `setup/config.json`, `runtime/`, `secrets/`, dipendenze installate,
@@ -105,7 +110,10 @@ preparare una bozza associata a un commit esatto.
    richiesto, crea `v<versione package.json>` in stato **Draft + Prerelease** sul
    commit esatto con ZIP, checksum e manifest.
 6. Esaminare manualmente note, artifact e audit. La bozza NON viene pubblicata
-   automaticamente. Il repository e i suoi download restano privati.
+   automaticamente. **Il repository attuale è pubblico**: una bozza non è
+   visibile ai visitatori, ma pubblicarla rende disponibili ZIP e allegati
+   attraverso GitHub Releases. Non allegare licenze emesse, segreti, dati
+   cliente o archivi runtime.
 
 Non esiste un percorso automatico di pubblicazione stabile in questi workflow.
 Per una successiva RC aggiornare versione/lockfile con
