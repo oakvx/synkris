@@ -48,6 +48,26 @@ Non sono inclusi Docker Desktop, immagini precompilate, dipendenze installate, l
 
 **Il repository sorgente è pubblico.** La bozza GitHub Release non è visibile ai visitatori, ma il comando *Publish release* renderebbe gli allegati disponibili pubblicamente. Non allegare mai dati del salone, credenziali, licenze cliente, dump, sessioni o log.
 
+## Snapshot settimanali anche senza modifiche
+
+Il workflow `Prerelease` viene eseguito ogni **lunedì alle 06:17 UTC** sul
+commit più recente di `master`. Ad ogni esecuzione, se CI e controlli di
+packaging riescono, crea una **bozza di prerelease**. Questo vale anche quando
+il commit è identico alla settimana precedente: il tag include data UTC,
+identificativo della run e tentativo, senza spostare o sovrascrivere tag esistenti.
+
+**Non è una pubblicazione pubblica automatica.** Su questo repository pubblico
+le bozze e gli allegati rimangono non pubblicati, fino a un intervento
+esplicito. Il maintainer può continuare a lavorare su `master` senza dover
+incrementare la versione ogni settimana: le snapshot registrano la provenienza
+del commit in `RELEASE-MANIFEST.json`. Questo non sostituisce versionamento
+semantico e note di rilascio quando si sceglie una RC ufficiale.
+
+Per ottenere una snapshot **subito** senza aspettare lunedì, avviare il
+workflow manualmente con `create_draft=false` (solo artifact) oppure
+`create_draft=true` (bozza del tag canonico), una volta integrata questa PR
+in `master`. Le prove sul PC Windows e i provider restano obbligatorie.
+
 ## Condizioni per promuovere il pacchetto a uso reale
 
 - Collaudo Windows, Google Calendar, WhatsApp, backup/restore, sicurezza delle credenziali e privacy completato e firmato da chi effettua il test.
