@@ -115,6 +115,7 @@ jobs:
             ./tests/windows-credential-repair.test.ps1
             ./tests/windows-environment.test.ps1
             ./tests/windows-preflight.test.ps1
+            ./tests/windows-doctor-contract.test.ps1
             ./tests/windows-startup.test.ps1
             ./tests/windows-ownership.test.ps1
             ./tests/windows-technical-safety.test.ps1
