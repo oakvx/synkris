@@ -263,6 +263,7 @@ La [licenza attuale](LICENSE.md) permette gratuitamente solo un **uso strettamen
 | Sicurezza e protezione dei dati | [SECURITY.md](SECURITY.md) |
 | Diritti d'uso e distribuzione | [LICENSE.md](LICENSE.md) · [Readiness](docs/OPEN_SOURCE_READINESS.md) |
 | Cronologia delle modifiche | [CHANGELOG.md](CHANGELOG.md) |
+| Mappa completa dei file e delle guide | [Indice documentazione](docs/README.md) · [Archivio storico](docs/history/README.md) |
 | Produzione delle immagini del README | [Guida agli asset](docs/readme/README.md) |
 | Controlli automatici | [CI](.github/workflows/ci.yml) · [Prerelease](.github/workflows/prerelease.yml) |
 | Installazione Windows con wizard | [Primi passi](deploy/PRIMI_PASSI.md) · [Implementazione](docs/PLUG_AND_PLAY.md) |
