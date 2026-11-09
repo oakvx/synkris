@@ -6,7 +6,8 @@ rimasti nel repository, non recuperati dagli originali. Leggere
 
 ### Download
 
-Scaricare lo ZIP `synk-<versione>.zip`, piatto, e confrontarne lo SHA256 con il
+Scaricare lo ZIP `synk-<versione>.zip`, piatto, leggere prima
+`PRIMO_AVVIO.txt` al suo interno e confrontarne lo SHA256 con il
 file `.zip.sha256` proveniente da questo canale fidato. Il checksum rileva
 corruzioni ma non è una firma digitale di autenticità. Il manifest contiene
 commit sorgente e hash di ogni file. Non sono incluse credenziali, sessioni o dati
@@ -37,7 +38,10 @@ Non è una release open source. Leggere `LICENSE.md`.
   I testi dei nuovi componenti sono in deploy/THIRD_PARTY_NOTICES.md.
 - Un rollback del codice non annulla migrazioni del database; un restore richiede
   riconciliazione manuale Calendar prima della riattivazione.
-- Repository e release restano privati; licenza proprietaria e obblighi dei
-  componenti di terzi restano applicabili.
+- Il repository sorgente e' PUBBLICO. Una bozza GitHub Release non e'
+  pubblicata ai visitatori; se si sceglie Publish, ZIP, manifest e note
+  diventano scaricabili pubblicamente. Non caricare file di attivazione,
+  segreti, dati o immagini dei clienti. Licenza proprietaria e obblighi
+  dei componenti di terzi restano applicabili.
 
 Questa è una **bozza prerelease**. Nessuna promozione stabile è automatica.
