@@ -40,7 +40,7 @@ function Get-SynkSupportReport {
         }
     }
     $autostart = Get-SynkAutostartStatus
-    if ($autostart -notin @('enabled','disabled','modified','unavailable')) { $autostart = 'unavailable' }
+    if ($autostart -notin @('enabled','disabled','legacy','modified','unavailable')) { $autostart = 'unavailable' }
     return [ordered]@{schema=1;kind='synk-support-status-only';checkedAt=[DateTime]::UtcNow.ToString('o');version=$version;
         powershell=$PSVersionTable.PSVersion.ToString();windowsVersion=[Environment]::OSVersion.Version.ToString();os64bit=[Environment]::Is64BitOperatingSystem;
         docker=$state;projectOwnershipVerified=$owned;autostart=$autostart;offlineChecks=$checks;runtime=$runtime;
