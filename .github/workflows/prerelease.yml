@@ -1,9 +1,13 @@
 name: Prerelease
 on:
+  # Monday at 06:17 UTC: latest commit on the default branch (master).
+  # GitHub may start scheduled jobs later than their nominal cron time.
+  schedule:
+    - cron: '17 6 * * 1'
   workflow_dispatch:
     inputs:
       create_draft:
-        description: 'Create a private DRAFT prerelease after checks (never publish)'
+        description: 'Create a DRAFT prerelease after checks (not published)'
         type: boolean
         required: true
         default: false
@@ -30,6 +34,11 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npm run release:package
+      - name: Verify packaged ZIP and SHA256 before upload
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          node scripts/release/archive.mjs "artifacts/synk-$VERSION.zip"
+          (cd artifacts && sha256sum --check "synk-$VERSION.zip.sha256")
       - name: Check clean provenance
         run: |
           node --input-type=module -e "import fs from 'node:fs'; const m=JSON.parse(fs.readFileSync('artifacts/RELEASE-MANIFEST.json')); if(m.sourceDirty || m.sourceCommit!==process.env.GITHUB_SHA) throw new Error('Unclean release source');"
@@ -42,15 +51,25 @@ jobs:
             artifacts/RELEASE-MANIFEST.json
           if-no-files-found: error
           retention-days: 30
-      - name: Create draft prerelease only on explicit request
-        if: inputs.create_draft
+      - name: Create DRAFT prerelease (manual RC or scheduled snapshot)
+        # Scheduled builds create a distinct DRAFT even when master has not changed.
+        # They never publish downloads to the public Releases page automatically.
+        if: ${{ github.event_name == 'schedule' || inputs.create_draft }}
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
+          set -euo pipefail
           VERSION="$(node -p "require('./package.json').version")"
           [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$ ]]
-          TAG="v$VERSION"
+          if [[ "$GITHUB_EVENT_NAME" == "schedule" ]]; then
+            UTC_DATE="$(date -u '+%Y-%m-%d')"
+            TAG="$(node scripts/release/snapshot-tag.mjs "$VERSION" "$UTC_DATE" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT")"
+            TITLE="synk $VERSION — snapshot $UTC_DATE (${GITHUB_SHA:0:8})"
+          else
+            TAG="v$VERSION"
+            TITLE="synk $VERSION — ricostruzione per collaudo"
+          fi
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Release already exists: $TAG. Refusing to overwrite."
             exit 1
@@ -60,5 +79,6 @@ jobs:
             "artifacts/synk-$VERSION.zip.sha256" \
             "artifacts/RELEASE-MANIFEST.json" \
             --target "$GITHUB_SHA" --draft --prerelease \
-            --title "synk $VERSION — ricostruzione per collaudo" \
+            --title "$TITLE" \
             --notes-file .github/prerelease-notes.md
+          echo "Draft $TAG created for $GITHUB_SHA. No public release was published."

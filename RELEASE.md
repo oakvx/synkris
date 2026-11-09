@@ -19,8 +19,8 @@ manuale; non esiste ancora un percorso self-service.
 **Blocchi per una stabile:** completare `COLLAUDO.md`, valutare/correggere gli
 avvisi delle dipendenze, verificare distribuzione e licenze di terzi e approvare
 il comportamento dei componenti ricostruiti. Il workflow attuale accetta solo
-versioni `-rc.N` e, su richiesta esplicita, crea esclusivamente una **bozza di
-prerelease privata**. I test con provider simulato non sono un test Google o
+versioni `-rc.N` e crea esclusivamente **bozze di prerelease non pubblicate**,
+con avvio manuale oppure con snapshot programmata settimanale. I test con provider simulato non sono un test Google o
 WhatsApp reale.
 
 ## 1. Verificare il codice
@@ -80,6 +80,11 @@ Output:
 - `artifacts/RELEASE-MANIFEST.json` — anche dentro lo ZIP, versione/provenienza e
   SHA256 di ciascun file.
 
+Il file **`PRIMO_AVVIO.txt`** è presente alla radice dello ZIP e contiene
+la guida breve per l'installazione di prova. Lo ZIP include script Windows
+ma **non è un eseguibile `.exe` indipendente**: richiede Docker Desktop,
+WSL2 e gli elementi di attivazione indicati nella guida.
+
 Il pacchetto è costruito da una allowlist e rifiuta symlink, percorsi non sicuri,
 file privati nei percorsi del codice e componenti richiesti mancanti. Non include
 `.git`, `.env`, `setup/config.json`, `runtime/`, `secrets/`, dipendenze installate,
@@ -105,12 +110,51 @@ preparare una bozza associata a un commit esatto.
    richiesto, crea `v<versione package.json>` in stato **Draft + Prerelease** sul
    commit esatto con ZIP, checksum e manifest.
 6. Esaminare manualmente note, artifact e audit. La bozza NON viene pubblicata
-   automaticamente. Il repository e i suoi download restano privati.
+   automaticamente. **Il repository attuale è pubblico**: una bozza non è
+   visibile ai visitatori, ma pubblicarla rende disponibili ZIP e allegati
+   attraverso GitHub Releases. Non allegare licenze emesse, segreti, dati
+   cliente o archivi runtime.
 
 Non esiste un percorso automatico di pubblicazione stabile in questi workflow.
 Per una successiva RC aggiornare versione/lockfile con
 `npm version 1.2.0-rc.7 --no-git-tag-version --ignore-scripts`, poi changelog e
 istruzioni, senza creare tag che puntino a modifiche non salvate.
+
+## 3-bis. Snapshot settimanale automatica
+
+Ogni **lunedì alle 06:17 UTC**, GitHub Actions esegue automaticamente
+`.github/workflows/prerelease.yml` sul commit più recente del branch
+predefinito **`master`**. L'orario effettivo può slittare a causa della coda di
+GitHub. Per questo non esistono processi server o agenti permanenti.
+
+- Esegue di nuovo **tutta la CI** (Node, PHP/PostgreSQL, Windows, Docker);
+  un controllo fallito impedisce la creazione della bozza.
+- Genera lo ZIP dalla revisione verificata, controlla il manifest con
+  `sourceCommit = GITHUB_SHA`, `sourceDirty = false`, verifica l'archivio e
+  il file SHA256. Il gate audit impedisce i rilievi **critici**, ma un audit con
+  altre vulnerabilità **non significa** che il programma sia pronto.
+- Crea sempre una **Draft + Prerelease**, anche se rispetto alla settimana
+  precedente nessun file è cambiato.
+- Il tag è univoco per ogni esecuzione:
+  `v1.2.0-rc.6-snapshot.AAAAMMGG.RUN_ID.TENTATIVO`. La versione interna allo
+  ZIP rimane quella di `package.json` finché non viene aggiornata da un commit.
+- Gli allegati restano lo ZIP, `.zip.sha256` e `RELEASE-MANIFEST.json`.
+  Il nome del tag non implica modifiche al codice né una nuova versione stabile.
+- Ogni snapshot punta a **uno specifico commit**. Un tag esistente non viene
+  mai sovrascritto. Le bozze si accumulano finché il maintainer non decide di
+  esaminarle/gestirle.
+- Nessuna snapshot viene pubblicata automaticamente: nel repository pubblico
+  la visibilità dei download richiede ancora **Publish release** da parte del
+  maintainer. Scegliere la pubblicazione solo dopo i collaudi e le revisioni.
+
+Le esecuzioni manuali in **Actions → Prerelease** sono indipendenti: con
+`create_draft=false` generano soltanto artifact; con `true` preparano la
+bozza del tag canonico `v<versione>`. Lo schedule non modifica il sorgente,
+non incrementa `package.json` e non attiva Google/WhatsApp.
+
+**GitHub può disattivare i workflow schedulati dei repository pubblici dopo
+60 giorni senza attività**; in quel caso occorre riabilitare il workflow.
+La schedulazione è configurabile modificando la riga `cron` nel workflow.
 
 ## 4. Installazione e aggiornamento di prova
 

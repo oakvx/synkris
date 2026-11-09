@@ -1,0 +1,69 @@
+SYNK 1.2.0 RC6 - PRIMO AVVIO (SOLO COLLAUDO)
+===============================================
+
+Questa release candidate e' destinata a test tecnici. NON e' una versione
+stabile e NON va usata con clienti reali prima del collaudo completo.
+
+COSA STAI INSTALLANDO
+  - Bot Node.js + dashboard PHP + database PostgreSQL, avviati con Docker.
+  - Integrazione WhatsApp Web non ufficiale (whatsapp-web.js) e Google Calendar.
+  - Nessun EXE autonomo: il punto di ingresso e' INSTALLA_UNA_VOLTA.bat.
+  - AI locale Ollama facoltativa e disattivata per impostazione predefinita.
+
+PREREQUISITI
+  - Un PC Windows compatibile con Docker Desktop e WSL2 (container Linux).
+  - Docker Desktop installato e funzionante, accesso Internet per il setup.
+  - I tre file rilasciati/configurati dal tecnico:
+      license.txt
+      license-public.pem
+      google-service-account.json
+  - HWID associato alla licenza, ID del calendario del salone e calendari
+    condivisi con il service account.
+  - Un account e un calendario DI PROVA, non quelli dei clienti.
+
+PRIMA INSTALLAZIONE
+  1. Verifica lo SHA256 dello ZIP con il file .zip.sha256 pubblicato nello
+     stesso canale ufficiale. Il checksum verifica integrita', non autenticita'.
+  2. Estrai TUTTO lo ZIP in una cartella Windows locale fissa. Evita OneDrive,
+     cartelle condivise e percorsi pubblici. Non avviare file dentro lo ZIP.
+  3. Controlla che nella stessa cartella siano presenti:
+       INSTALLA_UNA_VOLTA.bat
+       compose.yaml
+       strumenti\
+       LEGGIMI.txt
+  4. Avvia INSTALLA_UNA_VOLTA.bat e premi Invio (Installa/riprendi).
+  5. Configura salone, operatrici, servizi e orari; indica il PERCORSO dei
+     tre file privati. Non incollarne il contenuto nella chat o nei log.
+  6. Completa il wizard. Accedi alla dashboard locale:
+       http://127.0.0.1:8080/
+  7. Segui i sei controlli "Primi passi" in Centro operativo. Associa il
+     QR WhatsApp di prova e verifica Calendar con eventi fittizi.
+  8. Esegui COLLAUDO.md prima di qualsiasi uso operativo.
+
+AVVIO SUCCESSIVO
+  - Usa APRI_SYNK.bat oppure AVVIA_SYNK.bat.
+  - Se le immagini Docker non sono presenti, riprendi l'installazione
+    guidata; l'avvio quotidiano non scarica o compila le immagini.
+  - L'autostart e' facoltativo, dopo login Windows: non parte a PC spento.
+
+ATTENZIONE
+  - La licenza e' proprietaria. L'uso commerciale richiede un accordo
+    scritto con il titolare; anche per l'uso privato occorre attivazione.
+  - WhatsApp usa WhatsApp Web non ufficiale, non la Cloud API ufficiale.
+    Le connessioni reali e i termini del provider richiedono verifica.
+  - Backup e dati locali richiedono protezione; non pubblicare credenziali,
+    sessioni, QR, screenshot dei clienti o dump su GitHub.
+  - Un test automatico riuscito NON certifica il funzionamento con Google,
+    WhatsApp o sul PC reale.
+  - In caso di problema non cancellare volumi Docker e non forzare gli
+    stati di Calendar: usa gli strumenti e il tecnico.
+
+LEGGI ANCHE
+  LEGGIMI.txt               - uso e operazioni comuni
+  deploy/PRIMI_PASSI.md     - guida dettagliata Windows
+  COLLAUDO.md               - test obbligatori prima dell'uso reale
+  RELEASE.md                - packaging, licenza, restore e aggiornamenti
+  LICENSE.md                - condizioni legali
+
+L'archivio e' una distribuzione di collaudo, NON una promessa di disponibilita'
+commerciale immediata.

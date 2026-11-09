@@ -176,6 +176,7 @@ Il sistema distingue la **registrazione transazionale nel database** dall'invio 
 | Aspetto | Stato verificato / limite |
 | --- | --- |
 | **Versione** | `1.2.0-rc.6` — prerelease ricostruita, destinata al collaudo |
+| **Pacchetti automatici** | Ogni lunedì GitHub Actions crea una **bozza di prerelease** dell'ultimo commit di `master`, anche senza modifiche; non la pubblica automaticamente. [Procedura](docs/PRIMO_RILASCIO.md) |
 | **Milestone plug-and-play** | Al commit `9ff8000` dell'8 novembre 2026: **239/239 test Node** e **6 job CI** superati; non è un test reale sul PC del salone |
 | **Test aggiuntivi** | Copertura di setup Windows, checklist, diagnosi offline e backup/restore su database sintetico; risultati e limiti in [PLUG_AND_PLAY.md](docs/PLUG_AND_PLAY.md) |
 | **Audit dipendenze** | 19 rilievi noti alla verifica dell'8 novembre 2026: **11 elevati, 8 moderati, 0 critici** |
@@ -214,7 +215,7 @@ Questi comandi controllano il codice e i componenti disponibili nell'ambiente: *
 <details>
 <summary><strong>Installazione di collaudo e manutenzione su Windows</strong></summary>
 
-L'attuale percorso è **guidato da un wizard Windows**, ma rimane una installazione di collaudo che richiede assistenza tecnica e Docker Desktop / WSL2. Leggere [Primi passi](deploy/PRIMI_PASSI.md), [LEGGIMI.txt](LEGGIMI.txt), [RELEASE.md](RELEASE.md) e [COLLAUDO.md](COLLAUDO.md). Il wizard chiede team, servizi e orari senza modifiche manuali ai JSON, ma richiede ancora licenza firmata/HWID, credenziali Calendar e collaudo reale.
+L'attuale percorso è **guidato da un wizard Windows**, ma rimane una installazione di collaudo che richiede assistenza tecnica e Docker Desktop / WSL2. Per iniziare leggere [PRIMO_AVVIO.txt](PRIMO_AVVIO.txt), poi [Primi passi](deploy/PRIMI_PASSI.md), [LEGGIMI.txt](LEGGIMI.txt), [RELEASE.md](RELEASE.md) e [COLLAUDO.md](COLLAUDO.md). Il wizard chiede team, servizi e orari senza modifiche manuali ai JSON, ma richiede ancora licenza firmata/HWID, credenziali Calendar e collaudo reale.
 
 | Operazione | Entrypoint |
 | --- | --- |

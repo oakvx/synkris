@@ -1,7 +1,7 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $script:SynkRoot = Split-Path -Parent $PSScriptRoot
-$script:CodePaths = @('src','dashboard','deploy','assets','strumenti','scripts','dashboard.php','bridge.php','Dockerfile','Dockerfile.dashboard','compose.yaml','package.json','package-lock.json','.dockerignore','.env.example','RELEASE-MANIFEST.json','LEGGIMI.txt','LICENSE.md','SECURITY.md','COLLAUDO.md','RELEASE.md','CHANGELOG.md','REPORT_BUGFIX_RC4.md','REPORT_BUGFIX_RC5.md','REPORT_RICOSTRUZIONE_RC6.md','AGGIORNA_SYNK_TECNICO.bat','APRI_SYNK.bat','ATTIVA_AI_LOCALE.bat','AVVIA_SYNK.bat','ESPORTA_BACKUP_CIFRATO_TECNICO.bat','INSTALLA_UNA_VOLTA.bat','RIATTIVA_CALENDAR_TECNICO.bat','RIPRISTINA_BACKUP.bat','setup/config.example.json')
+$script:CodePaths = @('src','dashboard','deploy','assets','strumenti','scripts','dashboard.php','bridge.php','Dockerfile','Dockerfile.dashboard','compose.yaml','package.json','package-lock.json','.dockerignore','.env.example','RELEASE-MANIFEST.json','PRIMO_AVVIO.txt','LEGGIMI.txt','LICENSE.md','SECURITY.md','COLLAUDO.md','RELEASE.md','CHANGELOG.md','REPORT_BUGFIX_RC4.md','REPORT_BUGFIX_RC5.md','REPORT_RICOSTRUZIONE_RC6.md','AGGIORNA_SYNK_TECNICO.bat','APRI_SYNK.bat','ATTIVA_AI_LOCALE.bat','AVVIA_SYNK.bat','ESPORTA_BACKUP_CIFRATO_TECNICO.bat','INSTALLA_UNA_VOLTA.bat','RIATTIVA_CALENDAR_TECNICO.bat','RIPRISTINA_BACKUP.bat','setup/config.example.json')
 
 function Write-Utf8File([string]$Path, [string]$Text) {
     [System.IO.File]::WriteAllText($Path, $Text, (New-Object System.Text.UTF8Encoding($false)))
