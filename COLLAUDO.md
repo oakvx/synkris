@@ -1,7 +1,7 @@
 # synk 1.2 RC6 - protocollo di collaudo (non eseguito su Windows reale)
 
 La ricostruzione RC6 richiede una nuova verifica completa. I test automatici
-sono descritti in REPORT_RICOSTRUZIONE_RC6.md e non attestano il collaudo reale.
+sono descritti nel report storico `docs/history/REPORT_RICOSTRUZIONE_RC6.md` e non attestano il collaudo reale.
 **La firma di questa checklist richiede un PC di prova con i calendari e la sessione
 WhatsApp del salone.** Non usare dati reali prima di completarla.
 
