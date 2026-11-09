@@ -98,6 +98,25 @@ function Get-SynkOfflineDoctor {
     try { $report = $result.Value | ConvertFrom-Json -ErrorAction Stop } catch { throw 'Diagnostica offline non disponibile. Completa la costruzione immagini tramite INSTALLA_SYNK.' }
     $exitProperty = $result.PSObject.Properties['ExitCode']
     if ($null -eq $report -or $report.schema -ne 1 -or $report.scope -ne 'offline' -or $report.productionReady -ne $false -or $report.readyForBootstrap -isnot [bool] -or $null -eq $exitProperty -or $exitProperty.Value -notin @(0,1)) { throw 'Formato diagnostica non riconosciuto; non viene dichiarata pronta l''installazione.' }
+    # Refuse incomplete or contradictory reports, not only malformed JSON.
+    # The report is an offline deployment gate, not a general status message.
+    if ($report.checks -isnot [array] -or $report.checks.Count -eq 0) {
+        throw 'Diagnostica offline priva dei controlli attesi. Nessun avvio consentito.'
+    }
+    $failedCheck = $false
+    foreach ($check in $report.checks) {
+        if ($null -eq $check -or
+            [string]::IsNullOrWhiteSpace([string]$check.id) -or
+            [string]::IsNullOrWhiteSpace([string]$check.label) -or
+            [string]::IsNullOrWhiteSpace([string]$check.help) -or
+            $check.status -notin @('pass','warn','fail')) {
+            throw 'Controlli diagnostici non riconosciuti. Nessun avvio consentito.'
+        }
+        if ($check.status -eq 'fail') { $failedCheck = $true }
+    }
+    if ($report.readyForBootstrap -eq $failedCheck) {
+        throw 'Diagnostica offline incoerente: almeno un controllo non corrisponde allo stato complessivo.'
+    }
     # The doctor contract is strict: zero means ready; one means incomplete.
     # A contradictory exit code must never authorize database/bootstrap startup.
     if ($report.readyForBootstrap -ne ($exitProperty.Value -eq 0)) {
