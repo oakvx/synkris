@@ -17,7 +17,9 @@ Non spostare la cartella dopo l'installazione. Un'altra cartella che tenta di us
 
 La licenza è proprietaria/source-available: solo uso privato personale non commerciale gratuito; ogni altro uso richiede prima un accordo commerciale scritto, salvo diversa autorizzazione scritta. Anche l'attivazione privata gratuita richiede firma/HWID, con emissione manuale: il wizard non rilascia licenze né sceglie automaticamente la gratuità.
 
-## 3. Un solo launcher
+## 3. Due soli launcher principali: installazione e avvio
+
+Per configurare il programma usa soltanto **`INSTALLA_SYNK.bat`**. Per gli avvii successivi usa soltanto **`AVVIA_SYNK.bat`**. Gli altri BAT con suffisso `_TECNICO` riguardano esclusivamente la manutenzione.
 
 Apri `INSTALLA_SYNK.bat`; premi **Invio** per **1 — Installa/riprendi**. Il wizard:
 
