@@ -7,8 +7,8 @@ function Get-SynkAutostartDefinition {
     $sha = [Security.Cryptography.SHA256]::Create()
     try { $id = ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($root)))).Replace('-','').Substring(0,16) } finally { $sha.Dispose() }
     $target = Join-Path ([Environment]::GetFolderPath('System')) 'WindowsPowerShell/v1.0/powershell.exe'
-    $scriptPath = Join-Path $script:SynkRoot 'strumenti/avvia.ps1'
-    return [pscustomobject]@{Path=(Join-Path $StartupFolder ('Synk-' + $id + '.lnk'));Target=$target;Arguments=('-NoProfile -STA -ExecutionPolicy Bypass -File "' + $scriptPath + '" -NoBrowser -Quiet');WorkingDirectory=$script:SynkRoot}
+    $scriptPath = Join-Path $script:SynkRoot 'strumenti/avvio.ps1'
+    return [pscustomobject]@{Path=(Join-Path $StartupFolder ('Synk-' + $id + '.lnk'));Target=$target;Arguments=('-NoProfile -STA -ExecutionPolicy Bypass -File "' + $scriptPath + '" -Run -NoBrowser -Quiet');WorkingDirectory=$script:SynkRoot}
 }
 function Get-SynkAutostartStatus {
     param([string]$StartupFolder = [Environment]::GetFolderPath('Startup'))
@@ -17,7 +17,14 @@ function Get-SynkAutostartStatus {
         $definition = Get-SynkAutostartDefinition -StartupFolder $StartupFolder
         if (-not (Test-Path -LiteralPath $definition.Path -PathType Leaf)) { return 'disabled' }
         $shell = New-Object -ComObject WScript.Shell; $shortcut = $shell.CreateShortcut($definition.Path)
-        if ($shortcut.TargetPath -ieq $definition.Target -and $shortcut.Arguments -ceq $definition.Arguments -and $shortcut.WorkingDirectory -ieq $definition.WorkingDirectory) { return 'enabled' }
+        if ($shortcut.TargetPath -ieq $definition.Target -and $shortcut.WorkingDirectory -ieq $definition.WorkingDirectory) {
+            if ($shortcut.Arguments -ceq $definition.Arguments) { return 'enabled' }
+            # Recognize only the exact legacy launcher of this same installation.
+            # Never modify shortcuts with user-supplied arguments or other targets.
+            $legacy = Join-Path $script:SynkRoot 'strumenti/avvio.ps1'
+            $oldArguments = '-NoProfile -STA -ExecutionPolicy Bypass -File "' + $legacy + '" -NoBrowser -Quiet'
+            if ($shortcut.Arguments -ceq $oldArguments) { return 'legacy' }
+        }
         return 'modified'
     } catch { return 'unavailable' }
     finally {
@@ -31,7 +38,7 @@ function Set-SynkAutostart {
     $state = Get-SynkAutostartStatus -StartupFolder $StartupFolder
     if ($state -in @('modified','unavailable')) { throw 'Collegamento non riconosciuto o non leggibile: non lo sovrascrivo o elimino automaticamente.' }
     if (-not $Enabled) {
-        if ($state -eq 'enabled') { Remove-Item -LiteralPath $definition.Path -Force }
+        if ($state -in @('enabled','legacy')) { Remove-Item -LiteralPath $definition.Path -Force }
         Write-Host 'Rimosso soltanto l''avvio automatico creato da questo strumento per questa installazione.'
         return
     }
@@ -40,6 +47,7 @@ function Set-SynkAutostart {
     $others = @(Get-ChildItem -LiteralPath $StartupFolder -Filter 'Synk-*.lnk' | Where-Object { $_.FullName -ine $definition.Path })
     if ($others.Count -gt 0) { throw 'Esiste un altro avvio automatico synk: usa una sola installazione per PC e verifica con il tecnico prima di aggiungerne un''altra.' }
     if ($state -eq 'enabled') { Write-Host 'Avvio automatico gia configurato: nessun duplicato creato.'; return }
+    if ($state -eq 'legacy') { Write-Host 'Aggiorno il collegamento della precedente installazione al modulo di avvio unico.' }
     $shell = $null; $shortcut = $null
     try {
         $shell = New-Object -ComObject WScript.Shell; $shortcut = $shell.CreateShortcut($definition.Path)
