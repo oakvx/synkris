@@ -159,7 +159,7 @@ La schedulazione è configurabile modificando la riga `cron` nel workflow.
 ## 4. Installazione e aggiornamento di prova
 
 Estrarre tutto in una cartella Windows locale dedicata e fissa (evitare cartelle
-condivise o sincronizzate). `INSTALLA_UNA_VOLTA.bat` apre il menu: Invio avvia
+condivise o sincronizzate). `INSTALLA_SYNK.bat` apre il menu: Invio avvia
 il wizard per team, trattamenti e orari, importazione dei tre file privati e
 configurazione CALENDAR_ID/APP_HWID. Non servono JSON manuali o Node/PHP sul PC.
 Il doctor Docker è read-only, senza rete o dipendenze avviate e usa il verificatore
@@ -175,7 +175,7 @@ La correzione verifica il file e ripristina l'originale se rifiutato, senza avvi
 servizi. Dopo import, rinnovi/rotazioni richiedono una procedura tecnica.
 
 Un progetto Docker già appartenente a un'altra cartella viene bloccato. L'avvio
-quotidiano `APRI_SYNK`/`AVVIA_SYNK` non esegue build o pull. Credenziali esistenti
+quotidiano `AVVIA_SYNK` non esegue build o pull. Credenziali esistenti
 e password database non sono rigenerate automaticamente. Dopo un restore la
 sospensione Calendar continua a prevalere: un avvio non la rimuove.
 Il provider è whatsapp-web.js 1.34.7 con LocalAuth. Chromium usa argomenti
