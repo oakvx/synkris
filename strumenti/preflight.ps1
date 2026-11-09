@@ -88,7 +88,7 @@ function Test-SynkDatabaseVolume {
 function Get-SynkOfflineDoctor {
     # No dependency startup, downloads, schema writes, browser or cloud requests.
     $result = Invoke-DockerProbe -Arguments @('compose','--profile','tools','run','--rm','--no-deps','-T','--pull','never','doctor') -TimeoutMilliseconds 60000
-    try { $report = $result.Value | ConvertFrom-Json -ErrorAction Stop } catch { throw 'Diagnostica offline non disponibile. Completa la costruzione immagini tramite INSTALLA_UNA_VOLTA.' }
+    try { $report = $result.Value | ConvertFrom-Json -ErrorAction Stop } catch { throw 'Diagnostica offline non disponibile. Completa la costruzione immagini tramite INSTALLA_SYNK.' }
     $exitProperty = $result.PSObject.Properties['ExitCode']
     if ($null -eq $report -or $report.schema -ne 1 -or $report.scope -ne 'offline' -or $report.productionReady -ne $false -or $report.readyForBootstrap -isnot [bool] -or $null -eq $exitProperty -or $exitProperty.Value -notin @(0,1)) { throw 'Formato diagnostica non riconosciuto; non viene dichiarata pronta l''installazione.' }
     return $report
