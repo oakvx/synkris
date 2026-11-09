@@ -2,7 +2,8 @@
 
 Dashboard, deploy, asset e strumenti Windows sono stati ricostruiti dai contratti
 rimasti nel repository, non recuperati dagli originali. Leggere
-`REPORT_RICOSTRUZIONE_RC6.md`, `RELEASE.md` e `CHANGELOG.md` nello ZIP.
+`RELEASE.md` e `CHANGELOG.md` nello ZIP. Il report storico RC6 e' disponibile
+nel repository sotto `docs/history/REPORT_RICOSTRUZIONE_RC6.md`, non nel pacchetto di installazione.
 
 ### Download
 
