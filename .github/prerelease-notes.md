@@ -1,4 +1,4 @@
-## Candidata ricostruita — solo collaudo
+## Prerelease per commit — solo collaudo
 
 Dashboard, deploy, asset e strumenti Windows sono stati ricostruiti dai contratti
 rimasti nel repository, non recuperati dagli originali. Leggere
@@ -36,13 +36,17 @@ Non è una release open source. Leggere `LICENSE.md`.
   Verificare anche sandbox Chromium sul PC Docker/WSL2, senza bypass impliciti.
 - Audit migrato: 19 rilievi, 11 elevati, zero critici all’8 novembre 2026.
   I critici bloccano la procedura; gli altri non sono approvazione produzione.
+  Verificare sempre l'audit aggiornato della specifica esecuzione CI.
   I testi dei nuovi componenti sono in deploy/THIRD_PARTY_NOTICES.md.
 - Un rollback del codice non annulla migrazioni del database; un restore richiede
   riconciliazione manuale Calendar prima della riattivazione.
-- Il repository sorgente e' PUBBLICO. Una bozza GitHub Release non e'
-  pubblicata ai visitatori; se si sceglie Publish, ZIP, manifest e note
-  diventano scaricabili pubblicamente. Non caricare file di attivazione,
-  segreti, dati o immagini dei clienti. Licenza proprietaria e obblighi
-  dei componenti di terzi restano applicabili.
+- Il repository sorgente e' **PUBBLICO** e ogni commit su `master`
+  genera ora una **prerelease pubblicata**: ZIP, checksum, manifest e note
+  diventano scaricabili. L'unica modalita' non pubblica e' l'opzione
+  manuale `draft-rc`. Non caricare file di attivazione, segreti, dati
+  o immagini dei clienti. La licenza proprietaria resta applicabile.
 
-Questa è una **bozza prerelease**. Nessuna promozione stabile è automatica.
+La prerelease e' identificata dall'intero SHA del commit; il tag e' immutabile
+e non viene spostato in seguito a nuove commit. **Nessuna promozione stabile
+e' automatica**: il rilascio settimanale separato e' pubblicato, ma esplicitamente
+marcato RC di collaudo e non "Latest".
