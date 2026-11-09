@@ -31,6 +31,8 @@ permissions:
 jobs:
   checks:
     uses: ./.github/workflows/ci.yml
+    with:
+      release_pipeline: true
     permissions:
       contents: read
 
