@@ -40,6 +40,15 @@ jobs:
       - name: Dependency audit (critical blocks; other findings require review)
         if: matrix.node == 22
         run: npm run audit:release
+      - name: Summarize production dependency findings
+        if: always() && matrix.node == 22
+        run: |
+          if [ -f artifacts/dependency-audit.json ]; then
+            node scripts/release/audit-summary.mjs
+          else
+            echo '### Production dependency audit' >> "$GITHUB_STEP_SUMMARY"
+            echo 'Audit report unavailable; manual investigation required.' >> "$GITHUB_STEP_SUMMARY"
+          fi
       - uses: actions/upload-artifact@v4
         if: always() && matrix.node == 22
         with:
