@@ -1,80 +1,85 @@
-# Valutazione del primo rilascio synk
+# Primo rilascio synk e pubblicazioni automatiche
 
-Snapshot del **9 novembre 2026**, basato sulla revisione dei file del branch `master` (prima della PR di preparazione). Questa pagina non sostituisce `RELEASE.md` né `COLLAUDO.md`.
+Stato al **9 novembre 2026**. Il progetto è ancora
+`1.2.0-rc.6`, **solo collaudo**. La CI non equivale a un test su
+Windows/Docker Desktop con i provider reali.
 
-## Decisione proposta
+## Schema di pubblicazione
 
-**Prima uscita: `v1.2.0-rc.6`, esclusivamente come Draft + Prerelease di collaudo tecnico.**
+Il workflow
+[Prerelease and Weekly Release](../.github/workflows/prerelease.yml)
+si occupa automaticamente di:
 
-- **Sì:** generare ZIP, checksum e manifest da un commit revisionato, farli scaricare al tecnico e testarli su un PC Windows di prova, con account dedicati al test e dati fittizi, usando credenziali valide solo per l'ambiente di prova.
-- **Non ancora:** pubblicare una release stabile, fornire il pacchetto ai saloni per gestire clienti veri o promettere un installer `.exe` autonomo.
-- **La prima release pubblica:** richiede una decisione separata, dopo collaudo reale, revisione delle dipendenze e verifica delle condizioni commerciali.
-
-## Stato dei componenti
-
-| Componente | Presenza | Prova ancora necessaria |
+| Evento | Cosa genera | Visibilità |
 | --- | --- | --- |
-| `src/index.js` e logica Node | Implementato | Esecuzione con account WhatsApp di prova |
-| Dashboard PHP | Implementata | Login, editor, ruoli e comportamento reale in browser |
-| PostgreSQL / outbox | Implementati, con test automatizzati | Conflitti e restore su host reale |
-| Google Calendar | Adapter e integrazione presenti | Disponibilità, ricorrenze, sync bidirezionale e disconnessioni reali |
-| `whatsapp-web.js` / LocalAuth | Codice e test simulati | Associazione QR, riconnessione, revoca e compatibilità provider |
-| Installazione Windows | Wizard PowerShell + BAT | Docker Desktop/WSL2 su PC reale e test primo avvio |
-| Generatore release | ZIP piatto con allowlist, manifest e SHA256 | Build del commit candidato e verifica degli artifact del workflow |
-| AI locale | Ollama opzionale | Abilitazione e verifica separata; non necessario alla prima RC |
-| Attivazione | Licenza firmata/HWID | Emissione della licenza di collaudo e import corretto |
-| Sicurezza | Audit automatico e controlli di segreti | Risoluzione/accettazione documentata dei rilievi e revisione prima di dati veri |
+| Ogni push/merge su `master` | Tag `v1.2.0-rc.6-commit.<SHA40>`, ZIP + checksum + manifest | **Prerelease pubblica** |
+| Ogni lunedì alle **06:17 UTC** | Tag `v1.2.0-rc.6-weekly.AAAAwSS` dall'ultimo commit di `master` | **GitHub Release pubblica**, indicata come RC di collaudo, non "Latest" |
+| Avvio manuale `artifacts-only` | ZIP, checksum e manifest come artifact della CI | Senza pubblicazione |
+| Avvio manuale `draft-rc` | Bozza del tag canonico `v1.2.0-rc.6` | **Bozza non pubblica** |
 
-L'audit citato nel repository l'**8 novembre 2026** segnalava **11 vulnerabilità elevate, 8 moderate e 0 critiche**. È un dato storico, non un'approvazione di sicurezza: consultare l'audit del commit della release. La CI con simulatori **non sostituisce** i test con provider reali.
+La pubblicazione automatica avviene **solo dopo** che sono riusciti tutti
+i job Node.js 22/24, PHP/PostgreSQL, Windows PowerShell, Docker e i controlli
+dell'archivio/manifest/SHA256. Gli audit bloccano i rilievi critici,
+non tutte le vulnerabilità moderate/elevate. Per la produzione occorre
+una valutazione di sicurezza separata.
 
-## Che cosa si trova nella sezione GitHub Releases
+Il repository e gli asset delle pubblicazioni sono **pubblici**. La
+release settimanale viene costruita anche **senza nuovi commit**. I tag
+non vengono spostati; un secondo tentativo per lo stesso tag è accettato
+solo se rimane coerente con commit, stato e allegati precedenti.
 
-Il workflow `.github/workflows/prerelease.yml` produce:
+La pubblicazione non installa il software sui PC dei saloni, non emette
+attivazioni e non fa promozioni automatiche a una versione stabile.
 
-1. `synk-1.2.0-rc.6.zip`: codice, dashboard, strumenti Windows, Compose, Dockerfile, guida `PRIMO_AVVIO.txt` e licenza, **senza credenziali o dati cliente**.
-2. `synk-1.2.0-rc.6.zip.sha256`: checksum dell'archivio.
-3. `RELEASE-MANIFEST.json`: provenienza del commit, versione e SHA256 dei singoli file.
+## Che cosa contiene il download
 
-Non sono inclusi Docker Desktop, immagini precompilate, dipendenze installate, licenze cliente, chiavi Google o un eseguibile Windows autonomo. Il wizard prepara le immagini sul PC, con rete disponibile e Docker Desktop / WSL2 installati.
+- `synk-1.2.0-rc.6.zip` — contenuto piatto, con
+  `INSTALLA_SYNK.bat` e `AVVIA_SYNK.bat`, dashboard,
+  bot, Docker/Compose, guide, licenza.
+- `synk-1.2.0-rc.6.zip.sha256` — controllo dell'integrità.
+- `RELEASE-MANIFEST.json` — sorgente esatta e hash dei file.
 
-## Primo percorso verificabile (senza pubblicare)
+Non sono inclusi licenze cliente, QR, sessioni WhatsApp,
+`secrets/`, `runtime/`, database, password, Google service account,
+Docker Desktop/WSL2 o un EXE standalone.
 
-1. Congelare il commit candidato dopo la fusione della PR e verificare tutti i job GitHub Actions.
-2. Aprire **Actions → Prerelease → Run workflow** sul branch predefinito, lasciare `create_draft=false` e lanciare la build.
-3. Scaricare l'artifact `synk-prerelease`; controllare che contenga i tre file, il nuovo `PRIMO_AVVIO.txt` nello ZIP, la versione, il commit e `sourceDirty=false` nel manifest.
-4. Verificare il checksum con `sha256sum -c` oppure con un equivalente Windows affidabile, confrontando i valori con il canale ufficiale.
-5. Provare `INSTALLA_SYNK.bat` su un **PC Windows dedicato** con Docker Desktop/WSL2, account e calendari di prova; completare `COLLAUDO.md`.
-6. Solo se il test del pacchetto è accettabile, ripetere il workflow con `create_draft=true` per creare `v1.2.0-rc.6` come **Draft + Prerelease**. Esaminare i file e le note prima di qualsiasi pubblicazione.
+## Primo collaudo
 
-**Il repository sorgente è pubblico.** La bozza GitHub Release non è visibile ai visitatori, ma il comando *Publish release* renderebbe gli allegati disponibili pubblicamente. Non allegare mai dati del salone, credenziali, licenze cliente, dump, sessioni o log.
+1. Aprire [GitHub Releases](https://github.com/oakvx/synkris/releases)
+   e scegliere una prerelease riferita al commit desiderato oppure
+   la release settimanale.
+2. Confrontare il checksum dell'archivio con il file SHA256 della stessa
+   pubblicazione e verificare che il manifest riporti il commit corretto.
+3. Estrarre tutto in una cartella Windows locale dedicata e leggere
+   `PRIMO_AVVIO.txt`.
+4. Avviare `INSTALLA_SYNK.bat` sul PC di **collaudo** con Docker Desktop/
+   WSL2, licenza di test, account WhatsApp dedicato e calendari di prova.
+5. Usare `AVVIA_SYNK.bat` per gli avvii successivi e completare
+   [COLLAUDO.md](../COLLAUDO.md).
+6. Non utilizzare dati personali reali prima del collaudo completo e
+   dell'accordo commerciale/licenza appropriati.
 
-## Snapshot settimanali anche senza modifiche
+La procedura per aggiornare un'installazione precedente può richiedere una
+migrazione assistita: le vecchie allowlist non riconoscono tutti i nuovi
+launcher. **Non eliminare volumi, cartelle, segreti o sessioni per forzare
+l'aggiornamento.** Consultare
+[RELEASE.md](../RELEASE.md) e
+[WHATSAPP_MIGRATION.md](WHATSAPP_MIGRATION.md).
 
-Il workflow `Prerelease` viene eseguito ogni **lunedì alle 06:17 UTC** sul
-commit più recente di `master`. Ad ogni esecuzione, se CI e controlli di
-packaging riescono, crea una **bozza di prerelease**. Questo vale anche quando
-il commit è identico alla settimana precedente: il tag include data UTC,
-identificativo della run e tentativo, senza spostare o sovrascrivere tag esistenti.
+## Limiti ancora aperti
 
-**Non è una pubblicazione pubblica automatica.** Su questo repository pubblico
-le bozze e gli allegati rimangono non pubblicati, fino a un intervento
-esplicito. Il maintainer può continuare a lavorare su `master` senza dover
-incrementare la versione ogni settimana: le snapshot registrano la provenienza
-del commit in `RELEASE-MANIFEST.json`. Questo non sostituisce versionamento
-semantico e note di rilascio quando si sceglie una RC ufficiale.
+- Associazione WhatsApp Web e QR reali, riconnessione e revoca.
+- Google Calendar: conflitti, idempotenza, sincronizzazione e disconnessioni.
+- Windows reale: avvio Docker Desktop, COM, file e policy locali.
+- Sandbox Chromium, backup/restore PostgreSQL, recupero dopo errori.
+- Revisione delle vulnerabilità e licenze dei componenti di terzi.
+- Licenza firmata/HWID, condizioni commerciali e protezione dei dati.
 
-Per ottenere una snapshot **subito** senza aspettare lunedì, avviare il
-workflow manualmente con `create_draft=false` (solo artifact) oppure
-`create_draft=true` (bozza del tag canonico), una volta integrata questa PR
-in `master`. Le prove sul PC Windows e i provider restano obbligatorie.
+L'audit dell'8 novembre 2026 registrava 11 vulnerabilità elevate, 8
+moderate e nessuna critica. È una fotografia storica, **non**
+una certificazione della versione corrente. Controllare ogni CI.
 
-## Condizioni per promuovere il pacchetto a uso reale
-
-- Collaudo Windows, Google Calendar, WhatsApp, backup/restore, sicurezza delle credenziali e privacy completato e firmato da chi effettua il test.
-- Revisione e mitigazione delle dipendenze vulnerabili, verifica delle licenze dei componenti e dei termini WhatsApp Web.
-- Revisione del repository pubblico e della **cronologia Git** per materiale riservato; in caso di esposizione, revoca delle credenziali, non semplice cancellazione del file.
-- Condizioni commerciali scritte per l'uso in un salone; distribuzione di chiavi firmate/HWID attraverso un canale separato.
-- Test di aggiornamento e recupero dati da un pacchetto precedente, senza presumere che un rollback di codice annulli migrazioni PostgreSQL.
-- Scelta esplicita di un nuovo tag/versione se il codice cambia dopo il freeze.
-
-Per l'intera procedura tecnica e le avvertenze: [RELEASE.md](../RELEASE.md), [COLLAUDO.md](../COLLAUDO.md), [SECURITY.md](../SECURITY.md).
+Per i dettagli:
+[RELEASE.md](../RELEASE.md),
+[COLLAUDO.md](../COLLAUDO.md),
+[SECURITY.md](../SECURITY.md).
