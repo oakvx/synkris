@@ -214,7 +214,7 @@ Questi comandi controllano il codice e i componenti disponibili nell'ambiente: *
 <details>
 <summary><strong>Installazione di collaudo e manutenzione su Windows</strong></summary>
 
-L'attuale percorso è **guidato da un wizard Windows**, ma rimane una installazione di collaudo che richiede assistenza tecnica e Docker Desktop / WSL2. Leggere [Primi passi](deploy/PRIMI_PASSI.md), [LEGGIMI.txt](LEGGIMI.txt), [RELEASE.md](RELEASE.md) e [COLLAUDO.md](COLLAUDO.md). Il wizard chiede team, servizi e orari senza modifiche manuali ai JSON, ma richiede ancora licenza firmata/HWID, credenziali Calendar e collaudo reale.
+L'attuale percorso è **guidato da un wizard Windows**, ma rimane una installazione di collaudo che richiede assistenza tecnica e Docker Desktop / WSL2. Per iniziare leggere [PRIMO_AVVIO.txt](PRIMO_AVVIO.txt), poi [Primi passi](deploy/PRIMI_PASSI.md), [LEGGIMI.txt](LEGGIMI.txt), [RELEASE.md](RELEASE.md) e [COLLAUDO.md](COLLAUDO.md). Il wizard chiede team, servizi e orari senza modifiche manuali ai JSON, ma richiede ancora licenza firmata/HWID, credenziali Calendar e collaudo reale.
 
 | Operazione | Entrypoint |
 | --- | --- |
